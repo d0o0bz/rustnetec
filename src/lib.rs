@@ -61,6 +61,7 @@ pub mod config;
 pub mod export;
 pub mod filter;
 pub mod network;
+pub mod telemetry; // rustnetec: telemetry module for data persistence, event sinks, and identity
 pub mod ui;
 
 /// Check if the current process is running with Administrator privileges (Windows only)

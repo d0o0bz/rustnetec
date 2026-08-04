@@ -240,7 +240,8 @@ struct PcapngRecord {
 /// Keeping the descriptor open is required for paths such as `/root`: after
 /// dropping to the invoking user or `nobody`, the process may no longer be able
 /// to traverse the parent directory even when the file itself was chowned.
-struct JsonLineWriter {
+// rustnetec: made pub for telemetry::JsonLineSink access
+pub(crate) struct JsonLineWriter {
     file: Mutex<File>,
     path: String,
     failure_reported: AtomicBool,
@@ -255,7 +256,8 @@ impl JsonLineWriter {
         }
     }
 
-    fn write(&self, value: &serde_json::Value) {
+    // rustnetec: made pub(crate) for telemetry::JsonLineSink access
+    pub(crate) fn write(&self, value: &serde_json::Value) {
         let result = serde_json::to_string(value)
             .map_err(std::io::Error::other)
             .and_then(|json| {
@@ -306,8 +308,9 @@ fn log_connection_event(
     dns_resolver: Option<&DnsResolver>,
 ) {
     // Build JSON object based on event type
+    // rustnetec: Changed from Utc::now() to Local::now() for RFC 3339 local time with timezone offset
     let mut event = json!({
-        "timestamp": chrono::Utc::now().to_rfc3339(),
+        "timestamp": chrono::Local::now().to_rfc3339(),
         "event": event_type,
         "protocol": conn.protocol.to_string(),
         "source_ip": conn.local_addr.ip().to_string(),
@@ -466,8 +469,9 @@ fn log_connection_event(
 /// Helper function to log connection info to PCAP sidecar file (JSONL format)
 fn log_pcap_connection(writer: &JsonLineWriter, conn: &Connection) {
     // Build base event without GeoIP fields
+    // rustnetec: Changed from Utc::now() to Local::now() for RFC 3339 local time with timezone offset
     let mut event = json!({
-        "timestamp": chrono::Utc::now().to_rfc3339(),
+        "timestamp": chrono::Local::now().to_rfc3339(),
         "protocol": conn.protocol.to_string(),
         "local_addr": conn.local_addr.to_string(),
         "remote_addr": conn.remote_addr.to_string(),
@@ -3077,6 +3081,12 @@ impl App {
         self.stats.pcapng_export_errors.store(0, Ordering::Relaxed);
 
         info!("All connections cleared successfully");
+    }
+
+    // rustnetec: public accessor for daemon mode shutdown detection
+    /// Check if the application has been signaled to stop.
+    pub fn is_stopping(&self) -> bool {
+        self.should_stop.load(Ordering::Relaxed)
     }
 
     /// Stop all threads gracefully

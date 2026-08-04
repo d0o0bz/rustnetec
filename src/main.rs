@@ -1,7 +1,7 @@
 use anyhow::Result;
 use log::{LevelFilter, error, info, warn};
 use ratatui::prelude::CrosstermBackend;
-use rustnet_monitor::{app, cli, network, ui};
+use rustnet_monitor::{app, cli, network, telemetry, ui};
 use simplelog::{ConfigBuilder, WriteLogger};
 use std::fs;
 use std::io;
@@ -26,6 +26,18 @@ fn main() -> Result<()> {
 
     // Check privileges BEFORE initializing TUI (so error messages are visible)
     check_privileges_early()?;
+
+    // rustnetec: Determine run mode (TUI / daemon / tray)
+    let daemon_mode = matches.get_flag("daemon");
+    #[cfg(feature = "tray")]
+    let tray_mode = matches.get_flag("tray");
+    #[cfg(not(feature = "tray"))]
+    let tray_mode = false;
+
+    // rustnetec: Ensure data and config directories exist, chown before uid drop
+    if let Err(e) = telemetry::paths::ensure_dirs() {
+        warn!("Failed to create data/config directories: {}", e);
+    }
 
     // Build configuration from command line arguments
     let mut config = app::Config::default();
@@ -148,6 +160,29 @@ fn main() -> Result<()> {
         network::platform::privdrop::resolve_drop_target()
     };
 
+    // rustnetec: Chown data/config directories before uid drop (R1)
+    // This ensures the runtime user can access data.db and config.yml after
+    // privileges are dropped.
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+    if let Some(ref target) = uid_drop_target {
+        if let Ok(dir) = telemetry::paths::data_dir() {
+            let _ = telemetry::paths::chown_if_root(&dir, target.uid, target.gid);
+        }
+        if let Ok(path) = telemetry::paths::db_path() {
+            if path.exists() {
+                let _ = telemetry::paths::chown_if_root(&path, target.uid, target.gid);
+            }
+        }
+        if let Ok(dir) = telemetry::paths::config_dir() {
+            let _ = telemetry::paths::chown_if_root(&dir, target.uid, target.gid);
+        }
+        if let Ok(path) = telemetry::paths::config_path() {
+            if path.exists() {
+                let _ = telemetry::paths::chown_if_root(&path, target.uid, target.gid);
+            }
+        }
+    }
+
     let mut output_handles = app::AppOutputHandles::default();
 
     // Open JSONL outputs before sandboxing and uid drop. The descriptors stay
@@ -206,10 +241,19 @@ fn main() -> Result<()> {
         output_handles.pcapng_export = Some(file);
     }
 
-    // Set up terminal
-    let backend = CrosstermBackend::new(io::stdout());
-    let mut terminal = ui::setup_terminal(backend)?;
-    info!("Terminal UI initialized");
+    // Set up terminal (skip in daemon mode)
+    // rustnetec: daemon mode skips TUI setup entirely
+    let mut terminal = if !daemon_mode {
+        let backend = CrosstermBackend::new(io::stdout());
+        Some(ui::setup_terminal(backend)?)
+    } else {
+        None
+    };
+    if !daemon_mode {
+        info!("Terminal UI initialized");
+    } else {
+        info!("Running in daemon mode (headless)");
+    }
 
     // Create and start the application
     let mut app = app::App::new_with_output_handles(config.clone(), output_handles)?;
@@ -595,17 +639,24 @@ fn main() -> Result<()> {
     // a compromise in a DPI parser is contained even when running as root.
     app.start_workers()?;
 
-    // Run the UI loop
-    let res = run_ui_loop(&mut terminal, &app);
+    // rustnetec: Branch on run mode
+    if daemon_mode || tray_mode {
+        // Daemon mode: no TUI, just wait for shutdown signal
+        run_daemon_loop(&app);
+    } else {
+        // TUI mode: run the interactive UI loop
+        let res = run_ui_loop(terminal.as_mut().unwrap(), &app);
+
+        if let Err(err) = res {
+            error!("Application error: {}", err);
+            println!("Error: {}", err);
+        }
+    }
 
     // Cleanup
     app.stop();
-    ui::restore_terminal(&mut terminal)?;
-
-    // Return any error that occurred
-    if let Err(err) = res {
-        error!("Application error: {}", err);
-        println!("Error: {}", err);
+    if let Some(ref mut term) = terminal {
+        ui::restore_terminal(term)?;
     }
 
     info!("RustNet Monitor shutting down");
@@ -845,6 +896,25 @@ mod output_file_tests {
 
 /// Sort connections based on the specified column and direction
 use ui::{clear_all_with_confirmation, copy_to_clipboard, sort_connections};
+
+// rustnetec: Daemon mode main loop (R1)
+/// Run the daemon loop: wait for SIGTERM/SIGINT, then exit gracefully.
+/// The capture pipeline runs in background threads started by App;
+/// this function just keeps the main thread alive until a shutdown signal.
+fn run_daemon_loop(app: &app::App) {
+    info!("Daemon loop started, waiting for shutdown signal (Ctrl+C or SIGTERM)");
+
+    // Simple loop: sleep and check for shutdown
+    // The App's should_stop flag is set by the signal handler in the TUI path;
+    // in daemon mode, we rely on ctrlc or SIGTERM to trigger the App's stop.
+    loop {
+        std::thread::sleep(Duration::from_secs(1));
+        if app.is_stopping() {
+            info!("Shutdown signal received, exiting daemon loop");
+            break;
+        }
+    }
+}
 
 fn run_ui_loop<B: ratatui::prelude::Backend>(
     terminal: &mut ui::Terminal<B>,

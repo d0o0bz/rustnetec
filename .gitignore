@@ -22,3 +22,5 @@ target/
 .aider*
 /logs
 .venv
+.vscode/*
+.gitignore

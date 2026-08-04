@@ -18,6 +18,38 @@ pub fn build_cli() -> Command {
         .version(env!("CARGO_PKG_VERSION"))
         .author("Network Monitor")
         .about("Cross-platform network monitoring tool")
+        .subcommand(
+            // rustnetec: query subcommand (R5/R6)
+            Command::new("query")
+                .about("Query local SQLite database for connection events")
+                .arg(
+                    Arg::new("live")
+                        .long("live")
+                        .help("Poll local HTTP /live endpoint for real-time data (read-only, no SQLite write lock)")
+                        .action(clap::ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("db")
+                        .long("db")
+                        .value_name("PATH")
+                        .help("Path to SQLite database file (default: platform-specific data directory)")
+                        .required(false),
+                )
+                .arg(
+                    Arg::new("filter")
+                        .long("filter")
+                        .value_name("EXPR")
+                        .help("Filter expression using rustnet filter syntax (e.g., \"proto:TCP process:curl\")")
+                        .required(false),
+                )
+                .arg(
+                    Arg::new("sql")
+                        .long("sql")
+                        .value_name("SQL")
+                        .help("Execute raw SQL query (SELECT only)")
+                        .required(false),
+                ),
+        )
         .arg(
             Arg::new("interface")
                 .short('i')
@@ -152,6 +184,100 @@ pub fn build_cli() -> Command {
                 .long("no-geoip")
                 .help("Disable GeoIP lookups entirely")
                 .action(clap::ArgAction::SetTrue),
+        )
+        // rustnetec: --daemon flag (R1)
+        .arg(
+            Arg::new("daemon")
+                .long("daemon")
+                .help("Run in daemon mode (headless, no TUI). Captures and logs network events in the background")
+                .action(clap::ArgAction::SetTrue),
+        );
+
+    // rustnetec: --tray flag (R1, feature-gated)
+    #[cfg(feature = "tray")]
+    let cmd = cmd.arg(
+        Arg::new("tray")
+            .long("tray")
+            .help("Run with system tray icon (daemon + tray UI)")
+            .action(clap::ArgAction::SetTrue),
+    );
+
+    let cmd = cmd
+        // rustnetec: --db flag (R2)
+        .arg(
+            Arg::new("db")
+                .long("db")
+                .value_name("PATH")
+                .help("Path to SQLite database file (default: platform-specific data directory)")
+                .required(false),
+        )
+        // rustnetec: --server-url flag (R3)
+        .arg(
+            Arg::new("server-url")
+                .long("server-url")
+                .value_name("URL")
+                .help("URL of the rustnet server for data upload (e.g., https://rustnet.example.com)")
+                .required(false),
+        )
+        // rustnetec: --upload-interval flag (R3)
+        .arg(
+            Arg::new("upload-interval")
+                .long("upload-interval")
+                .value_name("SECS")
+                .help("Interval in seconds between data uploads to server (default: 60)")
+                .value_parser(clap::value_parser!(u32))
+                .required(false),
+        )
+        // rustnetec: --http-port flag (R5)
+        .arg(
+            Arg::new("http-port")
+                .long("http-port")
+                .value_name("PORT")
+                .help("Local loopback HTTP server port (default: 19811)")
+                .value_parser(clap::value_parser!(u16))
+                .required(false),
+        )
+        // rustnetec: --sandbox-allow-network flag (R3, macOS)
+        .arg(
+            Arg::new("sandbox-allow-network")
+                .long("sandbox-allow-network")
+                .value_name("HOST")
+                .help("Allow outbound network to specified host from sandbox (for data upload; DNS on port 53 is also allowed)")
+                .required(false),
+        )
+        // rustnetec: --username flag (R8)
+        .arg(
+            Arg::new("username")
+                .long("username")
+                .value_name("NAME")
+                .help("Set the username for host identity (default: system username)")
+                .required(false),
+        )
+        // rustnetec: --user-id flag (R8)
+        .arg(
+            Arg::new("user-id")
+                .long("user-id")
+                .value_name("ID")
+                .help("Set the user ID (snowflake) for host identity (default: auto-generated on first startup)")
+                .value_parser(clap::value_parser!(i64))
+                .required(false),
+        )
+        // rustnetec: --machine-id flag (R10)
+        .arg(
+            Arg::new("machine-id")
+                .long("machine-id")
+                .value_name("ID")
+                .help("Set the machine ID (hardware fingerprint) for host identity (default: auto-detected from hardware)")
+                .required(false),
+        )
+        // rustnetec: --retention-days flag (R9)
+        .arg(
+            Arg::new("retention-days")
+                .long("retention-days")
+                .value_name("DAYS")
+                .help("Data retention period in days (1-180, default: 90)")
+                .value_parser(clap::value_parser!(u32))
+                .required(false),
         );
 
     #[cfg(feature = "kubernetes")]
@@ -237,5 +363,112 @@ mod tests {
             .expect("default CLI arguments should parse");
 
         assert_eq!(matches.get_one::<u64>("refresh-interval"), Some(&500));
+    }
+
+    // rustnetec: test new flags
+    #[test]
+    fn daemon_flag_parses() {
+        let matches = build_cli()
+            .try_get_matches_from(["rustnet", "--daemon"])
+            .expect("--daemon should parse");
+        assert!(matches.get_flag("daemon"));
+    }
+
+    #[test]
+    fn db_flag_parses() {
+        let matches = build_cli()
+            .try_get_matches_from(["rustnet", "--db", "/tmp/test.db"])
+            .expect("--db should parse");
+        assert_eq!(
+            matches.get_one::<String>("db").map(String::as_str),
+            Some("/tmp/test.db")
+        );
+    }
+
+    #[test]
+    fn server_url_flag_parses() {
+        let matches = build_cli()
+            .try_get_matches_from(["rustnet", "--server-url", "https://example.com"])
+            .expect("--server-url should parse");
+        assert_eq!(
+            matches.get_one::<String>("server-url").map(String::as_str),
+            Some("https://example.com")
+        );
+    }
+
+    #[test]
+    fn upload_interval_flag_parses() {
+        let matches = build_cli()
+            .try_get_matches_from(["rustnet", "--upload-interval", "30"])
+            .expect("--upload-interval should parse");
+        assert_eq!(matches.get_one::<u32>("upload-interval"), Some(&30));
+    }
+
+    #[test]
+    fn http_port_flag_parses() {
+        let matches = build_cli()
+            .try_get_matches_from(["rustnet", "--http-port", "8080"])
+            .expect("--http-port should parse");
+        assert_eq!(matches.get_one::<u16>("http-port"), Some(&8080));
+    }
+
+    #[test]
+    fn retention_days_flag_parses() {
+        let matches = build_cli()
+            .try_get_matches_from(["rustnet", "--retention-days", "30"])
+            .expect("--retention-days should parse");
+        assert_eq!(matches.get_one::<u32>("retention-days"), Some(&30));
+    }
+
+    #[test]
+    fn username_flag_parses() {
+        let matches = build_cli()
+            .try_get_matches_from(["rustnet", "--username", "alice"])
+            .expect("--username should parse");
+        assert_eq!(
+            matches.get_one::<String>("username").map(String::as_str),
+            Some("alice")
+        );
+    }
+
+    #[test]
+    fn user_id_flag_parses() {
+        let matches = build_cli()
+            .try_get_matches_from(["rustnet", "--user-id", "12345"])
+            .expect("--user-id should parse");
+        assert_eq!(matches.get_one::<i64>("user-id"), Some(&12345));
+    }
+
+    #[test]
+    fn query_subcommand_parses() {
+        let matches = build_cli()
+            .try_get_matches_from(["rustnet", "query", "--filter", "proto:TCP"])
+            .expect("query subcommand should parse");
+        let sub = matches.subcommand_matches("query").expect("query subcommand");
+        assert_eq!(
+            sub.get_one::<String>("filter").map(String::as_str),
+            Some("proto:TCP")
+        );
+    }
+
+    #[test]
+    fn query_subcommand_with_sql() {
+        let matches = build_cli()
+            .try_get_matches_from(["rustnet", "query", "--sql", "SELECT COUNT(*) FROM connection_events"])
+            .expect("query --sql should parse");
+        let sub = matches.subcommand_matches("query").expect("query subcommand");
+        assert_eq!(
+            sub.get_one::<String>("sql").map(String::as_str),
+            Some("SELECT COUNT(*) FROM connection_events")
+        );
+    }
+
+    #[test]
+    fn query_subcommand_with_live() {
+        let matches = build_cli()
+            .try_get_matches_from(["rustnet", "query", "--live"])
+            .expect("query --live should parse");
+        let sub = matches.subcommand_matches("query").expect("query subcommand");
+        assert!(sub.get_flag("live"));
     }
 }
