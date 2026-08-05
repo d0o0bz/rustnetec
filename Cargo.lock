@@ -2819,6 +2819,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sha2 0.11.0",
+ "signal-hook",
  "simplelog",
  "tiny_http",
  "windows 0.62.2",

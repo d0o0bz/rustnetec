@@ -717,6 +717,7 @@ fn main() -> Result<()> {
             let state = std::sync::Arc::new(telemetry::http::HttpState {
                 db_path,
                 http_token,
+                should_stop: app.should_stop_handle(),
             });
 
             if let Err(e) = telemetry::http::start_http_server(http_port, state) {
@@ -987,15 +988,42 @@ use ui::{clear_all_with_confirmation, copy_to_clipboard, sort_connections};
 /// The capture pipeline runs in background threads started by App;
 /// this function just keeps the main thread alive until a shutdown signal.
 fn run_daemon_loop(app: &app::App) {
-    info!("Daemon loop started, waiting for shutdown signal (Ctrl+C or SIGTERM)");
+    // rustnetec: 偏差2 修复 — 注册 SIGTERM/SIGINT handler 触发优雅退出
+    //
+    // 之前 run_daemon_loop 注释「rely on ctrlc」是错误假设：全项目无 ctrlc
+    // handler 注册，SIGTERM 会直接终止进程，SQLite WAL 可能未 checkpoint。
+    //
+    // 使用 signal-hook 注册 SIGINT/SIGTERM/HUP/QUIT，收到信号后调用 app.stop()
+    // 设置 should_stop，capture thread 检测后优雅退出，run_daemon_loop 随后 break。
+    use signal_hook::consts::signal::{SIGHUP, SIGINT, SIGQUIT, SIGTERM};
+    use signal_hook::flag;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
 
-    // Simple loop: sleep and check for shutdown
-    // The App's should_stop flag is set by the signal handler in the TUI path;
-    // in daemon mode, we rely on ctrlc or SIGTERM to trigger the App's stop.
+    let shutdown_flag = Arc::new(AtomicBool::new(false));
+    // best-effort registration; failure here only means we can't catch
+    // that particular signal, not that the daemon is broken.
+    for sig in [SIGINT, SIGTERM, SIGHUP, SIGQUIT] {
+        let _ = flag::register(sig, Arc::clone(&shutdown_flag));
+    }
+
+    info!(
+        "Daemon loop started, waiting for shutdown signal (Ctrl+C or SIGTERM) — signal-hook registered"
+    );
+
     loop {
         std::thread::sleep(Duration::from_secs(1));
+
+        if shutdown_flag.load(std::sync::atomic::Ordering::Relaxed) {
+            info!("Shutdown signal received via signal-hook, stopping app");
+            app.stop();
+            break;
+        }
+
+        // 兼容路径：若 should_stop 已被其他机制置位（如 HTTP restart-capture），
+        // 也应退出 daemon loop。
         if app.is_stopping() {
-            info!("Shutdown signal received, exiting daemon loop");
+            info!("Shutdown signaled via app.is_stopping(), exiting daemon loop");
             break;
         }
     }

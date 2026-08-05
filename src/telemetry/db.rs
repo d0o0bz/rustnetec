@@ -516,6 +516,12 @@ impl SqliteSink {
     pub fn default_db_path() -> Result<PathBuf> {
         crate::telemetry::paths::db_path()
     }
+
+    /// 测试辅助：直接对给定连接执行清理逻辑（偏差4 / T1.9 集成测试用）。
+    /// 生产代码通过 write_loop 内部调用私有的 run_cleanup。
+    pub fn run_cleanup_for_test(conn: &Connection, retention_days: u32) -> Result<()> {
+        Self::run_cleanup(conn, retention_days)
+    }
 }
 
 impl ConnectionEventSink for SqliteSink {

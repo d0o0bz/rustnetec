@@ -3089,6 +3089,44 @@ impl App {
         self.should_stop.load(Ordering::Relaxed)
     }
 
+    // rustnetec: Restart capture pipeline (偏差5, T1.5)
+    //
+    // 架构约束：capture thread 在特权期打开 raw socket，uid drop 后无法重开。
+    // 因此 restart_capture 的诚实实现是「优雅停止旧捕获线程 + 标记 pending_restart」，
+    // 由调用方（HTTP 端点）告知用户「需重启进程以新配置恢复捕获」。
+    //
+    // 这与 T1.5「停止当前捕获线程 → 用新配置启动捕获线程」的精神一致：
+    // 停止步骤完整实现，重启步骤因特权限制降级为「标记 + 提示进程重启」。
+    //
+    // 返回 true 表示捕获线程已触发停止；false 表示本就处于停止状态。
+    pub fn restart_capture(&self) -> bool {
+        if self.should_stop.load(Ordering::Relaxed) {
+            // Already stopping/stopped — nothing to do
+            return false;
+        }
+
+        info!("restart_capture: stopping capture thread for config reload");
+        // should_stop 由 capture thread 在 loop 顶部检测并优雅退出
+        self.should_stop.store(true, Ordering::Relaxed);
+
+        // 注意：不重置 should_stop = false，因为无法重启 raw socket。
+        // 进程重启是恢复捕获的唯一路径。
+        true
+    }
+
+    /// 是否正在重启捕获（用于 /live 过渡状态判断）。
+    /// 当 should_stop 已置位但进程尚未退出时，视为「捕获重启中」。
+    pub fn is_restarting_capture(&self) -> bool {
+        self.should_stop.load(Ordering::Relaxed)
+    }
+
+    // rustnetec: 暴露 should_stop 的 Arc clone，供 HTTP server 通过
+    // HttpState 触发 restart_capture（偏差5）。Arc<AtomicBool> 是 Send + Sync，
+    // 可安全跨线程共享，且 restart_capture 仅做 atomic store，无锁竞争。
+    pub fn should_stop_handle(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.should_stop)
+    }
+
     /// Stop all threads gracefully
     pub fn stop(&self) {
         info!("Stopping application");

@@ -14,6 +14,7 @@ use log::{info, warn};
 use std::io::Read;
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::thread;
 
@@ -23,6 +24,12 @@ pub struct HttpState {
     pub db_path: PathBuf,
     /// HTTP authentication token (Bearer).
     pub http_token: String,
+    /// Shared handle to App's `should_stop` flag (偏差5, T1.5).
+    ///
+    /// `POST /config/restart-capture` sets this to `true` to gracefully stop
+    /// the capture thread. The flag is `Arc<AtomicBool>` (Send + Sync), safe
+    /// to share with the HTTP server thread without touching `App`'s ownership.
+    pub should_stop: Arc<AtomicBool>,
 }
 
 /// Start the HTTP server on a background thread.
@@ -253,7 +260,7 @@ fn handle_put_config(mut request: tiny_http::Request, _state: &HttpState) {
 }
 
 /// POST /config/restart-capture — restart capture with pending items.
-fn handle_restart_capture(mut request: tiny_http::Request, _state: &HttpState) {
+fn handle_restart_capture(mut request: tiny_http::Request, state: &HttpState) {
     let mut body = String::new();
     if let Err(e) = request.as_reader().read_to_string(&mut body) {
         let response = serde_json::json!({"error": format!("failed to read body: {}", e)});
@@ -270,11 +277,27 @@ fn handle_restart_capture(mut request: tiny_http::Request, _state: &HttpState) {
         return;
     }
 
-    // TODO: Implement actual capture restart logic
+    // rustnetec: 偏差5 修复 — 真正触发 capture thread 停止
+    //
+    // 架构约束：capture thread 在特权期打开 raw socket，uid drop 后无法重开。
+    // 因此 restart_capture 的实现是「优雅停止旧捕获线程」，无法在本进程内
+    // 用新配置重启 raw socket。响应明确告知调用方「需重启进程以新配置恢复捕获」。
+    //
+    // 这与 T1.5「停止当前捕获线程」一致；「用新配置启动捕获线程」步骤因特权
+    // 限制降级为「标记 + 提示进程重启」。如果未来在「uid drop 前 restart」
+    // 或「保留 raw socket fd 并 reopen」方向有突破，可在此处恢复完整重启逻辑。
+    let was_capturing = !state.should_stop.load(std::sync::atomic::Ordering::Relaxed);
+    if was_capturing {
+        info!("restart-capture: stopping capture thread for config reload");
+        state
+            .should_stop
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
 
     let response = serde_json::json!({
         "status": "ok",
-        "note": "capture restart placeholder — App integration pending"
+        "capture_stopped": was_capturing,
+        "note": "capture thread stopped for config reload — restart the process to resume capture with the new configuration (raw socket cannot be reopened after uid drop)"
     });
     let _ = respond_json(request, 200, &response);
 }
@@ -470,10 +493,13 @@ mod tests {
 
     #[test]
     fn http_state_creation() {
+        use std::sync::atomic::AtomicBool;
         let state = HttpState {
             db_path: PathBuf::from("/tmp/test.db"),
             http_token: "test-token".to_string(),
+            should_stop: Arc::new(AtomicBool::new(false)),
         };
         assert_eq!(state.http_token, "test-token");
+        assert!(!state.should_stop.load(std::sync::atomic::Ordering::Relaxed));
     }
 }

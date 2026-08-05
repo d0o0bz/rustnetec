@@ -81,6 +81,8 @@ serde_yaml = "0.9" # rustnetec: YAML serialization for PersistentConfig
 rusqlite = { version = "0.32", features = ["bundled"] } # rustnetec: SQLite for local data persistence (R2)
 blake3 = "1.5" # rustnetec: BLAKE3 hash for machine_id (R10)
 tiny_http = "0.12" # rustnetec: lightweight HTTP server for local loopback (R5)
+# rustnetec: signal handling for daemon mode graceful shutdown (偏差2, R1)
+signal-hook = "0.3"
 regex-lite = "0.1"
 # Note: dns-lookup, ring, aes, flate2, and maxminddb moved to rustnet-core,
 # which is the only place they are used. They are re-exported transitively
