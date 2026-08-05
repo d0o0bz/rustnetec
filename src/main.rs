@@ -16,6 +16,11 @@ fn main() -> Result<()> {
     // Parse command line arguments
     let matches = cli::build_cli().get_matches();
 
+    // rustnetec: Handle `query` subcommand early (independent of TUI/daemon mode)
+    if let Some(query_matches) = matches.subcommand_matches("query") {
+        return run_query_subcommand(query_matches);
+    }
+
     // Set up logging only if log-level was provided
     if let Some(log_level_str) = matches.get_one::<String>("log-level") {
         let log_level = log_level_str
@@ -37,6 +42,56 @@ fn main() -> Result<()> {
     // rustnetec: Ensure data and config directories exist, chown before uid drop
     if let Err(e) = telemetry::paths::ensure_dirs() {
         warn!("Failed to create data/config directories: {}", e);
+    }
+
+    // rustnetec: Initialize host identity (R8+R10, T1.6)
+    // Load PersistentConfig, generate missing user_id/machine_id, save back if needed.
+    {
+        let mut pc = match rustnet_monitor::config::PersistentConfig::load() {
+            Ok(c) => c,
+            Err(e) => {
+                warn!("Failed to load config.yml, using defaults: {}", e);
+                rustnet_monitor::config::PersistentConfig::default()
+            }
+        };
+
+        // Apply CLI overrides for identity fields
+        if let Some(username) = matches.get_one::<String>("username") {
+            pc.username = Some(username.clone());
+        }
+        if let Some(user_id_str) = matches.get_one::<String>("user-id") {
+            if let Ok(uid) = user_id_str.parse::<i64>() {
+                pc.user_id = Some(uid);
+            }
+        }
+        if let Some(machine_id) = matches.get_one::<String>("machine-id") {
+            pc.machine_id = Some(machine_id.clone());
+        }
+
+        let (identity, needs_save) = telemetry::identity::HostIdentity::initialize(
+            pc.username.as_deref(),
+            pc.user_id,
+            pc.machine_id.as_deref(),
+        );
+
+        // Log identity info before potential move
+        let mid_prefix = &identity.machine_id[..8.min(identity.machine_id.len())];
+        info!("Host identity: machine_id={}..., user_id={}, username={}",
+              mid_prefix, identity.user_id, identity.username);
+
+        if needs_save {
+            // Write back generated fields to config.yml
+            pc.user_id = Some(identity.user_id);
+            pc.machine_id = Some(identity.machine_id);
+            if pc.username.is_none() {
+                pc.username = Some(identity.username.clone());
+            }
+            if let Err(e) = pc.save() {
+                warn!("Failed to save config.yml with identity: {}", e);
+            } else {
+                info!("Host identity initialized and saved: user_id={}", identity.user_id);
+            }
+        }
     }
 
     // Build configuration from command line arguments
@@ -527,9 +582,13 @@ fn main() -> Result<()> {
             paths
         };
 
+        // rustnetec: Read --sandbox-allow-network for data upload host (R3, T1.8)
+        let allowed_network_host = matches.get_one::<String>("sandbox-allow-network").cloned();
+
         let sandbox_config = SandboxConfig {
             mode: sandbox_mode,
             block_network: true, // RustNet is passive, doesn't need TCP
+            allowed_network_host, // rustnetec: specific host allow for data upload
             log_dir,
             json_log_path: config.json_log_file,
             pcap_export_path: config.pcap_export_file,
@@ -641,6 +700,32 @@ fn main() -> Result<()> {
 
     // rustnetec: Branch on run mode
     if daemon_mode || tray_mode {
+        // rustnetec: Start HTTP server in daemon/tray mode (R5, T1.4)
+        {
+            let http_port = matches.get_one::<u16>("http-port").copied().unwrap_or(19811);
+            let db_path = telemetry::paths::db_path().unwrap_or_else(|_| std::path::PathBuf::from("data.db"));
+            let http_token = {
+                // Load token from PersistentConfig; generate if missing
+                let mut pc = rustnet_monitor::config::PersistentConfig::load().unwrap_or_default();
+                if pc.http_token.is_none() {
+                    pc.http_token = Some(rustnet_monitor::config::PersistentConfig::generate_http_token());
+                    let _ = pc.save();
+                }
+                pc.http_token.unwrap_or_default()
+            };
+
+            let state = std::sync::Arc::new(telemetry::http::HttpState {
+                db_path,
+                http_token,
+            });
+
+            if let Err(e) = telemetry::http::start_http_server(http_port, state) {
+                warn!("Failed to start HTTP server: {}", e);
+            } else {
+                info!("HTTP server started on 127.0.0.1:{}", http_port);
+            }
+        }
+
         // Daemon mode: no TUI, just wait for shutdown signal
         run_daemon_loop(&app);
     } else {
@@ -914,6 +999,18 @@ fn run_daemon_loop(app: &app::App) {
             break;
         }
     }
+}
+
+// rustnetec: Handle `rustnet query` subcommand (R5, T1.3)
+fn run_query_subcommand(matches: &clap::ArgMatches) -> Result<()> {
+    let db_path = matches.get_one::<String>("db")
+        .map(|s| std::path::PathBuf::from(s))
+        .unwrap_or_else(|| std::path::PathBuf::new());
+    let filter = matches.get_one::<String>("filter").map(|s| s.as_str());
+    let sql = matches.get_one::<String>("sql").map(|s| s.as_str());
+    let live = matches.get_flag("live");
+
+    telemetry::query::run_query(&db_path, filter, sql, live)
 }
 
 fn run_ui_loop<B: ratatui::prelude::Backend>(

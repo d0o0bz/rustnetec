@@ -156,10 +156,36 @@ const SBPL_NETWORK_DENY: &str = r#"
     (remote unix-socket))
 "#;
 
+/// rustnetec: Network allow SBPL section for specific host (R3, T1.8).
+/// When `--sandbox-allow-network` is specified, allow outbound connections
+/// to that host (for data upload) and DNS (port 53) for name resolution.
+/// This section is inserted BEFORE the deny rule so SBPL specificity
+/// gives the allow rule precedence.
+fn build_network_allow_section(host: &str) -> String {
+    format!(
+        r#"
+;; rustnetec: Allow outbound network to specified host (data upload)
+(allow network-outbound
+    (remote tcp)
+    (remote host "{host}")
+    (remote port 0-65535))
+
+;; rustnetec: Allow DNS resolution (port 53) for the specified host
+(allow network-outbound
+    (remote udp)
+    (remote port 53))
+"#,
+        host = escape_sbpl_path(host)
+    )
+}
+
 /// Build the complete SBPL profile string based on configuration.
-fn build_sbpl_profile(block_network: bool) -> String {
+fn build_sbpl_profile(block_network: bool, allowed_network_host: Option<&str>) -> String {
     if block_network {
-        format!("{}{}", SBPL_PROFILE_BASE, SBPL_NETWORK_DENY)
+        let allow_section = allowed_network_host
+            .map(|h| build_network_allow_section(h))
+            .unwrap_or_default();
+        format!("{}{}{}", SBPL_PROFILE_BASE, allow_section, SBPL_NETWORK_DENY)
     } else {
         SBPL_PROFILE_BASE.to_string()
     }
@@ -170,7 +196,7 @@ fn build_sbpl_profile(block_network: bool) -> String {
 /// The caller (`apply_sandbox` in mod.rs) handles the `Disabled` mode check,
 /// so this function assumes sandboxing is requested.
 pub fn apply_seatbelt(config: &SandboxConfig) -> Result<SeatbeltResult> {
-    let profile = build_sbpl_profile(config.block_network);
+    let profile = build_sbpl_profile(config.block_network, config.allowed_network_host.as_deref());
     let profile_cstr = CString::new(profile).context("Profile contains null byte")?;
     let params = build_parameters(config).context("Failed to build sandbox parameters")?;
 
@@ -380,6 +406,7 @@ mod tests {
         let config = SandboxConfig {
             mode: SandboxMode::BestEffort,
             block_network: true,
+            allowed_network_host: None,
             log_dir: None,
             json_log_path: None,
             pcap_export_path: None,
@@ -404,6 +431,7 @@ mod tests {
         let config = SandboxConfig {
             mode: SandboxMode::BestEffort,
             block_network: true,
+            allowed_network_host: None,
             log_dir: Some("/tmp/rustnet/logs".to_string()),
             json_log_path: Some("/tmp/rustnet/events.jsonl".to_string()),
             pcap_export_path: Some("/tmp/rustnet/capture.pcap".to_string()),
@@ -433,6 +461,7 @@ mod tests {
         let config = SandboxConfig {
             mode: SandboxMode::BestEffort,
             block_network: true,
+            allowed_network_host: None,
             log_dir: None,
             json_log_path: None,
             pcap_export_path: None,
@@ -498,9 +527,11 @@ mod tests {
     #[test]
     fn test_profile_variants_are_valid_cstrings() {
         CString::new(SBPL_PROFILE_BASE).expect("SBPL_PROFILE_BASE must not contain null bytes");
-        CString::new(build_sbpl_profile(true)).expect("full profile must not contain null bytes");
-        CString::new(build_sbpl_profile(false))
+        CString::new(build_sbpl_profile(true, None)).expect("full profile must not contain null bytes");
+        CString::new(build_sbpl_profile(false, None))
             .expect("base-only profile must not contain null bytes");
+        CString::new(build_sbpl_profile(true, Some("upload.example.com")))
+            .expect("profile with network allow must not contain null bytes");
     }
 
     #[test]
@@ -508,7 +539,7 @@ mod tests {
         // Both with and without network blocking, the base profile must deny
         // reads of the system credential stores rustnet never needs.
         for block_network in [true, false] {
-            let profile = build_sbpl_profile(block_network);
+            let profile = build_sbpl_profile(block_network, None);
             for store in ["/Library/Keychains", "/private/var/db/dslocal", "/etc/ssh"] {
                 assert!(
                     profile.contains(store),
@@ -520,7 +551,7 @@ mod tests {
 
     #[test]
     fn test_profile_includes_network_deny_when_block_network_true() {
-        let profile = build_sbpl_profile(true);
+        let profile = build_sbpl_profile(true, None);
         assert!(
             profile.contains("deny network-outbound"),
             "Expected network deny in profile when block_network=true"
@@ -529,7 +560,7 @@ mod tests {
 
     #[test]
     fn test_profile_excludes_network_deny_when_block_network_false() {
-        let profile = build_sbpl_profile(false);
+        let profile = build_sbpl_profile(false, None);
         assert!(
             !profile.contains("deny network-outbound"),
             "Expected no network deny in profile when block_network=false"
@@ -538,7 +569,7 @@ mod tests {
 
     #[test]
     fn test_profile_includes_file_read_deny() {
-        let profile = build_sbpl_profile(false);
+        let profile = build_sbpl_profile(false, None);
         assert!(
             profile.contains("deny file-read-data"),
             "Expected file-read-data deny in profile"
@@ -555,7 +586,7 @@ mod tests {
 
     #[test]
     fn test_profile_includes_process_exec_deny() {
-        let profile = build_sbpl_profile(false);
+        let profile = build_sbpl_profile(false, None);
         assert!(
             profile.contains("(deny process-exec)"),
             "Expected process-exec deny in profile"
@@ -572,7 +603,7 @@ mod tests {
 
     #[test]
     fn test_profile_includes_geoip_read_allow() {
-        let profile = build_sbpl_profile(false);
+        let profile = build_sbpl_profile(false, None);
         assert!(
             profile.contains(r#"(param "GEOIP_PATH_1")"#),
             "Expected GEOIP_PATH_1 parameter in profile"
@@ -584,6 +615,34 @@ mod tests {
         assert!(
             profile.contains(r#"(param "GEOIP_PATH_3")"#),
             "Expected GEOIP_PATH_3 parameter in profile"
+        );
+    }
+
+    // rustnetec: Test network allow section (R3, T1.8)
+    #[test]
+    fn test_profile_includes_network_allow_for_specified_host() {
+        let profile = build_sbpl_profile(true, Some("upload.example.com"));
+        assert!(
+            profile.contains(r#"remote host "upload.example.com""#),
+            "Expected network allow for specified host"
+        );
+        assert!(
+            profile.contains("remote port 53"),
+            "Expected DNS allow (port 53)"
+        );
+        // The deny rule should still be present
+        assert!(
+            profile.contains("deny network-outbound"),
+            "Expected network deny rule still present"
+        );
+    }
+
+    #[test]
+    fn test_profile_excludes_network_allow_when_no_host() {
+        let profile = build_sbpl_profile(true, None);
+        assert!(
+            !profile.contains("remote host"),
+            "Expected no network allow when no host specified"
         );
     }
 }

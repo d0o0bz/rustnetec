@@ -38,6 +38,8 @@ pub struct SandboxConfig {
     pub mode: SandboxMode,
     /// Block outbound TCP/UDP connections (recommended for passive monitors)
     pub block_network: bool,
+    /// rustnetec: Allow outbound network to specified host (for data upload; DNS on port 53 also allowed) (R3, T1.8)
+    pub allowed_network_host: Option<String>,
     /// Log directory path that needs write access
     pub log_dir: Option<String>,
     /// JSON log file path that needs write access

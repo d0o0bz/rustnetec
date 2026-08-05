@@ -1,6 +1,10 @@
 // rustnetec: Telemetry module for data persistence, event sinks, and identity.
 
+pub mod db; // rustnetec: SqliteSink for local data persistence (R2)
+pub mod http; // rustnetec: Local loopback HTTP service (R5, T1.4)
+pub mod identity; // rustnetec: Host identity — snowflake user_id + BLAKE3 machine_id (R8+R10, T1.6)
 pub mod paths;
+pub mod query; // rustnetec: query subcommand with filter-to-SQL translation (R5, T1.3)
 
 use serde::Serialize;
 use std::sync::Arc;
