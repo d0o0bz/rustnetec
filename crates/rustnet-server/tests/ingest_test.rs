@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use rusqlite::Connection;
 use rustnet_core::ingest::{ClientEvent, IngestRequest, IngestResponse};
-use rustnet_server::db::{init as init_db, ingest_write, Error, ServerDbConfig};
+use rustnet_server::db::{Error, ServerDbConfig, ingest_write, init as init_db};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -14,7 +14,10 @@ use rustnet_server::db::{init as init_db, ingest_write, Error, ServerDbConfig};
 
 fn tmp_db_path(label: &str) -> PathBuf {
     let mut p = std::env::temp_dir();
-    p.push(format!("rustnet-server-test-{label}-{}.db", std::process::id()));
+    p.push(format!(
+        "rustnet-server-test-{label}-{}.db",
+        std::process::id()
+    ));
     // Remove a leftover from a prior run so tests start clean.
     let _ = std::fs::remove_file(&p);
     let _ = std::fs::remove_file(p.with_extension("db-wal"));

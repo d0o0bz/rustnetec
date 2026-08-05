@@ -186,7 +186,10 @@ fn build_sbpl_profile(block_network: bool, allowed_network_host: Option<&str>) -
             // rustnetec: 消除 clippy redundant_closure,直接传函数引用替代单参闭包
             .map(build_network_allow_section)
             .unwrap_or_default();
-        format!("{}{}{}", SBPL_PROFILE_BASE, allow_section, SBPL_NETWORK_DENY)
+        format!(
+            "{}{}{}",
+            SBPL_PROFILE_BASE, allow_section, SBPL_NETWORK_DENY
+        )
     } else {
         SBPL_PROFILE_BASE.to_string()
     }
@@ -528,7 +531,8 @@ mod tests {
     #[test]
     fn test_profile_variants_are_valid_cstrings() {
         CString::new(SBPL_PROFILE_BASE).expect("SBPL_PROFILE_BASE must not contain null bytes");
-        CString::new(build_sbpl_profile(true, None)).expect("full profile must not contain null bytes");
+        CString::new(build_sbpl_profile(true, None))
+            .expect("full profile must not contain null bytes");
         CString::new(build_sbpl_profile(false, None))
             .expect("base-only profile must not contain null bytes");
         CString::new(build_sbpl_profile(true, Some("upload.example.com")))

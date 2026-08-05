@@ -34,8 +34,8 @@ fn open_read_only(path: &std::path::Path) -> Connection {
 
 #[test]
 fn sqlite_sink_persists_and_query_reads_back() {
-    use rustnet_monitor::telemetry::{ConnectionEventData, ConnectionEventSink};
     use rustnet_monitor::telemetry::db::SqliteSink;
+    use rustnet_monitor::telemetry::{ConnectionEventData, ConnectionEventSink};
 
     let tmp = std::env::temp_dir().join("rustnetec-it-persist");
     let _ = std::fs::remove_dir_all(&tmp);
@@ -43,8 +43,8 @@ fn sqlite_sink_persists_and_query_reads_back() {
     let db_path = tmp.join("data.db");
 
     {
-        let sink = SqliteSink::new(Some(db_path.clone()), test_runtime_config())
-            .expect("SqliteSink::new");
+        let sink =
+            SqliteSink::new(Some(db_path.clone()), test_runtime_config()).expect("SqliteSink::new");
 
         let event = ConnectionEventData {
             timestamp: chrono::Local::now().to_rfc3339(),
@@ -120,14 +120,14 @@ fn host_identity_stable_across_reinit() {
     assert!(!id1.machine_id.is_empty(), "machine_id should not be empty");
 
     // 第二次初始化：传入上次生成的值，应保持稳定且不再请求 save
-    let (id2, needs_save2) =
-        HostIdentity::initialize(Some(&id1.username), Some(id1.user_id), Some(&id1.machine_id));
+    let (id2, needs_save2) = HostIdentity::initialize(
+        Some(&id1.username),
+        Some(id1.user_id),
+        Some(&id1.machine_id),
+    );
     assert!(!needs_save2, "re-init with provided ids should not save");
     assert_eq!(id1.user_id, id2.user_id, "user_id must be stable");
-    assert_eq!(
-        id1.machine_id, id2.machine_id,
-        "machine_id must be stable"
-    );
+    assert_eq!(id1.machine_id, id2.machine_id, "machine_id must be stable");
 }
 
 // ---- T1.9.3 清理逻辑：未上传暂留，已上传过期删除 ----
@@ -176,9 +176,11 @@ fn cleanup_retains_unuploaded_expired_events() {
     )
     .unwrap();
     let cursor: i64 = conn
-        .query_row("SELECT last_uploaded_event_id FROM upload_cursor WHERE id=1", [], |r| {
-            r.get(0)
-        })
+        .query_row(
+            "SELECT last_uploaded_event_id FROM upload_cursor WHERE id=1",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(cursor, 2, "upload_cursor should be advanced to 2");
 
@@ -189,10 +191,7 @@ fn cleanup_retains_unuploaded_expired_events() {
         .query_row("SELECT COUNT(*) FROM connection_events", [], |r| r.get(0))
         .unwrap();
     // 已上传过期 (id=1,2) 删除；未上传过期 (id=3) 保留 → 剩 1 条
-    assert_eq!(
-        remaining, 1,
-        "only unuploaded expired event should remain"
-    );
+    assert_eq!(remaining, 1, "only unuploaded expired event should remain");
 
     let _ = std::fs::remove_dir_all(&tmp);
 }
@@ -257,7 +256,8 @@ fn autostart_config_roundtrip_preserves_fields() {
         "autostart_enabled should round-trip"
     );
     assert_eq!(
-        loaded.autostart_mode, AutostartMode::Daemon,
+        loaded.autostart_mode,
+        AutostartMode::Daemon,
         "autostart_mode should round-trip"
     );
 
@@ -281,7 +281,8 @@ fn autostart_config_roundtrip_preserves_fields() {
         "default autostart_enabled should be false"
     );
     assert_eq!(
-        fresh.autostart_mode, AutostartMode::Daemon,
+        fresh.autostart_mode,
+        AutostartMode::Daemon,
         "default autostart_mode should be Daemon"
     );
 
@@ -323,8 +324,7 @@ fn autostart_mode_tray_variant_only_with_feature() {
         );
         // Sanity: the Daemon variant still parses fine.
         let daemon_yaml = "autostart_mode: Daemon\n";
-        let daemon_result: Result<PersistentConfig, _> =
-            serde_yaml::from_str(daemon_yaml);
+        let daemon_result: Result<PersistentConfig, _> = serde_yaml::from_str(daemon_yaml);
         assert!(daemon_result.is_ok(), "Daemon should always parse");
     }
     #[cfg(feature = "tray")]

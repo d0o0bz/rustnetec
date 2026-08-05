@@ -5,9 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use rustnet_server::cleanup::spawn_cleanup_task;
-use rustnet_server::db::{
-    init, partition, purge_expired, ServerDb, ServerDbConfig,
-};
+use rustnet_server::db::{ServerDb, ServerDbConfig, init, partition, purge_expired};
 
 fn tmp_db(label: &str) -> PathBuf {
     static SEQ: AtomicU64 = AtomicU64::new(0);
@@ -249,11 +247,7 @@ async fn cleanup_task_retries_after_failure() {
     insert_old_event(&db);
 
     let db = std::sync::Arc::new(db);
-    let handle = spawn_cleanup_task(
-        std::sync::Arc::clone(&db),
-        90,
-        Duration::from_millis(30),
-    );
+    let handle = spawn_cleanup_task(std::sync::Arc::clone(&db), 90, Duration::from_millis(30));
 
     tokio::time::sleep(Duration::from_millis(150)).await;
     handle.abort();

@@ -7,20 +7,18 @@
 //! - 服务端过期数据定时清理 (retention::purge_expired 删旧数据, query 确认已删)
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::RwLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use mockito::Server;
 use rusqlite::params;
-use rustnet_core::ingest::{
-    IngestRequest, QueryParams, QueryResponse, StatsResponse,
-};
+use rustnet_core::ingest::{IngestRequest, QueryParams, QueryResponse, StatsResponse};
 use rustnet_monitor::config::{PersistentConfig, RuntimeConfig};
 use rustnet_monitor::telemetry::db::SqliteSink;
 use rustnet_monitor::telemetry::identity::HostIdentity;
 use rustnet_monitor::telemetry::upload::UploadSink;
-use rustnet_server::db::{self, retention, ServerDbConfig};
+use rustnet_server::db::{self, ServerDbConfig, retention};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -31,7 +29,10 @@ fn tmp_db(tag: &str) -> std::path::PathBuf {
     static SEQ: AtomicU64 = AtomicU64::new(0);
     let n = SEQ.fetch_add(1, Ordering::SeqCst);
     let mut p = std::env::temp_dir();
-    p.push(format!("rustnet-p2-e2e-{}-{tag}-{n}.db", std::process::id()));
+    p.push(format!(
+        "rustnet-p2-e2e-{}-{tag}-{n}.db",
+        std::process::id()
+    ));
     let _ = std::fs::remove_file(&p);
     p
 }
@@ -124,7 +125,11 @@ fn full_chain_client_upload_to_server_query_stats() {
     let _ = handle.join();
 
     m.assert();
-    assert_eq!(read_cursor(&client_db), 2, "client cursor should advance to 2");
+    assert_eq!(
+        read_cursor(&client_db),
+        2,
+        "client cursor should advance to 2"
+    );
 
     // 验证服务端数据: query_events 全量
     let query_resp: QueryResponse = server_db
@@ -140,8 +145,14 @@ fn full_chain_client_upload_to_server_query_stats() {
 
     // 验证服务端 stats
     let stats: StatsResponse = server_db.stats().unwrap();
-    assert!(stats.total_events >= 2, "stats total_events should include uploaded");
-    assert!(!stats.hosts.is_empty(), "stats should list at least one host");
+    assert!(
+        stats.total_events >= 2,
+        "stats total_events should include uploaded"
+    );
+    assert!(
+        !stats.hosts.is_empty(),
+        "stats should list at least one host"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -195,7 +206,10 @@ fn ip_list_changes_but_user_id_stable() {
     assert_eq!(req.user_id, "99999", "user_id should be stable");
     assert_eq!(req.machine_id, "machine-e2e", "machine_id should be stable");
     // ip_list 反映最新采集 (非空, 含本机地址)
-    assert!(!req.ip_list.is_empty(), "ip_list should be freshly collected");
+    assert!(
+        !req.ip_list.is_empty(),
+        "ip_list should be freshly collected"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -253,7 +267,11 @@ fn network_outage_then_recovery_replays_all() {
     m_ok.assert();
 
     // 补传后 cursor 推进, 服务端数据完整 (2 条)
-    assert_eq!(read_cursor(&client_db), 2, "cursor should advance after recovery");
+    assert_eq!(
+        read_cursor(&client_db),
+        2,
+        "cursor should advance after recovery"
+    );
     let query_resp: QueryResponse = server_db
         .query_events(&QueryParams {
             from: None,
@@ -263,7 +281,11 @@ fn network_outage_then_recovery_replays_all() {
             limit: Some(100),
         })
         .unwrap();
-    assert_eq!(query_resp.rows.len(), 2, "server should hold all replayed events");
+    assert_eq!(
+        query_resp.rows.len(),
+        2,
+        "server should hold all replayed events"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -300,7 +322,7 @@ fn server_purge_expired_removes_old_events() {
     };
     assert_eq!(
         report.events_deleted, 1,
-        "only the stale event should be purged (fresh should survive)", 
+        "only the stale event should be purged (fresh should survive)",
     );
 
     // query 确认陈旧已删, 新鲜保留
@@ -313,5 +335,9 @@ fn server_purge_expired_removes_old_events() {
             limit: Some(100),
         })
         .unwrap();
-    assert_eq!(query_resp.rows.len(), 1, "only the fresh event should remain");
+    assert_eq!(
+        query_resp.rows.len(),
+        1,
+        "only the fresh event should remain"
+    );
 }

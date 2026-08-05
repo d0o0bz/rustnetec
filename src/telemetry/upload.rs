@@ -19,9 +19,9 @@ use rusqlite::Connection;
 use rustnet_core::ingest::{ClientEvent, IngestRequest, IngestResponse};
 
 use crate::config::RuntimeConfig;
+use crate::telemetry::ConnectionEventData;
 use crate::telemetry::db::SqliteSink;
 use crate::telemetry::identity::HostIdentity;
-use crate::telemetry::ConnectionEventData;
 
 /// HTTP 请求超时 (秒)。服务端 hang 时不让上报线程永久阻塞。
 const REQUEST_TIMEOUT_SECS: u64 = 60;
@@ -116,11 +116,11 @@ impl UploadSink {
 
                     // 读 server_url / server_token; 若中途清空则跳过本轮
                     let (server_url, server_token) = {
-                        let rc = self.runtime_config.read().unwrap_or_else(|e| e.into_inner());
-                        (
-                            rc.server_url.clone(),
-                            rc.server_token.clone(),
-                        )
+                        let rc = self
+                            .runtime_config
+                            .read()
+                            .unwrap_or_else(|e| e.into_inner());
+                        (rc.server_url.clone(), rc.server_token.clone())
                     };
                     let Some(url) = server_url else {
                         // 未配置服务端, 跳过 (不打退避, 下次 interval 再看)
@@ -128,7 +128,9 @@ impl UploadSink {
                         continue;
                     };
                     if server_token.is_none() {
-                        warn!("Upload thread: server_url set but server_token missing, skipping batch");
+                        warn!(
+                            "Upload thread: server_url set but server_token missing, skipping batch"
+                        );
                         backoff_secs = BACKOFF_BASE_SECS;
                         continue;
                     }
@@ -207,7 +209,8 @@ impl UploadSink {
 
         match resp {
             Ok(response) => {
-                let ingest_resp: IngestResponse = response.into_json()
+                let ingest_resp: IngestResponse = response
+                    .into_json()
                     .context("failed to parse IngestResponse")?;
                 // 6. 推进 upload_cursor 到本批次 max id
                 //    (服务端幂等去重, 即使部分重复也安全推进)
@@ -261,5 +264,9 @@ fn map_event_to_client_event(local_event_id: i64, ev: &ConnectionEventData) -> C
 
 /// 解析 RFC 3339 时间戳为 Unix 毫秒。失败返回 None。
 fn parse_ts_to_millis(ts: &str) -> Option<i64> {
-    Some(chrono::DateTime::parse_from_rfc3339(ts).ok()?.timestamp_millis())
+    Some(
+        chrono::DateTime::parse_from_rfc3339(ts)
+            .ok()?
+            .timestamp_millis(),
+    )
 }

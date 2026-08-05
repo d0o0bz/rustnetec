@@ -191,7 +191,10 @@ mod tests {
 
     fn hdr(value: &str) -> axum::http::HeaderMap {
         let mut m = axum::http::HeaderMap::new();
-        m.insert(axum::http::header::AUTHORIZATION, HeaderValue::from_str(value).unwrap());
+        m.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_str(value).unwrap(),
+        );
         m
     }
 
@@ -210,7 +213,10 @@ mod tests {
     fn extract_bearer_variants() {
         assert_eq!(extract_bearer(&hdr("Bearer abc")).unwrap(), "abc");
         assert_eq!(extract_bearer(&hdr("bearer abc")).unwrap(), "abc");
-        assert!(matches!(extract_bearer(&hdr("abc")), Err(AuthError::MissingToken)));
+        assert!(matches!(
+            extract_bearer(&hdr("abc")),
+            Err(AuthError::MissingToken)
+        ));
         assert!(matches!(
             extract_bearer(&hdr("Bearer  ")),
             Err(AuthError::MissingToken)

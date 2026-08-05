@@ -19,7 +19,7 @@
 //! ```
 
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 
 use super::auth::AuthRole;
 
@@ -196,12 +196,15 @@ fn hex_encode(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{init, ServerDbConfig};
+    use crate::db::{ServerDbConfig, init};
     use std::path::PathBuf;
 
     fn tmp_db(label: &str) -> PathBuf {
         let mut p = std::env::temp_dir();
-        p.push(format!("rustnet-server-token-{label}-{}.db", std::process::id()));
+        p.push(format!(
+            "rustnet-server-token-{label}-{}.db",
+            std::process::id()
+        ));
         let _ = std::fs::remove_file(&p);
         p
     }
@@ -217,7 +220,9 @@ mod tests {
         assert!(created.id > 0);
 
         // Re-deriving the hash from the plaintext must find the row.
-        let hash = blake3::hash(created.plaintext.as_bytes()).to_hex().to_string();
+        let hash = blake3::hash(created.plaintext.as_bytes())
+            .to_hex()
+            .to_string();
         let role: String = conn
             .query_row(
                 "SELECT role FROM server_tokens WHERE token_hash = ?",

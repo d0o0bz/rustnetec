@@ -54,8 +54,12 @@ fn run_raw_sql(conn: &Connection, sql: &str) -> Result<()> {
     let upper = trimmed.to_uppercase();
 
     // Safety check: only allow SELECT statements
-    if !upper.starts_with("SELECT") && !upper.starts_with("PRAGMA") && !upper.starts_with("EXPLAIN") {
-        bail!("Only SELECT / PRAGMA / EXPLAIN queries are allowed. Got: {}...", &trimmed[..trimmed.len().min(20)]);
+    if !upper.starts_with("SELECT") && !upper.starts_with("PRAGMA") && !upper.starts_with("EXPLAIN")
+    {
+        bail!(
+            "Only SELECT / PRAGMA / EXPLAIN queries are allowed. Got: {}...",
+            &trimmed[..trimmed.len().min(20)]
+        );
     }
 
     let results = execute_sql_to_json(conn, trimmed)?;
@@ -69,7 +73,10 @@ fn run_filter_query(conn: &Connection, filter_str: &str) -> Result<()> {
     let (where_clause, params) = filter_to_sql(&filter);
 
     let sql = if where_clause.is_empty() {
-        format!("SELECT * FROM connection_events ORDER BY ts DESC LIMIT {}", DEFAULT_QUERY_LIMIT)
+        format!(
+            "SELECT * FROM connection_events ORDER BY ts DESC LIMIT {}",
+            DEFAULT_QUERY_LIMIT
+        )
     } else {
         format!(
             "SELECT * FROM connection_events WHERE {} ORDER BY ts DESC LIMIT {}",
@@ -200,7 +207,10 @@ fn filter_to_sql(filter: &ConnectionFilter) -> (String, Vec<Box<dyn rusqlite::ty
 }
 
 /// Translate a text FilterValue to a SQL condition for a given column.
-fn text_filter_to_sql(column: &str, fv: &FilterValue) -> (String, Vec<Box<dyn rusqlite::types::ToSql>>) {
+fn text_filter_to_sql(
+    column: &str,
+    fv: &FilterValue,
+) -> (String, Vec<Box<dyn rusqlite::types::ToSql>>) {
     match fv {
         FilterValue::Literal(s) => {
             let cond = format!("LOWER({}) LIKE LOWER(?)", column);
@@ -220,7 +230,10 @@ fn text_filter_to_sql(column: &str, fv: &FilterValue) -> (String, Vec<Box<dyn ru
 }
 
 /// Translate a PortMatch to a SQL condition for a given column.
-fn port_match_to_sql(column: &str, pm: &PortMatch) -> (String, Vec<Box<dyn rusqlite::types::ToSql>>) {
+fn port_match_to_sql(
+    column: &str,
+    pm: &PortMatch,
+) -> (String, Vec<Box<dyn rusqlite::types::ToSql>>) {
     match pm {
         PortMatch::Exact(n) => {
             let cond = format!("{} = ?", column);
@@ -246,8 +259,15 @@ fn port_match_to_sql(column: &str, pm: &PortMatch) -> (String, Vec<Box<dyn rusql
 /// service_name, dpi_protocol, dpi_domain, event_type.
 fn general_filter_to_sql(fv: &FilterValue) -> (String, Vec<Box<dyn rusqlite::types::ToSql>>) {
     let columns = [
-        "protocol", "source_ip", "dest_ip", "dest_hostname",
-        "process_name", "service_name", "dpi_protocol", "dpi_domain", "event_type",
+        "protocol",
+        "source_ip",
+        "dest_ip",
+        "dest_hostname",
+        "process_name",
+        "service_name",
+        "dpi_protocol",
+        "dpi_domain",
+        "event_type",
     ];
 
     let mut or_conditions = Vec::new();
@@ -372,29 +392,49 @@ mod tests {
     fn filter_to_sql_protocol() {
         let filter = ConnectionFilter::parse("proto:TCP");
         let (where_clause, _params) = filter_to_sql(&filter);
-        assert!(where_clause.contains("LOWER(protocol)"), "got: {}", where_clause);
+        assert!(
+            where_clause.contains("LOWER(protocol)"),
+            "got: {}",
+            where_clause
+        );
     }
 
     #[test]
     fn filter_to_sql_port_exact() {
         let filter = ConnectionFilter::parse("port:443");
         let (where_clause, _params) = filter_to_sql(&filter);
-        assert!(where_clause.contains("source_port = ?"), "got: {}", where_clause);
-        assert!(where_clause.contains("dest_port = ?"), "got: {}", where_clause);
+        assert!(
+            where_clause.contains("source_port = ?"),
+            "got: {}",
+            where_clause
+        );
+        assert!(
+            where_clause.contains("dest_port = ?"),
+            "got: {}",
+            where_clause
+        );
     }
 
     #[test]
     fn filter_to_sql_process() {
         let filter = ConnectionFilter::parse("process:curl");
         let (where_clause, _params) = filter_to_sql(&filter);
-        assert!(where_clause.contains("LOWER(process_name)"), "got: {}", where_clause);
+        assert!(
+            where_clause.contains("LOWER(process_name)"),
+            "got: {}",
+            where_clause
+        );
     }
 
     #[test]
     fn filter_to_sql_sni() {
         let filter = ConnectionFilter::parse("sni:example.com");
         let (where_clause, _params) = filter_to_sql(&filter);
-        assert!(where_clause.contains("dest_hostname"), "got: {}", where_clause);
+        assert!(
+            where_clause.contains("dest_hostname"),
+            "got: {}",
+            where_clause
+        );
         assert!(where_clause.contains("dpi_domain"), "got: {}", where_clause);
     }
 
@@ -497,7 +537,10 @@ mod tests {
         let (where_clause, params) = filter_to_sql(&filter);
 
         let sql = if where_clause.is_empty() {
-            format!("SELECT * FROM connection_events ORDER BY ts DESC LIMIT {}", DEFAULT_QUERY_LIMIT)
+            format!(
+                "SELECT * FROM connection_events ORDER BY ts DESC LIMIT {}",
+                DEFAULT_QUERY_LIMIT
+            )
         } else {
             format!(
                 "SELECT * FROM connection_events WHERE {} ORDER BY ts DESC LIMIT {}",

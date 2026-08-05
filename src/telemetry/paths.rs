@@ -12,23 +12,19 @@ use std::path::PathBuf;
 /// - Windows: `%LOCALAPPDATA%\rustnetec\`
 pub fn data_dir() -> Result<PathBuf> {
     let dir = match std::env::consts::OS {
-        "linux" | "freebsd" => {
-            if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
-                PathBuf::from(xdg)
-            } else {
-                home_dir()?.join(".local/share")
-            }
-            .join("rustnetec")
+        "linux" | "freebsd" => if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
+            PathBuf::from(xdg)
+        } else {
+            home_dir()?.join(".local/share")
         }
+        .join("rustnetec"),
         "macos" => home_dir()?.join("Library/Application Support/rustnetec"),
-        "windows" => {
-            if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
-                PathBuf::from(local_appdata)
-            } else {
-                home_dir()?
-            }
-            .join("rustnetec")
+        "windows" => if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
+            PathBuf::from(local_appdata)
+        } else {
+            home_dir()?
         }
+        .join("rustnetec"),
         _ => return Err(anyhow!("Unsupported platform for data directory")),
     };
     Ok(dir)
@@ -41,23 +37,19 @@ pub fn data_dir() -> Result<PathBuf> {
 /// - Windows: `%APPDATA%\rustnetec\`
 pub fn config_dir() -> Result<PathBuf> {
     let dir = match std::env::consts::OS {
-        "linux" | "freebsd" => {
-            if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
-                PathBuf::from(xdg)
-            } else {
-                home_dir()?.join(".config")
-            }
-            .join("rustnetec")
+        "linux" | "freebsd" => if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+            PathBuf::from(xdg)
+        } else {
+            home_dir()?.join(".config")
         }
+        .join("rustnetec"),
         "macos" => home_dir()?.join("Library/Application Support/rustnetec"),
-        "windows" => {
-            if let Ok(appdata) = std::env::var("APPDATA") {
-                PathBuf::from(appdata)
-            } else {
-                home_dir()?
-            }
-            .join("rustnetec")
+        "windows" => if let Ok(appdata) = std::env::var("APPDATA") {
+            PathBuf::from(appdata)
+        } else {
+            home_dir()?
         }
+        .join("rustnetec"),
         _ => return Err(anyhow!("Unsupported platform for config directory")),
     };
     Ok(dir)

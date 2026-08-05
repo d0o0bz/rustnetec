@@ -106,6 +106,18 @@ pub use sorting::sort_connections;
 mod clipboard;
 pub use clipboard::copy_to_clipboard;
 
+// rustnetec: System tray (R1/R6, T3.2) — feature-gated, FreeBSD excluded
+#[cfg(all(feature = "tray", not(target_os = "freebsd")))]
+mod tray;
+#[cfg(all(feature = "tray", not(target_os = "freebsd")))]
+pub use tray::{TrayCommand, TrayController};
+
+// rustnetec: Cross-platform launcher for tray menu (R6, T3.3) — feature-gated
+#[cfg(feature = "tray")]
+mod launcher;
+#[cfg(feature = "tray")]
+pub use launcher::{open_browser, open_local_panel, open_terminal};
+
 mod actions;
 pub use actions::{
     clear_all_with_confirmation, try_handle_connection_nav, try_handle_pane_scroll,

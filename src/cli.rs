@@ -454,7 +454,9 @@ mod tests {
         let matches = build_cli()
             .try_get_matches_from(["rustnet", "query", "--filter", "proto:TCP"])
             .expect("query subcommand should parse");
-        let sub = matches.subcommand_matches("query").expect("query subcommand");
+        let sub = matches
+            .subcommand_matches("query")
+            .expect("query subcommand");
         assert_eq!(
             sub.get_one::<String>("filter").map(String::as_str),
             Some("proto:TCP")
@@ -464,9 +466,16 @@ mod tests {
     #[test]
     fn query_subcommand_with_sql() {
         let matches = build_cli()
-            .try_get_matches_from(["rustnet", "query", "--sql", "SELECT COUNT(*) FROM connection_events"])
+            .try_get_matches_from([
+                "rustnet",
+                "query",
+                "--sql",
+                "SELECT COUNT(*) FROM connection_events",
+            ])
             .expect("query --sql should parse");
-        let sub = matches.subcommand_matches("query").expect("query subcommand");
+        let sub = matches
+            .subcommand_matches("query")
+            .expect("query subcommand");
         assert_eq!(
             sub.get_one::<String>("sql").map(String::as_str),
             Some("SELECT COUNT(*) FROM connection_events")
@@ -478,7 +487,9 @@ mod tests {
         let matches = build_cli()
             .try_get_matches_from(["rustnet", "query", "--live"])
             .expect("query --live should parse");
-        let sub = matches.subcommand_matches("query").expect("query subcommand");
+        let sub = matches
+            .subcommand_matches("query")
+            .expect("query subcommand");
         assert!(sub.get_flag("live"));
     }
 

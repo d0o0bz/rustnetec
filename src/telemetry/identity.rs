@@ -100,7 +100,12 @@ fn read_platform_hardware_id() -> Option<String> {
     {
         read_freebsd_hostuuid()
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows", target_os = "freebsd")))]
+    #[cfg(not(any(
+        target_os = "macos",
+        target_os = "linux",
+        target_os = "windows",
+        target_os = "freebsd"
+    )))]
     {
         None
     }
@@ -133,7 +138,11 @@ fn read_ioplatform_uuid() -> Option<String> {
 fn read_dmi_product_uuid() -> Option<String> {
     let content = std::fs::read_to_string("/sys/class/dmi/id/product_uuid").ok()?;
     let trimmed = content.trim().to_string();
-    if trimmed.is_empty() { None } else { Some(trimmed) }
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -152,7 +161,11 @@ fn read_freebsd_hostuuid() -> Option<String> {
         .output()
         .ok()?;
     let uuid = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if uuid.is_empty() || uuid == "kern.hostuuid" { None } else { Some(uuid) }
+    if uuid.is_empty() || uuid == "kern.hostuuid" {
+        None
+    } else {
+        Some(uuid)
+    }
 }
 
 /// Read the primary (first non-loopback) MAC address.
@@ -181,7 +194,9 @@ fn read_mac_unix() -> Option<String> {
             for entry in entries.flatten() {
                 let name = entry.file_name();
                 let name_str = name.to_string_lossy();
-                if name_str == "lo" { continue; }
+                if name_str == "lo" {
+                    continue;
+                }
                 let addr_path = format!("/sys/class/net/{}/address", name_str);
                 if let Ok(addr) = std::fs::read_to_string(&addr_path) {
                     let mac = addr.trim().to_string();
@@ -200,7 +215,8 @@ fn read_mac_unix() -> Option<String> {
             let stdout = String::from_utf8_lossy(&output.stdout);
             for line in stdout.lines() {
                 if line.contains("ether ")
-                    && let Some(addr) = line.split("ether ").nth(1) {
+                    && let Some(addr) = line.split("ether ").nth(1)
+                {
                     let mac = addr.trim().to_string();
                     if !mac.is_empty() && mac != "00:00:00:00:00:00" {
                         return Some(mac);
@@ -298,7 +314,8 @@ fn collect_ip_list_unix() -> Vec<String> {
                 }
             }
         } else if line.starts_with("inet6 ")
-            && let Some(addr) = line.split_whitespace().nth(1) {
+            && let Some(addr) = line.split_whitespace().nth(1)
+        {
             // Skip loopback and link-local
             if !addr.starts_with("::1") && !addr.starts_with("fe80") {
                 ips.push(addr.to_string());
@@ -396,8 +413,16 @@ mod tests {
     #[test]
     fn get_machine_id_is_64_hex_chars() {
         let mid = get_machine_id();
-        assert_eq!(mid.len(), 64, "machine_id should be 64 hex chars, got {}", mid.len());
-        assert!(mid.chars().all(|c| c.is_ascii_hexdigit()), "machine_id should be hex");
+        assert_eq!(
+            mid.len(),
+            64,
+            "machine_id should be 64 hex chars, got {}",
+            mid.len()
+        );
+        assert!(
+            mid.chars().all(|c| c.is_ascii_hexdigit()),
+            "machine_id should be hex"
+        );
     }
 
     #[test]
@@ -456,7 +481,10 @@ mod tests {
         assert!(!needs_save, "should not need save when all fields provided");
         assert_eq!(identity.username, "alice");
         assert_eq!(identity.user_id, 12345);
-        assert_eq!(identity.machine_id, "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789");
+        assert_eq!(
+            identity.machine_id,
+            "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+        );
     }
 
     #[test]

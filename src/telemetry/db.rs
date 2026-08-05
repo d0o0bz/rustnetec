@@ -10,8 +10,8 @@
 use crate::config::RuntimeConfig;
 use crate::telemetry::{ConnectionEventData, ConnectionEventSink};
 use anyhow::Result;
-use log::{info, warn, error};
-use rusqlite::{Connection, params, OpenFlags, Transaction};
+use log::{error, info, warn};
+use rusqlite::{Connection, OpenFlags, Transaction, params};
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::thread;
@@ -260,7 +260,9 @@ impl SqliteSink {
             }
 
             // Flush batch if full or interval elapsed
-            if batch.len() >= batch_size || (last_flush.elapsed() >= flush_interval && !batch.is_empty()) {
+            if batch.len() >= batch_size
+                || (last_flush.elapsed() >= flush_interval && !batch.is_empty())
+            {
                 Self::flush_batch(&conn, &batch, &runtime_config);
                 batch.clear();
                 last_flush = Instant::now();
@@ -276,7 +278,10 @@ impl SqliteSink {
 
             // Cleanup check
             if last_cleanup.elapsed() >= cleanup_interval {
-                let retention_days = runtime_config.read().map(|r| r.retention_days).unwrap_or(90);
+                let retention_days = runtime_config
+                    .read()
+                    .map(|r| r.retention_days)
+                    .unwrap_or(90);
                 if let Err(e) = Self::run_cleanup(&conn, retention_days) {
                     warn!("Cleanup failed: {}", e);
                 }
@@ -330,10 +335,15 @@ impl SqliteSink {
 
         // Core fields (always recorded)
         columns.extend_from_slice(&[
-            "ts", "event_type", "protocol", "source_ip", "source_port",
-            "dest_ip", "dest_port",
+            "ts",
+            "event_type",
+            "protocol",
+            "source_ip",
+            "source_port",
+            "dest_ip",
+            "dest_port",
         ]);
-        placeholders.extend_from_slice(&["?","?","?","?","?","?","?"]);
+        placeholders.extend_from_slice(&["?", "?", "?", "?", "?", "?", "?"]);
         param_values.push(Box::new(event.timestamp.clone()));
         param_values.push(Box::new(event.event.clone()));
         param_values.push(Box::new(event.protocol.clone()));
@@ -345,7 +355,7 @@ impl SqliteSink {
         // DNS fields (conditional)
         if rc.record_dns {
             columns.extend_from_slice(&["dest_hostname", "source_hostname"]);
-            placeholders.extend_from_slice(&["?","?"]);
+            placeholders.extend_from_slice(&["?", "?"]);
             param_values.push(Box::new(event.destination_hostname.clone()));
             param_values.push(Box::new(event.source_hostname.clone()));
         }
@@ -353,10 +363,15 @@ impl SqliteSink {
         // Process fields (conditional)
         if rc.record_process {
             columns.extend_from_slice(&[
-                "pid", "process_ppid", "process_name", "process_executable",
-                "process_uid", "process_gid", "attribution_match",
+                "pid",
+                "process_ppid",
+                "process_name",
+                "process_executable",
+                "process_uid",
+                "process_gid",
+                "attribution_match",
             ]);
-            placeholders.extend_from_slice(&["?","?","?","?","?","?","?"]);
+            placeholders.extend_from_slice(&["?", "?", "?", "?", "?", "?", "?"]);
             param_values.push(Box::new(event.pid.map(|v| v as i64)));
             param_values.push(Box::new(event.process_ppid.map(|v| v as i64)));
             param_values.push(Box::new(event.process_name.clone()));
@@ -377,17 +392,45 @@ impl SqliteSink {
         #[cfg(feature = "kubernetes")]
         {
             columns.extend_from_slice(&[
-                "k8s_pod_uid", "k8s_pod_name", "k8s_pod_ns",
-                "k8s_container_id", "k8s_container_name", "k8s_cgroup_path",
+                "k8s_pod_uid",
+                "k8s_pod_name",
+                "k8s_pod_ns",
+                "k8s_container_id",
+                "k8s_container_name",
+                "k8s_cgroup_path",
             ]);
-            placeholders.extend_from_slice(&["?","?","?","?","?","?"]);
+            placeholders.extend_from_slice(&["?", "?", "?", "?", "?", "?"]);
             if let Some(ref k8s) = event.kubernetes {
-                param_values.push(Box::new(k8s.get("pod_uid").and_then(|v| v.as_str()).map(String::from)));
-                param_values.push(Box::new(k8s.get("pod_name").and_then(|v| v.as_str()).map(String::from)));
-                param_values.push(Box::new(k8s.get("pod_namespace").and_then(|v| v.as_str()).map(String::from)));
-                param_values.push(Box::new(k8s.get("container_id").and_then(|v| v.as_str()).map(String::from)));
-                param_values.push(Box::new(k8s.get("container_name").and_then(|v| v.as_str()).map(String::from)));
-                param_values.push(Box::new(k8s.get("cgroup_path").and_then(|v| v.as_str()).map(String::from)));
+                param_values.push(Box::new(
+                    k8s.get("pod_uid")
+                        .and_then(|v| v.as_str())
+                        .map(String::from),
+                ));
+                param_values.push(Box::new(
+                    k8s.get("pod_name")
+                        .and_then(|v| v.as_str())
+                        .map(String::from),
+                ));
+                param_values.push(Box::new(
+                    k8s.get("pod_namespace")
+                        .and_then(|v| v.as_str())
+                        .map(String::from),
+                ));
+                param_values.push(Box::new(
+                    k8s.get("container_id")
+                        .and_then(|v| v.as_str())
+                        .map(String::from),
+                ));
+                param_values.push(Box::new(
+                    k8s.get("container_name")
+                        .and_then(|v| v.as_str())
+                        .map(String::from),
+                ));
+                param_values.push(Box::new(
+                    k8s.get("cgroup_path")
+                        .and_then(|v| v.as_str())
+                        .map(String::from),
+                ));
             } else {
                 param_values.push(Box::new(None::<String>));
                 param_values.push(Box::new(None::<String>));
@@ -413,7 +456,7 @@ impl SqliteSink {
         // DPI (conditional)
         if rc.record_dpi {
             columns.extend_from_slice(&["dpi_protocol", "dpi_domain"]);
-            placeholders.extend_from_slice(&["?","?"]);
+            placeholders.extend_from_slice(&["?", "?"]);
             param_values.push(Box::new(event.dpi_protocol.clone()));
             param_values.push(Box::new(event.dpi_domain.clone()));
         }
@@ -421,10 +464,14 @@ impl SqliteSink {
         // GeoIP (conditional)
         if rc.record_geoip {
             columns.extend_from_slice(&[
-                "geoip_country_code", "geoip_country_name", "geoip_asn",
-                "geoip_as_org", "geoip_city", "geoip_postal_code",
+                "geoip_country_code",
+                "geoip_country_name",
+                "geoip_asn",
+                "geoip_as_org",
+                "geoip_city",
+                "geoip_postal_code",
             ]);
-            placeholders.extend_from_slice(&["?","?","?","?","?","?"]);
+            placeholders.extend_from_slice(&["?", "?", "?", "?", "?", "?"]);
             param_values.push(Box::new(event.geoip_country_code.clone()));
             param_values.push(Box::new(event.geoip_country_name.clone()));
             param_values.push(Box::new(event.geoip_asn.map(|v| v as i64)));
@@ -436,7 +483,7 @@ impl SqliteSink {
         // Connection stats (conditional, only for closed events)
         if rc.record_connection_stats {
             columns.extend_from_slice(&["bytes_sent", "bytes_received", "duration_secs"]);
-            placeholders.extend_from_slice(&["?","?","?"]);
+            placeholders.extend_from_slice(&["?", "?", "?"]);
             param_values.push(Box::new(event.bytes_sent.map(|v| v as i64)));
             param_values.push(Box::new(event.bytes_received.map(|v| v as i64)));
             param_values.push(Box::new(event.duration_secs.map(|v| v as i64)));
@@ -448,7 +495,8 @@ impl SqliteSink {
             placeholders.join(", ")
         );
 
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> = param_values.iter().map(|p| p.as_ref()).collect();
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+            param_values.iter().map(|p| p.as_ref()).collect();
         tx.execute(&sql, param_refs.as_slice())?;
 
         Ok(())
@@ -625,10 +673,14 @@ impl ConnectionEventSink for SqliteSink {
     fn accept(&self, event: &ConnectionEventData) {
         // Capture priority: use try_send to never block the capture thread.
         // If the channel is full, the event is dropped with a warning.
-        match self.tx.try_send(WriteCommand::Event(Box::new(event.clone()))) {
+        match self
+            .tx
+            .try_send(WriteCommand::Event(Box::new(event.clone())))
+        {
             Ok(()) => {}
             Err(crossbeam::channel::TrySendError::Full(_)) => {
-                static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+                static WARNED: std::sync::atomic::AtomicBool =
+                    std::sync::atomic::AtomicBool::new(false);
                 if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
                     warn!("SqliteSink channel full, dropping events under load");
                 }
@@ -668,8 +720,13 @@ mod tests {
         SqliteSink::init_schema(&conn).unwrap();
 
         // Verify tables exist
-        let tables: Vec<String> = conn.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").unwrap()
-            .query_map([], |row| row.get(0)).unwrap().filter_map(|r| r.ok()).collect();
+        let tables: Vec<String> = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
         assert!(tables.contains(&"connection_events".to_string()));
         assert!(tables.contains(&"aggregates".to_string()));
         assert!(tables.contains(&"upload_cursor".to_string()));
@@ -678,7 +735,11 @@ mod tests {
         // Verify indexes exist
         let indexes: Vec<String> = conn.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_%' ORDER BY name").unwrap()
             .query_map([], |row| row.get(0)).unwrap().filter_map(|r| r.ok()).collect();
-        assert!(indexes.len() >= 10, "Should have at least 10 indexes, got {}", indexes.len());
+        assert!(
+            indexes.len() >= 10,
+            "Should have at least 10 indexes, got {}",
+            indexes.len()
+        );
     }
 
     #[test]
@@ -729,18 +790,20 @@ mod tests {
         tx.commit().unwrap();
 
         // Read back
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM connection_events",
-            [],
-            |row| row.get(0),
-        ).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM connection_events", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
         assert_eq!(count, 1);
 
-        let protocol: String = conn.query_row(
-            "SELECT protocol FROM connection_events LIMIT 1",
-            [],
-            |row| row.get(0),
-        ).unwrap();
+        let protocol: String = conn
+            .query_row(
+                "SELECT protocol FROM connection_events LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(protocol, "TCP");
     }
 
@@ -798,12 +861,17 @@ mod tests {
         tx.commit().unwrap();
 
         // Verify DNS columns are NULL (not recorded)
-        let dest_hostname: Option<String> = conn.query_row(
-            "SELECT dest_hostname FROM connection_events LIMIT 1",
-            [],
-            |row| row.get(0),
-        ).unwrap();
-        assert!(dest_hostname.is_none(), "dest_hostname should be NULL when record_dns is false");
+        let dest_hostname: Option<String> = conn
+            .query_row(
+                "SELECT dest_hostname FROM connection_events LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            dest_hostname.is_none(),
+            "dest_hostname should be NULL when record_dns is false"
+        );
     }
 
     #[test]
@@ -811,11 +879,13 @@ mod tests {
         let conn = open_test_connection();
         SqliteSink::init_schema(&conn).unwrap();
 
-        let last_id: i64 = conn.query_row(
-            "SELECT last_uploaded_event_id FROM upload_cursor WHERE id = 1",
-            [],
-            |row| row.get(0),
-        ).unwrap();
+        let last_id: i64 = conn
+            .query_row(
+                "SELECT last_uploaded_event_id FROM upload_cursor WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(last_id, 0, "upload_cursor should start at 0");
     }
 
@@ -824,11 +894,13 @@ mod tests {
         let conn = open_test_connection();
         SqliteSink::init_schema(&conn).unwrap();
 
-        let version: i64 = conn.query_row(
-            "SELECT version FROM schema_version WHERE id = 1",
-            [],
-            |row| row.get(0),
-        ).unwrap();
+        let version: i64 = conn
+            .query_row(
+                "SELECT version FROM schema_version WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(version, 1, "schema version should be 1");
     }
 
@@ -839,11 +911,18 @@ mod tests {
         SqliteSink::configure_pragma(&conn).unwrap();
 
         // In-memory databases use "memory" journal mode, file-based use "wal"
-        let journal_mode: String = conn.query_row("PRAGMA journal_mode", [], |row| row.get(0)).unwrap();
-        assert!(journal_mode == "wal" || journal_mode == "memory",
-            "journal_mode should be wal or memory, got {}", journal_mode);
+        let journal_mode: String = conn
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .unwrap();
+        assert!(
+            journal_mode == "wal" || journal_mode == "memory",
+            "journal_mode should be wal or memory, got {}",
+            journal_mode
+        );
 
-        let busy_timeout: i64 = conn.query_row("PRAGMA busy_timeout", [], |row| row.get(0)).unwrap();
+        let busy_timeout: i64 = conn
+            .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(busy_timeout, 5000);
     }
 }

@@ -7,8 +7,8 @@
 //! - 指数退避: 失败后按 base/cap 退避, 成功后重置
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::RwLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use mockito::Server;
@@ -38,7 +38,10 @@ fn seed_schema(path: &std::path::Path) {
     let conn = Connection::open(path).unwrap();
     SqliteSink::init_schema(&conn).unwrap();
     // 插入两条事件 (id 自动 1,2)
-    for (ts, port) in [("2026-08-01T00:00:00+00:00", 443u16), ("2026-08-02T00:00:00+00:00", 80u16)] {
+    for (ts, port) in [
+        ("2026-08-01T00:00:00+00:00", 443u16),
+        ("2026-08-02T00:00:00+00:00", 80u16),
+    ] {
         conn.execute(
             "INSERT INTO connection_events \
              (ts, event_type, protocol, source_ip, source_port, dest_ip, dest_port) \
@@ -97,7 +100,14 @@ fn failure_then_success_advances_cursor() {
         .mock("POST", "/ingest")
         .with_status(200)
         .with_header("content-type", "application/json")
-        .with_body(serde_json::to_string(&IngestResponse { accepted: 2, duplicates: 0, cursor: 2 }).unwrap())
+        .with_body(
+            serde_json::to_string(&IngestResponse {
+                accepted: 2,
+                duplicates: 0,
+                cursor: 2,
+            })
+            .unwrap(),
+        )
         .expect(1)
         .create();
 
@@ -134,7 +144,14 @@ fn idempotent_upload_advances_cursor() {
         .mock("POST", "/ingest")
         .with_status(200)
         .with_header("content-type", "application/json")
-        .with_body(serde_json::to_string(&IngestResponse { accepted: 0, duplicates: 2, cursor: 2 }).unwrap())
+        .with_body(
+            serde_json::to_string(&IngestResponse {
+                accepted: 0,
+                duplicates: 2,
+                cursor: 2,
+            })
+            .unwrap(),
+        )
         .expect(1)
         .create();
 
@@ -151,7 +168,11 @@ fn idempotent_upload_advances_cursor() {
     let _ = handle.join();
 
     m.assert();
-    assert_eq!(read_cursor(&db), 2, "cursor should advance even with duplicates");
+    assert_eq!(
+        read_cursor(&db),
+        2,
+        "cursor should advance even with duplicates"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -203,7 +224,7 @@ fn empty_batch_skips_upload() {
     let m = server
         .mock("POST", "/ingest")
         .with_status(200)
-        .expect(0)  // 无数据不应发请求
+        .expect(0) // 无数据不应发请求
         .create();
 
     let should_stop = Arc::new(AtomicBool::new(false));

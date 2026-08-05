@@ -102,7 +102,9 @@ fn purge_events_partitioned(conn: &mut Connection, cutoff: &str) -> Result<(u64,
         } else {
             chrono::NaiveDate::from_ymd_opt(year, (mon + 1) as u32, 1)
         };
-        let Some(next_month) = next_month else { continue };
+        let Some(next_month) = next_month else {
+            continue;
+        };
         // End of month = start of next month; compare to cutoff.
         let month_end = next_month.and_hms_opt(23, 59, 59).unwrap();
         if month_end.and_utc() >= cutoff_dt {
@@ -112,11 +114,9 @@ fn purge_events_partitioned(conn: &mut Connection, cutoff: &str) -> Result<(u64,
 
         // Best-effort row count for reporting, then drop.
         let count: i64 = conn
-            .query_row(
-                &format!("SELECT COUNT(*) FROM {table_name}"),
-                [],
-                |r| r.get(0),
-            )
+            .query_row(&format!("SELECT COUNT(*) FROM {table_name}"), [], |r| {
+                r.get(0)
+            })
             .unwrap_or(0);
         conn.execute(&format!("DROP TABLE IF EXISTS {table_name}"), [])
             .with_context(|| format!("DROP {table_name} failed"))?;
@@ -143,7 +143,7 @@ fn compute_cutoff(now_rfc3339: &str, retention_days: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{init, ServerDbConfig};
+    use crate::db::{ServerDbConfig, init};
     use std::path::PathBuf;
 
     fn tmp_db(label: &str) -> PathBuf {
@@ -151,7 +151,10 @@ mod tests {
         static SEQ: AtomicU64 = AtomicU64::new(0);
         let n = SEQ.fetch_add(1, Ordering::SeqCst);
         let mut p = std::env::temp_dir();
-        p.push(format!("rustnet-server-retention-{label}-{}-{n}.db", std::process::id()));
+        p.push(format!(
+            "rustnet-server-retention-{label}-{}-{n}.db",
+            std::process::id()
+        ));
         let _ = std::fs::remove_file(&p);
         p
     }

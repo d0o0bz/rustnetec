@@ -137,8 +137,12 @@ fn apply_pragmas(conn: &mut Connection, cfg: &ServerDbConfig) -> Result<()> {
         "foreign_keys = ON",
     ];
     for p in pragmas {
-        conn.pragma_update(None, p.split('=').next().unwrap().trim(), p.split('=').nth(1).unwrap().trim())
-            .with_context(|| format!("PRAGMA {p} failed"))?;
+        conn.pragma_update(
+            None,
+            p.split('=').next().unwrap().trim(),
+            p.split('=').nth(1).unwrap().trim(),
+        )
+        .with_context(|| format!("PRAGMA {p} failed"))?;
     }
     conn.pragma_update(None, "busy_timeout", cfg.busy_timeout)
         .context("PRAGMA busy_timeout failed")?;
@@ -346,7 +350,11 @@ fn run_schema_v2(conn: &mut Connection) -> Result<()> {
     let now = chrono::Local::now().to_rfc3339();
     tx.execute(
         "INSERT OR IGNORE INTO schema_version (version, applied_at, description) VALUES (?, ?, ?)",
-        rusqlite::params![2, now, "initial schema v2: server_events/aggregates/hosts/tokens"],
+        rusqlite::params![
+            2,
+            now,
+            "initial schema v2: server_events/aggregates/hosts/tokens"
+        ],
     )
     .context("INSERT schema_version failed")?;
 

@@ -11,7 +11,7 @@
 //! for power users, but the server side never executes arbitrary SQL.
 
 use anyhow::{Context, Result};
-use rusqlite::{params_from_iter, Connection, Row};
+use rusqlite::{Connection, Row, params_from_iter};
 use rustnet_core::ingest::{
     AggregateRow, ClientEvent, HostStats, K8sFields, QueryParams, QueryResponse, QueryRow,
     StatsResponse,
@@ -89,7 +89,10 @@ pub fn query_events(conn: &mut Connection, params: &QueryParams) -> Result<Query
     let bind_refs: Vec<&dyn rusqlite::ToSql> = all_binds.iter().map(|b| b.as_ref()).collect();
 
     let rows: Vec<QueryRow> = query
-        .query_map(params_from_iter(bind_refs.iter().copied()), row_to_query_row)?
+        .query_map(
+            params_from_iter(bind_refs.iter().copied()),
+            row_to_query_row,
+        )?
         .filter_map(|r| r.ok())
         .collect();
 
@@ -175,7 +178,11 @@ fn row_to_query_row(row: &Row<'_>) -> rusqlite::Result<QueryRow> {
 
 /// Parse an RFC 3339 timestamp to Unix millis. Returns `None` on failure.
 fn parse_ts_to_millis(ts: &str) -> Option<i64> {
-    Some(chrono::DateTime::parse_from_rfc3339(ts).ok()?.timestamp_millis())
+    Some(
+        chrono::DateTime::parse_from_rfc3339(ts)
+            .ok()?
+            .timestamp_millis(),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -233,10 +240,7 @@ fn compile_filter(filter: &str, binds: &mut Vec<Box<dyn rusqlite::ToSql>>) -> Re
             binds.push(Box::new(port));
             Ok("dest_port = ?".to_string())
         }
-        other => Err(Error::Other(anyhow::anyhow!(
-            "filter: unknown key `{other}`"
-        ))
-        .into()),
+        other => Err(Error::Other(anyhow::anyhow!("filter: unknown key `{other}`")).into()),
     }
 }
 

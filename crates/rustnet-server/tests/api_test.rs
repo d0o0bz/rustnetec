@@ -8,10 +8,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::body::Body;
-use axum::http::{header, Method, Request, StatusCode};
+use axum::http::{Method, Request, StatusCode, header};
 use rustnet_core::ingest::{ClientEvent, IngestRequest};
-use rustnet_server::api::{build_router, AuthRole};
-use rustnet_server::db::{init, ServerDbConfig};
+use rustnet_server::api::{AuthRole, build_router};
+use rustnet_server::db::{ServerDbConfig, init};
 use tower::ServiceExt; // provides Router::oneshot
 
 // ---------------------------------------------------------------------------
@@ -70,12 +70,7 @@ fn sample_request(events: Vec<ClientEvent>) -> IngestRequest {
 
 /// Set up: fresh DB + router, with one token per role provisioned.
 /// Returns (router, ingest_token, query_token, admin_token).
-fn setup() -> (
-    axum::Router,
-    String,
-    String,
-    String,
-) {
+fn setup() -> (axum::Router, String, String, String) {
     let path = tmp_db("api");
     let db = init(&path, &ServerDbConfig::default()).unwrap();
 
@@ -104,7 +99,12 @@ fn setup() -> (
 }
 
 /// Build a request with an optional Bearer token.
-fn authed_request(method: Method, uri: &str, body: Option<Body>, token: Option<&str>) -> Request<Body> {
+fn authed_request(
+    method: Method,
+    uri: &str,
+    body: Option<Body>,
+    token: Option<&str>,
+) -> Request<Body> {
     let is_post = method == Method::POST;
     let mut builder = Request::builder().method(method).uri(uri);
     if let Some(tok) = token {
@@ -215,9 +215,7 @@ async fn admin_full_chain_ingest_query_stats() {
     // 1. Ingest two events.
     let ev1 = sample_event(1, 1_700_000_000_000);
     let ev2 = sample_event(2, 1_700_000_001_000);
-    let req_body = Body::from(
-        serde_json::to_vec(&sample_request(vec![ev1, ev2])).unwrap(),
-    );
+    let req_body = Body::from(serde_json::to_vec(&sample_request(vec![ev1, ev2])).unwrap());
     let resp = router
         .clone()
         .oneshot(authed_request(
@@ -321,12 +319,9 @@ async fn revoked_admin_token_is_401() {
 
     let admin_tok = {
         let mut conn = db.lock_writer();
-        let created = rustnet_server::api::token::create_token(
-            &mut conn,
-            AuthRole::Admin,
-            Some("ops"),
-        )
-        .unwrap();
+        let created =
+            rustnet_server::api::token::create_token(&mut conn, AuthRole::Admin, Some("ops"))
+                .unwrap();
         // Revoke it.
         rustnet_server::api::token::revoke_token(&mut conn, created.id).unwrap();
         created.plaintext

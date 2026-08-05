@@ -22,7 +22,10 @@ impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Error::InvalidUserId(v) => {
-                write!(f, "invalid user_id (expected 64-bit integer snowflake): {v}")
+                write!(
+                    f,
+                    "invalid user_id (expected 64-bit integer snowflake): {v}"
+                )
             }
             Error::InvalidMachineId(v) => {
                 write!(f, "invalid machine_id (must be non-empty): {v}")

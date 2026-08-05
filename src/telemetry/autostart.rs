@@ -360,10 +360,10 @@ const RUN_VALUE_NAME: &str = "Rustnetec";
 
 #[cfg(target_os = "windows")]
 fn install_windows(mode: AutostartMode) -> Result<()> {
-    use windows::core::w;
     use windows::Win32::System::Registry::{
         HKEY_CURRENT_USER, KEY_SET_VALUE, REG_SZ, RegCloseKey, RegOpenKeyExW, RegSetValueExW,
     };
+    use windows::core::w;
 
     let exe = current_exe_path()?;
     let flag = mode.cli_flag();
@@ -411,10 +411,10 @@ fn install_windows(mode: AutostartMode) -> Result<()> {
 
 #[cfg(target_os = "windows")]
 fn uninstall_windows() -> Result<()> {
-    use windows::core::w;
     use windows::Win32::System::Registry::{
         HKEY_CURRENT_USER, KEY_SET_VALUE, RegCloseKey, RegDeleteValueW, RegOpenKeyExW,
     };
+    use windows::core::w;
 
     let mut hkey = std::mem::MaybeUninit::uninit();
     let status = unsafe {
@@ -440,10 +440,10 @@ fn uninstall_windows() -> Result<()> {
 
 #[cfg(target_os = "windows")]
 fn is_installed_windows() -> bool {
-    use windows::core::w;
     use windows::Win32::System::Registry::{
         HKEY_CURRENT_USER, KEY_QUERY_VALUE, RegCloseKey, RegOpenKeyExW, RegQueryValueExW,
     };
+    use windows::core::w;
 
     let mut hkey = std::mem::MaybeUninit::uninit();
     let status = unsafe {
@@ -461,9 +461,8 @@ fn is_installed_windows() -> bool {
     let hkey = unsafe { hkey.assume_init() };
 
     let mut len: u32 = 0;
-    let query_status = unsafe {
-        RegQueryValueExW(hkey, w!(RUN_VALUE_NAME), None, None, None, Some(&mut len))
-    };
+    let query_status =
+        unsafe { RegQueryValueExW(hkey, w!(RUN_VALUE_NAME), None, None, None, Some(&mut len)) };
     let _ = unsafe { RegCloseKey(hkey) };
     query_status.is_ok()
 }
@@ -554,8 +553,14 @@ mod tests {
 
         // Uninstall removes the unit file.
         uninstall().unwrap();
-        assert!(!unit.exists(), "unit file should be removed after uninstall");
-        assert!(!is_installed(), "is_installed should be false after uninstall");
+        assert!(
+            !unit.exists(),
+            "unit file should be removed after uninstall"
+        );
+        assert!(
+            !is_installed(),
+            "is_installed should be false after uninstall"
+        );
 
         // Idempotent uninstall (file already gone) is Ok.
         uninstall().unwrap();
@@ -609,7 +614,10 @@ mod tests {
 
         uninstall().unwrap();
         assert!(!plist.exists(), "plist should be removed after uninstall");
-        assert!(!is_installed(), "is_installed should be false after uninstall");
+        assert!(
+            !is_installed(),
+            "is_installed should be false after uninstall"
+        );
 
         // Idempotent uninstall
         uninstall().unwrap();
@@ -636,7 +644,10 @@ mod tests {
         assert!(is_installed());
 
         uninstall().unwrap();
-        assert!(!is_installed(), "is_installed should be false after uninstall");
+        assert!(
+            !is_installed(),
+            "is_installed should be false after uninstall"
+        );
 
         // Idempotent uninstall
         uninstall().unwrap();

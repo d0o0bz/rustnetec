@@ -16,6 +16,36 @@ use std::path::PathBuf;
 // creating a cross-module import cycle.
 pub use crate::telemetry::autostart::AutostartMode;
 
+// rustnetec: TrayStatusField — selectable status-line fields for the system
+// tray (R1/R6, T3.2). The order of `tray_status_fields` in PersistentConfig
+// determines the left-to-right rendering order of the tray status line.
+// Lowercase serde rename keeps config.yml human-friendly
+// (`state`, `rate_in`, ...).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TrayStatusField {
+    /// Capture state indicator: ● monitoring / ⏸ paused
+    State,
+    /// Active network interface name (e.g. eth0)
+    Interface,
+    /// Aggregate inbound rate: ↓3.20 KB/s
+    RateIn,
+    /// Aggregate outbound rate: ↑950 B/s
+    RateOut,
+    /// Aggregate total rate (rx+tx): 4.15 KB/s — single value, direction lost
+    RateTotal,
+    /// Active (non-historic) connection count: 12 conn
+    Connections,
+    /// Process uptime since capture start: 5m23s
+    Uptime,
+}
+
+impl Default for TrayStatusField {
+    fn default() -> Self {
+        Self::State
+    }
+}
+
 /// Application configuration
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -310,6 +340,15 @@ pub struct PersistentConfig {
     #[serde(default)]
     pub autostart_mode: AutostartMode,
 
+    // --- System tray (R1/R6, T3.2) ---
+    /// Selectable status-line fields for the tray tooltip/menu.
+    /// Order in the vec determines left-to-right render order.
+    #[serde(default = "default_tray_status_fields")]
+    pub tray_status_fields: Vec<TrayStatusField>,
+    /// Tray status-line refresh interval in seconds (1-15, default 2).
+    #[serde(default = "default_tray_refresh_interval_secs")]
+    pub tray_refresh_interval_secs: u64,
+
     // --- Runtime state ---
     #[serde(default)]
     pub pending_restart: bool,
@@ -335,6 +374,21 @@ fn default_retention_days() -> u32 {
 }
 fn default_http_port() -> u16 {
     19811
+}
+
+// rustnetec: tray config defaults (T3.2)
+fn default_tray_status_fields() -> Vec<TrayStatusField> {
+    vec![
+        TrayStatusField::State,
+        TrayStatusField::Interface,
+        TrayStatusField::RateIn,
+        TrayStatusField::RateOut,
+        TrayStatusField::Connections,
+    ]
+}
+
+fn default_tray_refresh_interval_secs() -> u64 {
+    2
 }
 
 impl Default for PersistentConfig {
@@ -384,6 +438,9 @@ impl Default for PersistentConfig {
             autostart_enabled: false,
             autostart_mode: AutostartMode::default(),
 
+            tray_status_fields: default_tray_status_fields(),
+            tray_refresh_interval_secs: default_tray_refresh_interval_secs(),
+
             pending_restart: false,
         }
     }
@@ -425,7 +482,8 @@ impl PersistentConfig {
     pub fn save_to(&self, path: &PathBuf) -> Result<()> {
         // Ensure parent directory exists
         if let Some(parent) = path.parent()
-            && !parent.exists() {
+            && !parent.exists()
+        {
             fs::create_dir_all(parent)?;
             #[cfg(unix)]
             {
@@ -477,12 +535,28 @@ impl PersistentConfig {
         }
         if let Some(ref url) = self.server_url
             && !url.starts_with("http://")
-            && !url.starts_with("https://") {
+            && !url.starts_with("https://")
+        {
             return Err(anyhow!("invalid server_url"));
         }
         if let Some(ref iface) = self.interface
-            && iface.is_empty() {
+            && iface.is_empty()
+        {
             return Err(anyhow!("interface must be non-empty or null"));
+        }
+        // rustnetec: tray config validation (T3.2)
+        if self.tray_refresh_interval_secs < 1 || self.tray_refresh_interval_secs > 15 {
+            return Err(anyhow!("tray_refresh_interval_secs must be 1-15 seconds"));
+        }
+        if self.tray_status_fields.is_empty() {
+            return Err(anyhow!("tray_status_fields must not be empty"));
+        }
+        // Reject duplicate fields — would render duplicates in the status line
+        let mut seen = std::collections::HashSet::new();
+        for f in &self.tray_status_fields {
+            if !seen.insert(f) {
+                return Err(anyhow!("tray_status_fields must not contain duplicates"));
+            }
         }
         // rustnetec: autostart_mode validation (T1.11) — only allow Tray when
         // the `tray` cargo feature is enabled. Without the feature the Tray
@@ -584,6 +658,11 @@ pub struct RuntimeConfig {
     pub upload_batch_size: u32,
     pub language: String,
     pub http_token: Option<String>,
+    /// rustnetec: tray status-line field set (T3.2) — hot-update so the
+    /// "设置" dialog can toggle fields without a restart.
+    pub tray_status_fields: Vec<TrayStatusField>,
+    /// rustnetec: tray status-line refresh interval in seconds (T3.2)
+    pub tray_refresh_interval_secs: u64,
 
     // --- Restart-required items (modify → persist + pending_restart = true) ---
     pub interface: Option<String>,
@@ -627,6 +706,8 @@ impl RuntimeConfig {
             upload_batch_size: pc.upload_batch_size,
             language: pc.language.clone(),
             http_token: pc.http_token.clone(),
+            tray_status_fields: pc.tray_status_fields.clone(),
+            tray_refresh_interval_secs: pc.tray_refresh_interval_secs,
 
             // Restart-required items
             interface: pc.interface.clone(),
@@ -669,6 +750,10 @@ impl RuntimeConfig {
         self.upload_batch_size = pc.upload_batch_size;
         self.language = pc.language.clone();
         self.http_token = pc.http_token.clone();
+        // rustnetec: tray config is hot-update (T3.2) — settings dialog can
+        // toggle status fields / refresh interval without a process restart.
+        self.tray_status_fields = pc.tray_status_fields.clone();
+        self.tray_refresh_interval_secs = pc.tray_refresh_interval_secs;
     }
 
     /// Apply restart-required items from a PersistentConfig.

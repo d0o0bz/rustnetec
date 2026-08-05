@@ -22,12 +22,12 @@ pub mod token;
 use std::sync::Arc;
 
 use axum::{
+    Json, Router,
     extract::{Query, State},
     http::{HeaderMap, Request, StatusCode},
-    middleware::{from_fn_with_state, Next},
+    middleware::{Next, from_fn_with_state},
     response::{IntoResponse, Response},
     routing::{get, post},
-    Json, Router,
 };
 use rustnet_core::ingest::{
     HealthResponse, IngestRequest, IngestResponse, QueryParams, QueryResponse, StatsResponse,

@@ -13,7 +13,7 @@
 //! reuse the compiled statements.
 
 use anyhow::Result;
-use rusqlite::{params, Connection, Transaction};
+use rusqlite::{Connection, Transaction, params};
 use rustnet_core::ingest::{ClientEvent, IngestRequest, IngestResponse};
 
 use super::Error;
@@ -101,8 +101,9 @@ fn insert_event(
     // T2.3 fills only the fields T2.2 ClientEvent exposes; the remaining
     // columns from `docs/数据模型设计.md` §3.2 are left NULL and populated
     // by later tasks (e.g. T2.6 UploadSink) as the protocol grows.
-    let inserted = tx.prepare_cached(
-        r#"
+    let inserted = tx
+        .prepare_cached(
+            r#"
         INSERT INTO server_events (
             machine_id, user_id, username, ip_list,
             local_event_id,
@@ -114,26 +115,26 @@ fn insert_event(
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(user_id, local_event_id) DO NOTHING
         "#,
-    )?
-    .execute(params![
-        machine_id,
-        user_id,
-        username,
-        ip_list_json,
-        ev.local_event_id,
-        ev.timestamp,
-        ingest_ts,
-        ev.protocol,
-        ev.local_ip,
-        ev.local_port,
-        ev.remote_ip,
-        ev.remote_port,
-        ev.pid.map(|p| p as i64),
-        ev.process_name,
-        ev.bytes_sent as i64,
-        ev.bytes_recv as i64,
-        ev.duration_ms as i64,
-    ])?;
+        )?
+        .execute(params![
+            machine_id,
+            user_id,
+            username,
+            ip_list_json,
+            ev.local_event_id,
+            ev.timestamp,
+            ingest_ts,
+            ev.protocol,
+            ev.local_ip,
+            ev.local_port,
+            ev.remote_ip,
+            ev.remote_port,
+            ev.pid.map(|p| p as i64),
+            ev.process_name,
+            ev.bytes_sent as i64,
+            ev.bytes_recv as i64,
+            ev.duration_ms as i64,
+        ])?;
 
     Ok(inserted > 0)
 }

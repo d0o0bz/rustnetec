@@ -87,6 +87,9 @@ signal-hook = "0.3"
 regex-lite = "0.1"
 # rustnetec: blocking HTTP client for client→server data upload (R3, T2.6)
 ureq = { version = "2", features = ["json"] }
+# rustnetec: optional system tray deps (R1/R6, T3.1) — only pulled in by the `tray` feature
+tray-icon = { version = "0.24", optional = true }
+muda = { version = "0.19", optional = true }
 # Note: dns-lookup, ring, aes, flate2, and maxminddb moved to rustnet-core,
 # which is the only place they are used. They are re-exported transitively
 # through the `crate::network` facade in src/network/mod.rs.
@@ -148,9 +151,11 @@ macos-sandbox = []
 # Kubernetes pod and container resolution from cgroup paths and (Phase 2) the
 # on-disk kubelet pods directory. Linux-only at runtime; no extra dependencies.
 kubernetes = ["rustnet-core/kubernetes"]
-# rustnetec: System tray support (R1/R6) — optional, default off
-# Dependencies (tray-icon, muda) will be added in P3
-tray = []
+# rustnetec: System tray support (R1/R6) — optional, default off (T3.1)
+# tray-icon provides the cross-platform tray icon; muda provides the menu.
+# Both are optional and only pulled in when `--features tray` is enabled.
+# Linux backend defaults to ksni (pure DBus, no GTK).
+tray = ["dep:tray-icon", "dep:muda"]
 
 # Minimal cross configuration to override dependency conflicts
 [workspace.metadata.cross.build.env]

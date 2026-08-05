@@ -12,10 +12,8 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use rustnet_server::api;
-use rustnet_server::cleanup::{
-    spawn_cleanup_task, DEFAULT_PERIOD, DEFAULT_RETENTION_DAYS,
-};
-use rustnet_server::db::{init as init_db, ServerDbConfig};
+use rustnet_server::cleanup::{DEFAULT_PERIOD, DEFAULT_RETENTION_DAYS, spawn_cleanup_task};
+use rustnet_server::db::{ServerDbConfig, init as init_db};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -57,7 +55,10 @@ async fn main() -> Result<()> {
     let app = api::build_router(db);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    log::info!("rustnet-server listening on {addr} (db: {})", db_path.display());
+    log::info!(
+        "rustnet-server listening on {addr} (db: {})",
+        db_path.display()
+    );
     axum::serve(listener, app).await?;
     Ok(())
 }

@@ -85,8 +85,10 @@ fn main() -> Result<()> {
 
         // Log identity info before potential move
         let mid_prefix = &identity.machine_id[..8.min(identity.machine_id.len())];
-        info!("Host identity: machine_id={}..., user_id={}, username={}",
-              mid_prefix, identity.user_id, identity.username);
+        info!(
+            "Host identity: machine_id={}..., user_id={}, username={}",
+            mid_prefix, identity.user_id, identity.username
+        );
 
         if needs_save {
             // Write back generated fields to config.yml
@@ -98,7 +100,10 @@ fn main() -> Result<()> {
             if let Err(e) = pc.save() {
                 warn!("Failed to save config.yml with identity: {}", e);
             } else {
-                info!("Host identity initialized and saved: user_id={}", identity.user_id);
+                info!(
+                    "Host identity initialized and saved: user_id={}",
+                    identity.user_id
+                );
             }
         }
     }
@@ -598,7 +603,7 @@ fn main() -> Result<()> {
 
         let sandbox_config = SandboxConfig {
             mode: sandbox_mode,
-            block_network: true, // RustNet is passive, doesn't need TCP
+            block_network: true,  // RustNet is passive, doesn't need TCP
             allowed_network_host, // rustnetec: specific host allow for data upload
             log_dir,
             json_log_path: config.json_log_file,
@@ -711,15 +716,27 @@ fn main() -> Result<()> {
 
     // rustnetec: Branch on run mode
     if daemon_mode || tray_mode {
+        // rustnetec: http_state lives in the outer scope so the tray launcher
+        // (T3.3) can call issue_bootstrap_guid on it from run_daemon_loop.
+        // Wrapped in Option because daemon mode (no tray) does not need it,
+        // and the launcher cfg-gates out on FreeBSD / without the tray feature.
+        #[cfg(all(feature = "tray", not(target_os = "freebsd")))]
+        let http_state: Option<std::sync::Arc<telemetry::http::HttpState>>;
+
         // rustnetec: Start HTTP server in daemon/tray mode (R5, T1.4)
         {
-            let http_port = matches.get_one::<u16>("http-port").copied().unwrap_or(19811);
-            let db_path = telemetry::paths::db_path().unwrap_or_else(|_| std::path::PathBuf::from("data.db"));
+            let http_port = matches
+                .get_one::<u16>("http-port")
+                .copied()
+                .unwrap_or(19811);
+            let db_path =
+                telemetry::paths::db_path().unwrap_or_else(|_| std::path::PathBuf::from("data.db"));
             let http_token = {
                 // Load token from PersistentConfig; generate if missing
                 let mut pc = rustnet_monitor::config::PersistentConfig::load().unwrap_or_default();
                 if pc.http_token.is_none() {
-                    pc.http_token = Some(rustnet_monitor::config::PersistentConfig::generate_http_token());
+                    pc.http_token =
+                        Some(rustnet_monitor::config::PersistentConfig::generate_http_token());
                     let _ = pc.save();
                 }
                 pc.http_token.unwrap_or_default()
@@ -729,12 +746,25 @@ fn main() -> Result<()> {
                 db_path: db_path.clone(),
                 http_token,
                 should_stop: app.should_stop_handle(),
+                // rustnetec: one-time bootstrap code auth (T3.3, R6)
+                pending_guids: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+                active_sessions: std::sync::Arc::new(std::sync::Mutex::new(
+                    std::collections::HashMap::new(),
+                )),
             });
 
-            if let Err(e) = telemetry::http::start_http_server(http_port, state) {
+            if let Err(e) = telemetry::http::start_http_server(http_port, state.clone()) {
                 warn!("Failed to start HTTP server: {}", e);
+                #[cfg(all(feature = "tray", not(target_os = "freebsd")))]
+                {
+                    http_state = None;
+                }
             } else {
                 info!("HTTP server started on 127.0.0.1:{}", http_port);
+                #[cfg(all(feature = "tray", not(target_os = "freebsd")))]
+                {
+                    http_state = Some(state);
+                }
             }
 
             // rustnetec: Start UploadSink in daemon/tray mode (R3, T2.6)
@@ -754,11 +784,8 @@ fn main() -> Result<()> {
                     );
                     id
                 };
-                let upload_sink = telemetry::upload::UploadSink::new(
-                    db_path,
-                    runtime_config,
-                    identity,
-                );
+                let upload_sink =
+                    telemetry::upload::UploadSink::new(db_path, runtime_config, identity);
                 match upload_sink.spawn(app.should_stop_handle()) {
                     Ok(handle) => {
                         info!("Upload thread spawned");
@@ -774,7 +801,11 @@ fn main() -> Result<()> {
         }
 
         // Daemon mode: no TUI, just wait for shutdown signal
-        run_daemon_loop(&app);
+        // rustnetec: http_state passed in so tray launcher can issue bootstrap guids (T3.3)
+        #[cfg(all(feature = "tray", not(target_os = "freebsd")))]
+        run_daemon_loop(&app, tray_mode, http_state);
+        #[cfg(not(all(feature = "tray", not(target_os = "freebsd"))))]
+        run_daemon_loop(&app, tray_mode, None);
     } else {
         // TUI mode: run the interactive UI loop
         let res = run_ui_loop(terminal.as_mut().unwrap(), &app);
@@ -1033,7 +1064,20 @@ use ui::{clear_all_with_confirmation, copy_to_clipboard, sort_connections};
 /// Run the daemon loop: wait for SIGTERM/SIGINT, then exit gracefully.
 /// The capture pipeline runs in background threads started by App;
 /// this function just keeps the main thread alive until a shutdown signal.
-fn run_daemon_loop(app: &app::App) {
+///
+/// `tray_mode`: when true, the loop also drives a system tray controller
+/// (`TrayController`). The tray branch uses a 50ms-granularity non-blocking
+/// poll so menu clicks respond within ≤50ms, independent of the configurable
+/// 1-15s status-line refresh cadence. The non-tray daemon branch keeps the
+/// original coarse `sleep(1s)` wait.
+fn run_daemon_loop(
+    app: &app::App,
+    tray_mode: bool,
+    #[cfg(all(feature = "tray", not(target_os = "freebsd")))] http_state: Option<
+        std::sync::Arc<telemetry::http::HttpState>,
+    >,
+    #[cfg(not(all(feature = "tray", not(target_os = "freebsd"))))] _http_state: Option<()>,
+) {
     // rustnetec: 偏差2 修复 — 注册 SIGTERM/SIGINT handler 触发优雅退出
     //
     // 之前 run_daemon_loop 注释「rely on ctrlc」是错误假设：全项目无 ctrlc
@@ -1057,8 +1101,122 @@ fn run_daemon_loop(app: &app::App) {
         "Daemon loop started, waiting for shutdown signal (Ctrl+C or SIGTERM) — signal-hook registered"
     );
 
+    // rustnetec: tray controller (T3.2). Only constructed when tray_mode is
+    // true AND the tray feature is compiled in AND we are not on FreeBSD
+    // (no tray backend there). On FreeBSD the tray feature is cfg-gated out,
+    // so the branch collapses to a plain daemon loop.
+    #[cfg(all(feature = "tray", not(target_os = "freebsd")))]
+    let mut tray_controller: Option<ui::TrayController> = if tray_mode {
+        match ui::TrayController::new(
+            include_bytes!("../resources/packaging/linux/graphics/rustnet.png"),
+            256,
+            256,
+            "Netec",
+        ) {
+            Ok(ctrl) => Some(ctrl),
+            Err(e) => {
+                warn!("Failed to create system tray icon: {e}; continuing headless");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    // rustnetec: initial remote-panel enable/disable + first status refresh (T3.2)
+    #[cfg(all(feature = "tray", not(target_os = "freebsd")))]
+    if let Some(ref mut ctrl) = tray_controller {
+        let pc = rustnet_monitor::config::PersistentConfig::load().unwrap_or_default();
+        ctrl.set_remote_enabled(pc.server_url.is_some());
+        let rc = rustnet_monitor::config::RuntimeConfig::from_persistent(&pc);
+        ctrl.refresh_status(app, &rc);
+    }
+
+    // rustnetec: status refresh bookkeeping (tray branch only)
+    #[cfg(all(feature = "tray", not(target_os = "freebsd")))]
+    let mut last_refresh = std::time::Instant::now();
+    #[cfg(all(feature = "tray", not(target_os = "freebsd")))]
+    let mut current_interval_secs: u64 = {
+        let pc = rustnet_monitor::config::PersistentConfig::load().unwrap_or_default();
+        pc.tray_refresh_interval_secs
+    };
+
     loop {
-        std::thread::sleep(Duration::from_secs(1));
+        if tray_mode {
+            // rustnetec: tray branch — 50ms non-blocking poll for snappy menus (T3.2)
+            #[cfg(all(feature = "tray", not(target_os = "freebsd")))]
+            {
+                if let Some(ref mut ctrl) = tray_controller {
+                    use ui::TrayCommand as Cmd;
+                    match ctrl.poll_command() {
+                        Cmd::Quit => {
+                            info!("Tray menu: Quit selected, stopping app");
+                            app.stop();
+                            break;
+                        }
+                        Cmd::TogglePause => {
+                            // rustnetec: TODO — App has no pause/resume API yet;
+                            // log placeholder so the menu item visibly does something.
+                            info!(
+                                "Tray menu: TogglePause selected (pause/resume not yet implemented)"
+                            );
+                        }
+                        Cmd::OpenTerminal => {
+                            // rustnetec: launcher T3.3 — open a terminal running rustnet query --live
+                            ui::open_terminal("rustnet query --live");
+                        }
+                        Cmd::OpenLocalPanel => {
+                            // rustnetec: launcher T3.3 — one-time bootstrap guid handshake
+                            if let Some(ref state) = http_state {
+                                ui::open_local_panel(state);
+                            } else {
+                                warn!(
+                                    "Tray: OpenLocalPanel but HTTP server not running; falling back to bare URL"
+                                );
+                                ui::open_browser("http://127.0.0.1:19811/");
+                            }
+                        }
+                        Cmd::OpenRemotePanel => {
+                            // rustnetec: launcher T3.3 — remote panel uses the configured server_url
+                            let server_url = rustnet_monitor::config::PersistentConfig::load()
+                                .ok()
+                                .and_then(|pc| pc.server_url);
+                            match server_url {
+                                Some(url) => ui::open_browser(&url),
+                                None => warn!(
+                                    "Tray: OpenRemotePanel but server_url not configured (item should have been disabled)"
+                                ),
+                            }
+                        }
+                        Cmd::OpenSettings => {
+                            // rustnetec: launcher T3.3 — /config page; session cookie is already
+                            // established by the OpenLocalPanel handshake so the browser can reach it.
+                            ui::open_browser("http://127.0.0.1:19811/config");
+                        }
+                        Cmd::None => {}
+                    }
+                }
+            }
+
+            // rustnetec: status refresh on configurable 1-15s cadence (T3.2)
+            #[cfg(all(feature = "tray", not(target_os = "freebsd")))]
+            if last_refresh.elapsed().as_secs() >= current_interval_secs {
+                if let Some(ref mut ctrl) = tray_controller {
+                    let pc = rustnet_monitor::config::PersistentConfig::load().unwrap_or_default();
+                    let rc = rustnet_monitor::config::RuntimeConfig::from_persistent(&pc);
+                    ctrl.refresh_status(app, &rc);
+                    // hot-update: pick up new interval each cycle
+                    current_interval_secs = pc.tray_refresh_interval_secs;
+                }
+                last_refresh = std::time::Instant::now();
+            }
+
+            // Short sleep for responsive menu polling (50ms)
+            std::thread::sleep(Duration::from_millis(50));
+        } else {
+            // rustnetec: plain daemon branch — coarse 1s wait (original behavior)
+            std::thread::sleep(Duration::from_secs(1));
+        }
 
         if shutdown_flag.load(std::sync::atomic::Ordering::Relaxed) {
             info!("Shutdown signal received via signal-hook, stopping app");
@@ -1078,7 +1236,8 @@ fn run_daemon_loop(app: &app::App) {
 // rustnetec: Handle `rustnet query` subcommand (R5, T1.3)
 fn run_query_subcommand(matches: &clap::ArgMatches) -> Result<()> {
     // rustnetec: simplify redundant closures (clippy::redundant_closure)
-    let db_path = matches.get_one::<String>("db")
+    let db_path = matches
+        .get_one::<String>("db")
         .map(std::path::PathBuf::from)
         .unwrap_or_default(); // rustnetec: clippy unwrap_or_default
     let filter = matches.get_one::<String>("filter").map(|s| s.as_str());
@@ -1100,7 +1259,10 @@ fn run_install_autostart() -> Result<()> {
     if let Err(e) = pc.save() {
         warn!("autostart installed but failed to persist config: {}", e);
     } else {
-        info!("registered rustnet {} as a boot-time autostart entry", mode.cli_flag());
+        info!(
+            "registered rustnet {} as a boot-time autostart entry",
+            mode.cli_flag()
+        );
     }
     Ok(())
 }

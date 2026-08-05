@@ -15,8 +15,8 @@ use std::time::Duration;
 use log::{info, warn};
 use tokio::time::interval;
 
-use crate::db::retention::{purge_expired, PurgeReport};
 use crate::db::ServerDb;
+use crate::db::retention::{PurgeReport, purge_expired};
 
 /// Default cleanup period: once per day.
 pub const DEFAULT_PERIOD: Duration = Duration::from_secs(24 * 60 * 60);
@@ -72,7 +72,7 @@ fn log_purge(report: PurgeReport, now: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{init, ServerDbConfig};
+    use crate::db::{ServerDbConfig, init};
     use std::path::PathBuf;
 
     fn tmp_db(label: &str) -> PathBuf {
@@ -80,7 +80,10 @@ mod tests {
         static SEQ: AtomicU64 = AtomicU64::new(0);
         let n = SEQ.fetch_add(1, Ordering::SeqCst);
         let mut p = std::env::temp_dir();
-        p.push(format!("rustnet-server-cleanup-{label}-{}-{n}.db", std::process::id()));
+        p.push(format!(
+            "rustnet-server-cleanup-{label}-{}-{n}.db",
+            std::process::id()
+        ));
         let _ = std::fs::remove_file(&p);
         p
     }

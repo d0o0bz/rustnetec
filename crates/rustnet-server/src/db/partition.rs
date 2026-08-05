@@ -165,9 +165,7 @@ pub fn list_event_partitions(conn: &mut Connection) -> Result<Vec<(i32, String)>
     for name in names {
         let name = name?;
         // Parse the trailing YYYYMM.
-        let suffix = name
-            .strip_prefix("server_events_")
-            .unwrap_or("");
+        let suffix = name.strip_prefix("server_events_").unwrap_or("");
         if let Ok(month) = suffix.parse::<i32>() {
             // Validate YYYYMM range loosely.
             if (190001..=999912).contains(&month) {
@@ -186,7 +184,7 @@ pub fn list_event_partitions(conn: &mut Connection) -> Result<Vec<(i32, String)>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{init, ServerDbConfig};
+    use crate::db::{ServerDbConfig, init};
     use std::path::PathBuf;
 
     fn tmp_db(label: &str) -> PathBuf {
@@ -194,7 +192,10 @@ mod tests {
         static SEQ: AtomicU64 = AtomicU64::new(0);
         let n = SEQ.fetch_add(1, Ordering::SeqCst);
         let mut p = std::env::temp_dir();
-        p.push(format!("rustnet-server-partition-{label}-{}-{n}.db", std::process::id()));
+        p.push(format!(
+            "rustnet-server-partition-{label}-{}-{n}.db",
+            std::process::id()
+        ));
         let _ = std::fs::remove_file(&p);
         p
     }
