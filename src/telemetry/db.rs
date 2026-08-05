@@ -116,7 +116,8 @@ impl SqliteSink {
     }
 
     /// Initialize the database schema (idempotent).
-    pub(crate) fn init_schema(conn: &Connection) -> Result<()> {
+    /// rustnetec: made `pub` for UploadSink integration tests (T2.6).
+    pub fn init_schema(conn: &Connection) -> Result<()> {
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS connection_events (
                 id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -522,6 +523,102 @@ impl SqliteSink {
     pub fn run_cleanup_for_test(conn: &Connection, retention_days: u32) -> Result<()> {
         Self::run_cleanup(conn, retention_days)
     }
+
+    // ---- rustnetec: UploadSink 支持接口 (T2.6) ----
+    // UploadSink 持有独立的只读连接查 connection_events、独立写连接推进
+    // upload_cursor。 SqliteSink 的 writer 连接被其写线程独占，故这些接口
+    // 以关联函数形式暴露，让 UploadSink 自管连接生命周期 (WAL 下并发安全)。
+
+    /// 读取 `upload_cursor.last_uploaded_event_id`（默认 0）。
+    pub fn read_upload_cursor(conn: &Connection) -> Result<i64> {
+        let id: i64 = conn.query_row(
+            "SELECT COALESCE(last_uploaded_event_id, 0) FROM upload_cursor WHERE id = 1",
+            [],
+            |r| r.get(0),
+        )?;
+        Ok(id)
+    }
+
+    /// 推进 `upload_cursor` 到 `new_id`，记录 `last_upload_ts`。
+    /// 由 UploadSink 在一批上报成功后调用。
+    pub fn advance_upload_cursor(conn: &Connection, new_id: i64) -> Result<()> {
+        let now = chrono::Local::now().to_rfc3339();
+        conn.execute(
+            "UPDATE upload_cursor SET last_uploaded_event_id = ?, last_upload_ts = ? WHERE id = 1",
+            params![new_id, now],
+        )?;
+        Ok(())
+    }
+
+    /// 查询 `connection_events WHERE id > after_id ORDER BY id LIMIT limit`，
+    /// 返回 `(id, ConnectionEventData)` 供 UploadSink 映射为 ClientEvent。
+    ///
+    /// 字段映射与 `insert_event` 的写入逻辑严格对齐：所有可选列按
+    /// RuntimeConfig 的 record_* 开关在写入时决定是否落库，此处读取时
+    /// 一律尝试取列、缺失列返回 None —— SQLite 缺列会报错，故这里用
+    /// `prepare_cached` + 按需 SELECT，列名与 schema 完全一致。
+    pub fn query_events_for_upload(
+        conn: &Connection,
+        after_id: i64,
+        limit: u32,
+    ) -> Result<Vec<(i64, ConnectionEventData)>> {
+        let mut stmt = conn.prepare(
+            "SELECT id, ts, event_type, protocol, source_ip, source_port, \
+             dest_ip, dest_port, dest_hostname, source_hostname, \
+             pid, process_ppid, process_name, process_executable, \
+             process_uid, process_gid, attribution_match, rtt_ms, \
+             service_name, direction, dpi_protocol, dpi_domain, \
+             geoip_country_code, geoip_country_name, geoip_asn, \
+             geoip_as_org, geoip_city, geoip_postal_code, \
+             bytes_sent, bytes_received, duration_secs \
+             FROM connection_events WHERE id > ? ORDER BY id ASC LIMIT ?",
+        )?;
+        let rows = stmt.query_map(params![after_id, limit as i64], |r| {
+            let id: i64 = r.get("id")?;
+            Ok((
+                id,
+                ConnectionEventData {
+                    timestamp: r.get::<_, String>("ts")?,
+                    event: r.get::<_, String>("event_type")?,
+                    protocol: r.get::<_, String>("protocol")?,
+                    source_ip: r.get::<_, String>("source_ip")?,
+                    source_port: r.get::<_, u16>("source_port")?,
+                    destination_ip: r.get::<_, String>("dest_ip")?,
+                    destination_port: r.get::<_, u16>("dest_port")?,
+                    destination_hostname: r.get::<_, Option<String>>("dest_hostname")?,
+                    source_hostname: r.get::<_, Option<String>>("source_hostname")?,
+                    pid: r.get::<_, Option<u32>>("pid")?,
+                    process_ppid: r.get::<_, Option<u32>>("process_ppid")?,
+                    process_name: r.get::<_, Option<String>>("process_name")?,
+                    process_executable: r.get::<_, Option<String>>("process_executable")?,
+                    process_uid: r.get::<_, Option<u32>>("process_uid")?,
+                    process_gid: r.get::<_, Option<u32>>("process_gid")?,
+                    attribution_match: r.get::<_, Option<String>>("attribution_match")?,
+                    rtt_ms: r.get::<_, Option<f64>>("rtt_ms")?,
+                    #[cfg(feature = "kubernetes")]
+                    kubernetes: None, // K8s 列读取由 UploadSink 单独处理
+                    service_name: r.get::<_, Option<String>>("service_name")?,
+                    direction: r.get::<_, Option<String>>("direction")?,
+                    dpi_protocol: r.get::<_, Option<String>>("dpi_protocol")?,
+                    dpi_domain: r.get::<_, Option<String>>("dpi_domain")?,
+                    geoip_country_code: r.get::<_, Option<String>>("geoip_country_code")?,
+                    geoip_country_name: r.get::<_, Option<String>>("geoip_country_name")?,
+                    geoip_asn: r.get::<_, Option<u32>>("geoip_asn")?,
+                    geoip_as_org: r.get::<_, Option<String>>("geoip_as_org")?,
+                    geoip_city: r.get::<_, Option<String>>("geoip_city")?,
+                    geoip_postal_code: r.get::<_, Option<String>>("geoip_postal_code")?,
+                    bytes_sent: r.get::<_, Option<u64>>("bytes_sent")?,
+                    bytes_received: r.get::<_, Option<u64>>("bytes_received")?,
+                    duration_secs: r.get::<_, Option<u64>>("duration_secs")?,
+                },
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
 }
 
 impl ConnectionEventSink for SqliteSink {
@@ -653,8 +750,11 @@ mod tests {
         SqliteSink::init_schema(&conn).unwrap();
 
         // Disable DNS recording
-        let mut pc = crate::config::PersistentConfig::default();
-        pc.record_dns = false;
+        // rustnetec: clippy Default::default() — 字面量初始化
+        let pc = crate::config::PersistentConfig {
+            record_dns: false,
+            ..Default::default()
+        };
         let rc = Arc::new(RwLock::new(RuntimeConfig::from_persistent(&pc)));
         let rc_guard = rc.read().unwrap();
 

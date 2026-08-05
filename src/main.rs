@@ -67,10 +67,11 @@ fn main() -> Result<()> {
         if let Some(username) = matches.get_one::<String>("username") {
             pc.username = Some(username.clone());
         }
-        if let Some(user_id_str) = matches.get_one::<String>("user-id") {
-            if let Ok(uid) = user_id_str.parse::<i64>() {
-                pc.user_id = Some(uid);
-            }
+        // rustnetec: collapse nested `if let` into let-chain (clippy::collapsible_if)
+        if let Some(user_id_str) = matches.get_one::<String>("user-id")
+            && let Ok(uid) = user_id_str.parse::<i64>()
+        {
+            pc.user_id = Some(uid);
         }
         if let Some(machine_id) = matches.get_one::<String>("machine-id") {
             pc.machine_id = Some(machine_id.clone());
@@ -231,18 +232,20 @@ fn main() -> Result<()> {
         if let Ok(dir) = telemetry::paths::data_dir() {
             let _ = telemetry::paths::chown_if_root(&dir, target.uid, target.gid);
         }
-        if let Ok(path) = telemetry::paths::db_path() {
-            if path.exists() {
-                let _ = telemetry::paths::chown_if_root(&path, target.uid, target.gid);
-            }
+        // rustnetec: collapse nested `if let` into let-chain (clippy::collapsible_if)
+        if let Ok(path) = telemetry::paths::db_path()
+            && path.exists()
+        {
+            let _ = telemetry::paths::chown_if_root(&path, target.uid, target.gid);
         }
         if let Ok(dir) = telemetry::paths::config_dir() {
             let _ = telemetry::paths::chown_if_root(&dir, target.uid, target.gid);
         }
-        if let Ok(path) = telemetry::paths::config_path() {
-            if path.exists() {
-                let _ = telemetry::paths::chown_if_root(&path, target.uid, target.gid);
-            }
+        // rustnetec: collapse nested `if let` into let-chain (clippy::collapsible_if)
+        if let Ok(path) = telemetry::paths::config_path()
+            && path.exists()
+        {
+            let _ = telemetry::paths::chown_if_root(&path, target.uid, target.gid);
         }
     }
 
@@ -723,7 +726,7 @@ fn main() -> Result<()> {
             };
 
             let state = std::sync::Arc::new(telemetry::http::HttpState {
-                db_path,
+                db_path: db_path.clone(),
                 http_token,
                 should_stop: app.should_stop_handle(),
             });
@@ -732,6 +735,41 @@ fn main() -> Result<()> {
                 warn!("Failed to start HTTP server: {}", e);
             } else {
                 info!("HTTP server started on 127.0.0.1:{}", http_port);
+            }
+
+            // rustnetec: Start UploadSink in daemon/tray mode (R3, T2.6)
+            // 仅当 server_url 已配置时启动上报线程; 否则跳过 (不打告警, 静默)。
+            let pc = rustnet_monitor::config::PersistentConfig::load().unwrap_or_default();
+            let runtime_config = std::sync::Arc::new(std::sync::RwLock::new(
+                rustnet_monitor::config::RuntimeConfig::from_persistent(&pc),
+            ));
+            let server_url = runtime_config.read().unwrap().server_url.clone();
+            if server_url.is_some() {
+                let identity = {
+                    let pc2 = rustnet_monitor::config::PersistentConfig::load().unwrap_or_default();
+                    let (id, _) = telemetry::identity::HostIdentity::initialize(
+                        pc2.username.as_deref(),
+                        pc2.user_id,
+                        pc2.machine_id.as_deref(),
+                    );
+                    id
+                };
+                let upload_sink = telemetry::upload::UploadSink::new(
+                    db_path,
+                    runtime_config,
+                    identity,
+                );
+                match upload_sink.spawn(app.should_stop_handle()) {
+                    Ok(handle) => {
+                        info!("Upload thread spawned");
+                        // Detach: handle 析构不会终止线程, 线程随 should_stop 退出。
+                        // 保留句柄到 daemon_loop 退出时由其 join (此处 detach)。
+                        std::mem::forget(handle);
+                    }
+                    Err(e) => warn!("Failed to spawn upload thread: {}", e),
+                }
+            } else {
+                info!("Upload thread skipped (server_url not configured)");
             }
         }
 
@@ -1039,9 +1077,10 @@ fn run_daemon_loop(app: &app::App) {
 
 // rustnetec: Handle `rustnet query` subcommand (R5, T1.3)
 fn run_query_subcommand(matches: &clap::ArgMatches) -> Result<()> {
+    // rustnetec: simplify redundant closures (clippy::redundant_closure)
     let db_path = matches.get_one::<String>("db")
-        .map(|s| std::path::PathBuf::from(s))
-        .unwrap_or_else(|| std::path::PathBuf::new());
+        .map(std::path::PathBuf::from)
+        .unwrap_or_default(); // rustnetec: clippy unwrap_or_default
     let filter = matches.get_one::<String>("filter").map(|s| s.as_str());
     let sql = matches.get_one::<String>("sql").map(|s| s.as_str());
     let live = matches.get_flag("live");

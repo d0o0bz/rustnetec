@@ -424,14 +424,13 @@ impl PersistentConfig {
     /// Creates the parent directory if needed. Sets file permissions to 0600 on Unix.
     pub fn save_to(&self, path: &PathBuf) -> Result<()> {
         // Ensure parent directory exists
-        if let Some(parent) = path.parent() {
-            if !parent.exists() {
-                fs::create_dir_all(parent)?;
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
-                }
+        if let Some(parent) = path.parent()
+            && !parent.exists() {
+            fs::create_dir_all(parent)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
             }
         }
 
@@ -476,15 +475,14 @@ impl PersistentConfig {
         if self.upload_interval_secs < 5 || self.upload_interval_secs > 3600 {
             return Err(anyhow!("upload_interval_secs must be 5-3600"));
         }
-        if let Some(ref url) = self.server_url {
-            if !url.starts_with("http://") && !url.starts_with("https://") {
-                return Err(anyhow!("invalid server_url"));
-            }
+        if let Some(ref url) = self.server_url
+            && !url.starts_with("http://")
+            && !url.starts_with("https://") {
+            return Err(anyhow!("invalid server_url"));
         }
-        if let Some(ref iface) = self.interface {
-            if iface.is_empty() {
-                return Err(anyhow!("interface must be non-empty or null"));
-            }
+        if let Some(ref iface) = self.interface
+            && iface.is_empty() {
+            return Err(anyhow!("interface must be non-empty or null"));
         }
         // rustnetec: autostart_mode validation (T1.11) — only allow Tray when
         // the `tray` cargo feature is enabled. Without the feature the Tray
@@ -552,7 +550,12 @@ impl PersistentConfig {
     /// Ensure http_token is set, generating one if missing.
     /// Returns true if a new token was generated (caller should save).
     pub fn ensure_http_token(&mut self) -> bool {
-        if self.http_token.is_none() || self.http_token.as_ref().map_or(true, |t| t.is_empty()) {
+        // rustnetec: clippy map_or simplify — 用 match 显式判空避开类型歧义
+        let need_new = match self.http_token.as_ref() {
+            None => true,
+            Some(t) => t.is_empty(),
+        };
+        if need_new {
             self.http_token = Some(Self::generate_http_token());
             info!("Generated new HTTP auth token");
             true
@@ -722,57 +725,73 @@ mod persistent_config_tests {
 
     #[test]
     fn validate_rejects_retention_days_too_low() {
-        let mut config = PersistentConfig::default();
-        config.retention_days = 0;
+        let config = PersistentConfig {
+            retention_days: 0,
+            ..Default::default()
+        };
         assert!(config.validate().is_err());
     }
 
     #[test]
     fn validate_rejects_retention_days_too_high() {
-        let mut config = PersistentConfig::default();
-        config.retention_days = 181;
+        let config = PersistentConfig {
+            retention_days: 181,
+            ..Default::default()
+        };
         assert!(config.validate().is_err());
     }
 
     #[test]
     fn validate_rejects_refresh_interval_too_low() {
-        let mut config = PersistentConfig::default();
-        config.refresh_interval = 50;
+        let config = PersistentConfig {
+            refresh_interval: 50,
+            ..Default::default()
+        };
         assert!(config.validate().is_err());
     }
 
     #[test]
     fn validate_rejects_refresh_interval_too_high() {
-        let mut config = PersistentConfig::default();
-        config.refresh_interval = 70000;
+        let config = PersistentConfig {
+            refresh_interval: 70000,
+            ..Default::default()
+        };
         assert!(config.validate().is_err());
     }
 
     #[test]
     fn validate_rejects_invalid_server_url() {
-        let mut config = PersistentConfig::default();
-        config.server_url = Some("ftp://bad.example.com".to_string());
+        let config = PersistentConfig {
+            server_url: Some("ftp://bad.example.com".to_string()),
+            ..Default::default()
+        };
         assert!(config.validate().is_err());
     }
 
     #[test]
     fn validate_accepts_valid_server_url() {
-        let mut config = PersistentConfig::default();
-        config.server_url = Some("https://rustnet.example.com".to_string());
+        let config = PersistentConfig {
+            server_url: Some("https://rustnet.example.com".to_string()),
+            ..Default::default()
+        };
         assert!(config.validate().is_ok());
     }
 
     #[test]
     fn validate_rejects_empty_interface() {
-        let mut config = PersistentConfig::default();
-        config.interface = Some("".to_string());
+        let config = PersistentConfig {
+            interface: Some("".to_string()),
+            ..Default::default()
+        };
         assert!(config.validate().is_err());
     }
 
     #[test]
     fn validate_rejects_upload_batch_size_out_of_range() {
-        let mut config = PersistentConfig::default();
-        config.upload_batch_size = 0;
+        let mut config = PersistentConfig {
+            upload_batch_size: 0,
+            ..Default::default()
+        };
         assert!(config.validate().is_err());
         config.upload_batch_size = 5001;
         assert!(config.validate().is_err());
@@ -780,8 +799,10 @@ mod persistent_config_tests {
 
     #[test]
     fn validate_rejects_upload_interval_secs_out_of_range() {
-        let mut config = PersistentConfig::default();
-        config.upload_interval_secs = 1;
+        let mut config = PersistentConfig {
+            upload_interval_secs: 1,
+            ..Default::default()
+        };
         assert!(config.validate().is_err());
         config.upload_interval_secs = 4000;
         assert!(config.validate().is_err());
@@ -795,11 +816,13 @@ mod persistent_config_tests {
 
         let path = tmp.join("config.yml");
 
-        let mut original = PersistentConfig::default();
-        original.interface = Some("eth0".to_string());
-        original.retention_days = 30;
-        original.language = "zh-CN".to_string();
-        original.server_url = Some("https://rustnet.example.com".to_string());
+        let original = PersistentConfig {
+            interface: Some("eth0".to_string()),
+            retention_days: 30,
+            language: "zh-CN".to_string(),
+            server_url: Some("https://rustnet.example.com".to_string()),
+            ..Default::default()
+        };
 
         original.save_to(&path).unwrap();
 
@@ -835,8 +858,10 @@ mod persistent_config_tests {
 
     #[test]
     fn ensure_http_token_noop_when_present() {
-        let mut config = PersistentConfig::default();
-        config.http_token = Some("existing_token".to_string());
+        let mut config = PersistentConfig {
+            http_token: Some("existing_token".to_string()),
+            ..Default::default()
+        };
         let generated = config.ensure_http_token();
         assert!(!generated);
         assert_eq!(config.http_token, Some("existing_token".to_string()));
@@ -868,13 +893,15 @@ mod runtime_config_tests {
 
     #[test]
     fn from_persistent_maps_all_fields() {
-        let mut pc = PersistentConfig::default();
-        pc.interface = Some("eth0".to_string());
-        pc.show_ptr_lookups = true;
-        pc.retention_days = 30;
-        pc.user_id = Some(12345);
-        pc.machine_id = Some("abc123".to_string());
-        pc.http_token = Some("tok".to_string());
+        let pc = PersistentConfig {
+            interface: Some("eth0".to_string()),
+            show_ptr_lookups: true,
+            retention_days: 30,
+            user_id: Some(12345),
+            machine_id: Some("abc123".to_string()),
+            http_token: Some("tok".to_string()),
+            ..Default::default()
+        };
 
         let rc = RuntimeConfig::from_persistent(&pc);
         assert_eq!(rc.interface, Some("eth0".to_string()));
@@ -895,12 +922,14 @@ mod runtime_config_tests {
 
     #[test]
     fn apply_hot_update_only_touches_hot_fields() {
-        let mut pc = PersistentConfig::default();
-        pc.show_ptr_lookups = true;
-        pc.show_historic = true;
-        pc.language = "zh-CN".to_string();
-        pc.interface = Some("eth0".to_string());
-        pc.retention_days = 30;
+        let mut pc = PersistentConfig {
+            show_ptr_lookups: true,
+            show_historic: true,
+            language: "zh-CN".to_string(),
+            interface: Some("eth0".to_string()),
+            retention_days: 30,
+            ..Default::default()
+        };
 
         let mut rc = RuntimeConfig::from_persistent(&pc);
 
@@ -923,10 +952,12 @@ mod runtime_config_tests {
 
     #[test]
     fn apply_restart_items_updates_restart_fields() {
-        let mut pc = PersistentConfig::default();
-        pc.interface = Some("eth0".to_string());
-        pc.retention_days = 30;
-        pc.pending_restart = true;
+        let mut pc = PersistentConfig {
+            interface: Some("eth0".to_string()),
+            retention_days: 30,
+            pending_restart: true,
+            ..Default::default()
+        };
 
         let mut rc = RuntimeConfig::from_persistent(&pc);
 
@@ -946,8 +977,10 @@ mod runtime_config_tests {
 
     #[test]
     fn hot_update_does_not_touch_pending_restart() {
-        let mut pc = PersistentConfig::default();
-        pc.pending_restart = true;
+        let mut pc = PersistentConfig {
+            pending_restart: true,
+            ..Default::default()
+        };
 
         let mut rc = RuntimeConfig::from_persistent(&pc);
         assert!(rc.pending_restart);

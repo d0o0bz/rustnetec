@@ -27,9 +27,11 @@ use std::path::PathBuf;
 /// `Daemon` runs `rustnet --daemon` (headless capture + local HTTP).
 /// `Tray` runs `rustnet --tray` (daemon + system tray icon); only available
 /// when the `tray` cargo feature is enabled.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+// rustnetec: Default 改用 derive（clippy derivable_impls），#[default] 标记 Daemon
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "PascalCase")]
 pub enum AutostartMode {
+    #[default]
     Daemon,
     #[cfg(feature = "tray")]
     Tray,
@@ -52,12 +54,6 @@ impl AutostartMode {
             #[cfg(feature = "tray")]
             AutostartMode::Tray => "tray",
         }
-    }
-}
-
-impl Default for AutostartMode {
-    fn default() -> Self {
-        AutostartMode::Daemon
     }
 }
 
@@ -134,15 +130,18 @@ pub fn is_installed() -> bool {
         if let Ok(path) = linux_unit_path() {
             return path.exists();
         }
-        return false;
+        // rustnetec: clippy needless_return — 此 cfg 下为函数末尾自然返回，去掉 return
+        false
     }
     #[cfg(target_os = "macos")]
     {
-        return daemon_plist_path().exists() || tray_plist_path().exists();
+        // rustnetec: clippy needless_return — 此 cfg 下为函数末尾自然返回，去掉 return
+        daemon_plist_path().exists() || tray_plist_path().exists()
     }
     #[cfg(target_os = "windows")]
     {
-        return is_installed_windows();
+        // rustnetec: clippy needless_return — 此 cfg 下为函数末尾自然返回，去掉 return
+        is_installed_windows()
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     {

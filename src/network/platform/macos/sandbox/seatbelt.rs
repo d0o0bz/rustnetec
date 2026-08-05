@@ -183,7 +183,8 @@ fn build_network_allow_section(host: &str) -> String {
 fn build_sbpl_profile(block_network: bool, allowed_network_host: Option<&str>) -> String {
     if block_network {
         let allow_section = allowed_network_host
-            .map(|h| build_network_allow_section(h))
+            // rustnetec: 消除 clippy redundant_closure,直接传函数引用替代单参闭包
+            .map(build_network_allow_section)
             .unwrap_or_default();
         format!("{}{}{}", SBPL_PROFILE_BASE, allow_section, SBPL_NETWORK_DENY)
     } else {

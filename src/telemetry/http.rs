@@ -10,8 +10,7 @@
 //   POST /config/restart-capture  — restart capture with pending items (auth)
 
 use anyhow::Result;
-use log::{info, warn};
-use std::io::Read;
+use log::info;
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
@@ -126,9 +125,9 @@ fn check_auth(request: &tiny_http::Request, expected_token: &str) -> bool {
     }
 
     for header in request.headers() {
-        if header.field.equiv(&"Authorization") {
-            let value = header.value.as_str();
-            if let Some(token) = value.strip_prefix("Bearer ") {
+        if header.field.equiv("Authorization") {
+            // rustnetec: clippy deref — 内联 as_str 避开中间引用绑定
+            if let Some(token) = header.value.as_str().strip_prefix("Bearer ") {
                 return token.trim() == expected_token;
             }
         }
@@ -139,7 +138,8 @@ fn check_auth(request: &tiny_http::Request, expected_token: &str) -> bool {
 /// Check CORS: only allow local origins (127.0.0.1 / localhost).
 fn check_cors_origin(request: &tiny_http::Request) -> bool {
     for header in request.headers() {
-        if header.field.equiv(&"Origin") {
+        if header.field.equiv("Origin") {
+            // rustnetec: clippy deref — 内联 as_str 避开中间引用绑定
             let origin = header.value.as_str().to_lowercase();
             if origin.contains("127.0.0.1") || origin.contains("localhost") || origin.contains("[::1]") {
                 return true;

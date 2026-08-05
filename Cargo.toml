@@ -85,6 +85,8 @@ tiny_http = "0.12" # rustnetec: lightweight HTTP server for local loopback (R5)
 # rustnetec: signal handling for daemon mode graceful shutdown (偏差2, R1)
 signal-hook = "0.3"
 regex-lite = "0.1"
+# rustnetec: blocking HTTP client for client→server data upload (R3, T2.6)
+ureq = { version = "2", features = ["json"] }
 # Note: dns-lookup, ring, aes, flate2, and maxminddb moved to rustnet-core,
 # which is the only place they are used. They are re-exported transitively
 # through the `crate::network` facade in src/network/mod.rs.
@@ -228,6 +230,10 @@ eula = false
 criterion = { version = "0.8", features = ["html_reports"] }
 insta = { version = "1", features = ["filters"] }
 rustc-hash = "2"
+# rustnetec: HTTP mock server for UploadSink tests (T2.6)
+mockito = "1"
+# rustnetec: workspace member pulled in as dev-dep for cross-crate E2E tests (T2.7)
+rustnet-server.workspace = true
 
 [[bench]]
 name = "packet_parsing"

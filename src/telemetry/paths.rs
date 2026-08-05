@@ -135,10 +135,11 @@ fn home_dir() -> Result<PathBuf> {
         return Ok(PathBuf::from(userprofile));
     }
     // On Windows, try HOMEDRIVE + HOMEPATH
-    if let Ok(homedrive) = std::env::var("HOMEDRIVE") {
-        if let Ok(homepath) = std::env::var("HOMEPATH") {
-            return Ok(PathBuf::from(format!("{}{}", homedrive, homepath)));
-        }
+    // rustnetec: clippy collapsible_nested_if — 合并嵌套 if let 为 let-chain（Rust 1.88+ 稳定）
+    if let Ok(homedrive) = std::env::var("HOMEDRIVE")
+        && let Ok(homepath) = std::env::var("HOMEPATH")
+    {
+        return Ok(PathBuf::from(format!("{}{}", homedrive, homepath)));
     }
     Err(anyhow!("Could not determine home directory"))
 }

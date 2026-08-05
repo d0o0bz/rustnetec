@@ -6,6 +6,7 @@ pub mod identity; // rustnetec: Host identity — snowflake user_id + BLAKE3 mac
 pub mod paths;
 pub mod query; // rustnetec: query subcommand with filter-to-SQL translation (R5, T1.3)
 pub mod autostart; // rustnetec: boot-time autostart via native per-user mechanisms (R1, T1.11)
+pub mod upload; // rustnetec: UploadSink — client→server data upload (R3, T2.6)
 
 use serde::Serialize;
 use std::sync::Arc;
@@ -113,12 +114,16 @@ pub trait ConnectionEventSink: Send + Sync {
 
 /// A ConnectionEventSink that writes events as JSONL to a file.
 /// Wraps the existing JsonLineWriter from app.rs.
+// rustnetec: 预留扩展点,暂无生产调用方,容许 dead_code 直至上游挂载
+#[allow(dead_code)]
 pub struct JsonLineSink {
     writer: Arc<crate::app::JsonLineWriter>,
 }
 
 impl JsonLineSink {
-    pub fn new(writer: Arc<crate::app::JsonLineWriter>) -> Self {
+    // rustnetec: 缩窄可见性至 crate 内,与 pub(crate) JsonLineWriter 匹配,消除 clippy private_interface 错误
+    #[allow(dead_code)]
+    pub(crate) fn new(writer: Arc<crate::app::JsonLineWriter>) -> Self {
         Self { writer }
     }
 }

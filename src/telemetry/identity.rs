@@ -1,6 +1,5 @@
 // rustnetec: Host identity — snowflake user_id + BLAKE3 machine_id (R8+R10, T1.6)
 
-use anyhow::Result;
 use blake3::Hasher;
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -46,7 +45,7 @@ pub fn generate_user_id() -> i64 {
     let machine_bits = (std::process::id() % 1024) as u64;
 
     // Simple sequence: use sub-millisecond nanos for uniqueness within same ms
-    let seq = (now % 4096) as u64;
+    let seq = now % 4096;
 
     let id = ((timestamp & 0x1FFFFFFFFFF) << 22) | (machine_bits << 12) | seq;
     id as i64
@@ -174,17 +173,17 @@ fn read_primary_mac_address() -> Option<String> {
 
 #[cfg(unix)]
 fn read_mac_unix() -> Option<String> {
-    use std::fs;
+    // rustnetec: 使用全路径 std::fs::* 替代局部 `use std::fs;`，避免 cfg 路径下的 unused import 误报
     // Try /sys/class/net on Linux
     #[cfg(target_os = "linux")]
     {
-        if let Ok(entries) = fs::read_dir("/sys/class/net") {
+        if let Ok(entries) = std::fs::read_dir("/sys/class/net") {
             for entry in entries.flatten() {
                 let name = entry.file_name();
                 let name_str = name.to_string_lossy();
                 if name_str == "lo" { continue; }
                 let addr_path = format!("/sys/class/net/{}/address", name_str);
-                if let Ok(addr) = fs::read_to_string(&addr_path) {
+                if let Ok(addr) = std::fs::read_to_string(&addr_path) {
                     let mac = addr.trim().to_string();
                     if !mac.is_empty() && mac != "00:00:00:00:00:00" {
                         return Some(mac);
@@ -200,12 +199,11 @@ fn read_mac_unix() -> Option<String> {
         if let Ok(output) = Command::new("ifconfig").output() {
             let stdout = String::from_utf8_lossy(&output.stdout);
             for line in stdout.lines() {
-                if line.contains("ether ") {
-                    if let Some(addr) = line.split("ether ").nth(1) {
-                        let mac = addr.trim().to_string();
-                        if !mac.is_empty() && mac != "00:00:00:00:00:00" {
-                            return Some(mac);
-                        }
+                if line.contains("ether ")
+                    && let Some(addr) = line.split("ether ").nth(1) {
+                    let mac = addr.trim().to_string();
+                    if !mac.is_empty() && mac != "00:00:00:00:00:00" {
+                        return Some(mac);
                     }
                 }
             }
@@ -299,12 +297,11 @@ fn collect_ip_list_unix() -> Vec<String> {
                     ips.push(addr.to_string());
                 }
             }
-        } else if line.starts_with("inet6 ") {
-            if let Some(addr) = line.split_whitespace().nth(1) {
-                // Skip loopback and link-local
-                if !addr.starts_with("::1") && !addr.starts_with("fe80") {
-                    ips.push(addr.to_string());
-                }
+        } else if line.starts_with("inet6 ")
+            && let Some(addr) = line.split_whitespace().nth(1) {
+            // Skip loopback and link-local
+            if !addr.starts_with("::1") && !addr.starts_with("fe80") {
+                ips.push(addr.to_string());
             }
         }
     }

@@ -244,14 +244,16 @@ fn autostart_config_roundtrip_preserves_fields() {
         let _ = old_appdata;
     }
 
-    let mut pc = PersistentConfig::default();
-    pc.autostart_enabled = true;
-    pc.autostart_mode = AutostartMode::Daemon;
+    let pc = PersistentConfig {
+        autostart_enabled: true,
+        autostart_mode: AutostartMode::Daemon,
+        ..Default::default()
+    };
     pc.save().expect("save should succeed");
 
     let loaded = PersistentConfig::load().expect("load should succeed");
-    assert_eq!(
-        loaded.autostart_enabled, true,
+    assert!(
+        loaded.autostart_enabled,
         "autostart_enabled should round-trip"
     );
     assert_eq!(
@@ -274,8 +276,8 @@ fn autostart_config_roundtrip_preserves_fields() {
     }
 
     let fresh = PersistentConfig::load().expect("load from missing file returns default");
-    assert_eq!(
-        fresh.autostart_enabled, false,
+    assert!(
+        !fresh.autostart_enabled,
         "default autostart_enabled should be false"
     );
     assert_eq!(
@@ -307,6 +309,7 @@ fn autostart_mode_tray_variant_only_with_feature() {
     // Without the `tray` cargo feature, the Tray variant does not exist in
     // AutostartMode, so deserializing `autostart_mode: Tray` must fail.
     // With the feature enabled, it must succeed.
+    #[cfg(feature = "tray")]
     use rustnet_monitor::telemetry::autostart::AutostartMode;
 
     let yaml = "autostart_mode: Tray\n";

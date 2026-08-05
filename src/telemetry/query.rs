@@ -3,7 +3,8 @@
 use anyhow::{Result, bail};
 use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
-use std::path::PathBuf;
+// rustnetec: 改用 &Path 替代 &PathBuf（clippy ptr_arg）
+use std::path::Path;
 
 use crate::filter::{ConnectionFilter, FilterCriteria, FilterValue, PortMatch};
 
@@ -12,7 +13,8 @@ const DEFAULT_QUERY_LIMIT: i64 = 1000;
 
 /// Run the `rustnet query` subcommand.
 pub fn run_query(
-    db_path: &PathBuf,
+    // rustnetec: 签名改为 &Path（clippy ptr_arg），调用处传 &PathBuf 自动兼容
+    db_path: &Path,
     filter: Option<&str>,
     sql: Option<&str>,
     live: bool,
@@ -25,7 +27,8 @@ pub fn run_query(
     let path = if db_path.as_os_str().is_empty() {
         crate::telemetry::paths::db_path()?
     } else {
-        db_path.clone()
+        // rustnetec: db_path 现为 &Path，用 to_path_buf() 得到 PathBuf
+        db_path.to_path_buf()
     };
 
     if !path.exists() {
@@ -326,10 +329,11 @@ fn row_get_json_value(row: &rusqlite::Row, idx: usize) -> Value {
         if let Ok(n) = s.parse::<i64>() {
             return Value::Number(n.into());
         }
-        if let Ok(f) = s.parse::<f64>() {
-            if let Some(n) = serde_json::Number::from_f64(f) {
-                return Value::Number(n);
-            }
+        // rustnetec: clippy collapsible_nested_if — 合并嵌套 if let 为 let-chain（Rust 1.88+ 稳定）
+        if let Ok(f) = s.parse::<f64>()
+            && let Some(n) = serde_json::Number::from_f64(f)
+        {
+            return Value::Number(n);
         }
         return Value::String(s);
     }
@@ -342,10 +346,11 @@ fn row_get_json_value(row: &rusqlite::Row, idx: usize) -> Value {
 
     // Try float
     let float_val: Result<f64, _> = row.get(idx);
-    if let Ok(f) = float_val {
-        if let Some(n) = serde_json::Number::from_f64(f) {
-            return Value::Number(n);
-        }
+    // rustnetec: clippy collapsible_nested_if — 合并嵌套 if let 为 let-chain（Rust 1.88+ 稳定）
+    if let Ok(f) = float_val
+        && let Some(n) = serde_json::Number::from_f64(f)
+    {
+        return Value::Number(n);
     }
 
     Value::Null
