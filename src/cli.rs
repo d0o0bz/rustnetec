@@ -50,6 +50,16 @@ pub fn build_cli() -> Command {
                         .required(false),
                 ),
         )
+        // rustnetec: --install-autostart subcommand (R1 boot autostart, T1.11)
+        .subcommand(
+            Command::new("install-autostart")
+                .about("Register rustnet --daemon (or --tray if autostart_mode=tray in config.yml) as a boot-time autostart entry using the platform's native per-user mechanism (Linux systemd --user, macOS LaunchAgent, Windows HKCU Run). No root/administrator required."),
+        )
+        // rustnetec: --uninstall-autostart subcommand (R1 boot autostart, T1.11)
+        .subcommand(
+            Command::new("uninstall-autostart")
+                .about("Remove the boot-time autostart entry registered by install-autostart. Idempotent: Ok when no entry exists."),
+        )
         .arg(
             Arg::new("interface")
                 .short('i')
@@ -470,5 +480,28 @@ mod tests {
             .expect("query --live should parse");
         let sub = matches.subcommand_matches("query").expect("query subcommand");
         assert!(sub.get_flag("live"));
+    }
+
+    // rustnetec: autostart subcommand parsing (R1 boot autostart, T1.11)
+    #[test]
+    fn install_autostart_subcommand_parses() {
+        let matches = build_cli()
+            .try_get_matches_from(["rustnet", "install-autostart"])
+            .expect("install-autostart subcommand should parse");
+        assert!(
+            matches.subcommand_matches("install-autostart").is_some(),
+            "install-autostart subcommand should be detected"
+        );
+    }
+
+    #[test]
+    fn uninstall_autostart_subcommand_parses() {
+        let matches = build_cli()
+            .try_get_matches_from(["rustnet", "uninstall-autostart"])
+            .expect("uninstall-autostart subcommand should parse");
+        assert!(
+            matches.subcommand_matches("uninstall-autostart").is_some(),
+            "uninstall-autostart subcommand should be detected"
+        );
     }
 }

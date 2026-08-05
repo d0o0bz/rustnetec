@@ -11,6 +11,11 @@ use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 
+// rustnetec: AutostartMode is defined in telemetry::autostart (T1.11) and
+// re-exported here so PersistentConfig can carry it as a serde field without
+// creating a cross-module import cycle.
+pub use crate::telemetry::autostart::AutostartMode;
+
 /// Application configuration
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -299,6 +304,12 @@ pub struct PersistentConfig {
     #[serde(default)]
     pub http_token: Option<String>,
 
+    // --- Boot autostart (R1 sub-requirement; default off) ---
+    #[serde(default)]
+    pub autostart_enabled: bool,
+    #[serde(default)]
+    pub autostart_mode: AutostartMode,
+
     // --- Runtime state ---
     #[serde(default)]
     pub pending_restart: bool,
@@ -369,6 +380,9 @@ impl Default for PersistentConfig {
 
             http_port: 19811,
             http_token: None,
+
+            autostart_enabled: false,
+            autostart_mode: AutostartMode::default(),
 
             pending_restart: false,
         }
@@ -471,6 +485,20 @@ impl PersistentConfig {
             if iface.is_empty() {
                 return Err(anyhow!("interface must be non-empty or null"));
             }
+        }
+        // rustnetec: autostart_mode validation (T1.11) — only allow Tray when
+        // the `tray` cargo feature is enabled. Without the feature the Tray
+        // variant does not even exist in AutostartMode, so a YAML such as
+        // `autostart_mode: Tray` would already fail to deserialize.
+        #[cfg(not(feature = "tray"))]
+        {
+            // No-op: Tray variant is absent; serde rejects unknown values at
+            // load time, so any value here is guaranteed Daemon.
+        }
+        #[cfg(feature = "tray")]
+        {
+            // Nothing to reject at runtime: both Daemon and Tray are valid
+            // when the feature is enabled.
         }
         Ok(())
     }

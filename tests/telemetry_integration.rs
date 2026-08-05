@@ -218,3 +218,126 @@ fn paths_resolve_to_rustnetec_subdir() {
     let cfg = paths::config_path().unwrap();
     assert_eq!(cfg.file_name().unwrap(), "config.yml");
 }
+
+// ---- T1.11 自启动配置往返 + 非法 mode 拒绝 ----
+
+#[test]
+fn autostart_config_roundtrip_preserves_fields() {
+    // autostart_enabled + autostart_mode 往返：save → load → 字段保持
+    use rustnet_monitor::config::PersistentConfig;
+    use rustnet_monitor::telemetry::autostart::AutostartMode;
+
+    let tmp = std::env::temp_dir().join("rustnetec-it-autostart-rt");
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).unwrap();
+    unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp) };
+    #[cfg(target_os = "macos")]
+    {
+        let old_home = std::env::var("HOME").ok();
+        unsafe { std::env::set_var("HOME", &tmp) };
+        let _ = old_home;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let old_appdata = std::env::var("APPDATA").ok();
+        unsafe { std::env::set_var("APPDATA", &tmp) };
+        let _ = old_appdata;
+    }
+
+    let mut pc = PersistentConfig::default();
+    pc.autostart_enabled = true;
+    pc.autostart_mode = AutostartMode::Daemon;
+    pc.save().expect("save should succeed");
+
+    let loaded = PersistentConfig::load().expect("load should succeed");
+    assert_eq!(
+        loaded.autostart_enabled, true,
+        "autostart_enabled should round-trip"
+    );
+    assert_eq!(
+        loaded.autostart_mode, AutostartMode::Daemon,
+        "autostart_mode should round-trip"
+    );
+
+    // Default values when config.yml absent
+    let tmp2 = std::env::temp_dir().join("rustnetec-it-autostart-default");
+    let _ = std::fs::remove_dir_all(&tmp2);
+    std::fs::create_dir_all(&tmp2).unwrap();
+    unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp2) };
+    #[cfg(target_os = "macos")]
+    {
+        unsafe { std::env::set_var("HOME", &tmp2) };
+    }
+    #[cfg(target_os = "windows")]
+    {
+        unsafe { std::env::set_var("APPDATA", &tmp2) };
+    }
+
+    let fresh = PersistentConfig::load().expect("load from missing file returns default");
+    assert_eq!(
+        fresh.autostart_enabled, false,
+        "default autostart_enabled should be false"
+    );
+    assert_eq!(
+        fresh.autostart_mode, AutostartMode::Daemon,
+        "default autostart_mode should be Daemon"
+    );
+
+    // Cleanup env vars we set; best-effort.
+    unsafe { std::env::remove_var("XDG_CONFIG_HOME") };
+    let _ = std::fs::remove_dir_all(&tmp);
+    let _ = std::fs::remove_dir_all(&tmp2);
+}
+
+#[test]
+fn autostart_mode_yaml_rejects_unknown_variant() {
+    // serde with rename_all="PascalCase" should reject unknown YAML enum
+    // variants such as "tui" — this covers the "非法 mode 拒绝" requirement.
+    let yaml = "autostart_mode: Tui\n";
+    let result: Result<PersistentConfig, _> = serde_yaml::from_str(yaml);
+    assert!(
+        result.is_err(),
+        "deserializing an unknown autostart_mode variant must fail, got: {:?}",
+        result.ok()
+    );
+}
+
+#[test]
+fn autostart_mode_tray_variant_only_with_feature() {
+    // Without the `tray` cargo feature, the Tray variant does not exist in
+    // AutostartMode, so deserializing `autostart_mode: Tray` must fail.
+    // With the feature enabled, it must succeed.
+    use rustnet_monitor::telemetry::autostart::AutostartMode;
+
+    let yaml = "autostart_mode: Tray\n";
+    let result: Result<PersistentConfig, _> = serde_yaml::from_str(yaml);
+    #[cfg(not(feature = "tray"))]
+    {
+        assert!(
+            result.is_err(),
+            "without `tray` feature, autostart_mode: Tray must be rejected, got: {:?}",
+            result.ok()
+        );
+        // Sanity: the Daemon variant still parses fine.
+        let daemon_yaml = "autostart_mode: Daemon\n";
+        let daemon_result: Result<PersistentConfig, _> =
+            serde_yaml::from_str(daemon_yaml);
+        assert!(daemon_result.is_ok(), "Daemon should always parse");
+    }
+    #[cfg(feature = "tray")]
+    {
+        let pc = result.expect("with `tray` feature, Tray should parse");
+        assert_eq!(pc.autostart_mode, AutostartMode::Tray);
+    }
+}
+
+#[test]
+fn autostart_validate_accepts_default_config() {
+    // The default PersistentConfig has autostart_enabled=false and
+    // autostart_mode=Daemon; validate() should accept this.
+    let pc = PersistentConfig::default();
+    assert!(
+        pc.validate().is_ok(),
+        "default config with autostart disabled should validate"
+    );
+}

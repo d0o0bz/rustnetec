@@ -21,6 +21,14 @@ fn main() -> Result<()> {
         return run_query_subcommand(query_matches);
     }
 
+    // rustnetec: Handle autostart subcommands (R1 boot autostart, T1.11)
+    if matches.subcommand_matches("install-autostart").is_some() {
+        return run_install_autostart();
+    }
+    if matches.subcommand_matches("uninstall-autostart").is_some() {
+        return run_uninstall_autostart();
+    }
+
     // Set up logging only if log-level was provided
     if let Some(log_level_str) = matches.get_one::<String>("log-level") {
         let log_level = log_level_str
@@ -1039,6 +1047,37 @@ fn run_query_subcommand(matches: &clap::ArgMatches) -> Result<()> {
     let live = matches.get_flag("live");
 
     telemetry::query::run_query(&db_path, filter, sql, live)
+}
+
+// rustnetec: Handle `rustnet install-autostart` subcommand (R1 boot autostart, T1.11)
+fn run_install_autostart() -> Result<()> {
+    // Load PersistentConfig to honor autostart_mode: tray (requires the tray feature).
+    let mut pc = rustnet_monitor::config::PersistentConfig::load()?;
+    let mode = pc.autostart_mode;
+    telemetry::autostart::install(mode)?;
+    // Persist the autostart intent so config.yml reflects reality.
+    pc.autostart_enabled = true;
+    pc.autostart_mode = mode;
+    if let Err(e) = pc.save() {
+        warn!("autostart installed but failed to persist config: {}", e);
+    } else {
+        info!("registered rustnet {} as a boot-time autostart entry", mode.cli_flag());
+    }
+    Ok(())
+}
+
+// rustnetec: Handle `rustnet uninstall-autostart` subcommand (R1 boot autostart, T1.11)
+fn run_uninstall_autostart() -> Result<()> {
+    telemetry::autostart::uninstall()?;
+    // Persist autostart_enabled=false but keep autostart_mode so reinstall is reversible.
+    let mut pc = rustnet_monitor::config::PersistentConfig::load().unwrap_or_default();
+    pc.autostart_enabled = false;
+    if let Err(e) = pc.save() {
+        warn!("autostart uninstalled but failed to persist config: {}", e);
+    } else {
+        info!("removed the rustnet boot-time autostart entry");
+    }
+    Ok(())
 }
 
 fn run_ui_loop<B: ratatui::prelude::Backend>(
