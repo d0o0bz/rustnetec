@@ -271,7 +271,7 @@ fn test_user_id_non_numeric_returns_error() {
     let mut req = sample_request(vec![sample_event(1, 1_700_000_000)]);
     req.user_id = "abc".to_string(); // non-numeric
 
-    let err = ingest_write(&mut conn, &req).err().expect("should error");
+    let err = ingest_write(&mut conn, &req).expect_err("should error");
     // The error must be a rusqlite::Error wrapping our DbError::InvalidUserId.
     let msg = err.to_string();
     assert!(

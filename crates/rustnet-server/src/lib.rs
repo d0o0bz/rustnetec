@@ -19,4 +19,5 @@
 //! - [`db`]  — SQLite initialization, schema migrations, and writers
 
 pub mod api;
+pub mod cleanup;
 pub mod db;

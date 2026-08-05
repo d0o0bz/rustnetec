@@ -18,9 +18,14 @@
 //! | `schema_version`   | Migration ledger                               |
 
 pub mod error;
+pub mod partition;
+pub mod query;
+pub mod retention;
 pub mod write;
 
 pub use error::Error;
+pub use query::{query_events, stats};
+pub use retention::purge_expired;
 pub use write::ingest_write;
 
 use std::path::{Path, PathBuf};
@@ -72,6 +77,22 @@ impl ServerDb {
     ) -> Result<rustnet_core::ingest::IngestResponse> {
         let mut conn = self.lock_writer();
         ingest_write(&mut conn, req)
+    }
+
+    /// Read-only historical query (T2.4). Reuses the writer connection;
+    /// safe under the single-writer model.
+    pub fn query_events(
+        &self,
+        params: &rustnet_core::ingest::QueryParams,
+    ) -> Result<rustnet_core::ingest::QueryResponse> {
+        let mut conn = self.lock_writer();
+        query::query_events(&mut conn, params)
+    }
+
+    /// Live aggregate statistics (T2.4).
+    pub fn stats(&self) -> Result<rustnet_core::ingest::StatsResponse> {
+        let mut conn = self.lock_writer();
+        query::stats(&mut conn)
     }
 
     /// Path of the underlying database file (for backups/debugging).
