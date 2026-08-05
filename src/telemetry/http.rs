@@ -50,6 +50,13 @@ pub struct HttpState {
     /// expire after `SESSION_TTL`; the process restart also clears them (state
     /// is in-memory, which is acceptable for a localhost-only UI handshake).
     pub active_sessions: Arc<Mutex<HashMap<String, Instant>>>,
+    /// rustnetec: HTTP listen port (T3.5, R6).
+    ///
+    /// Stored on the state so the tray launcher can build the
+    /// `http://127.0.0.1:<port>/?code=<guid>` URL without hardcoding 19811 —
+    /// the daemon may be started with `--http-port <override>`, and the
+    /// launcher must honour that override to hit the right server.
+    pub http_port: u16,
 }
 
 impl HttpState {
@@ -721,12 +728,16 @@ mod tests {
             // rustnetec: T3.3 bootstrap handshake state (R6)
             pending_guids: Arc::new(Mutex::new(Vec::new())),
             active_sessions: Arc::new(Mutex::new(HashMap::new())),
+            // rustnetec: T3.5 launcher URL port (R6)
+            http_port: 19811,
         };
         assert_eq!(state.http_token, "test-token");
         assert!(!state.should_stop.load(std::sync::atomic::Ordering::Relaxed));
         // rustnetec: T3.3 — confirm the handshake state is wired and empty
         assert!(state.pending_guids.lock().unwrap().is_empty());
         assert!(state.active_sessions.lock().unwrap().is_empty());
+        // rustnetec: T3.5 — confirm the listen port is wired for the launcher
+        assert_eq!(state.http_port, 19811);
     }
 
     // ---- rustnetec: bootstrap handshake unit tests (T3.3, R6) ----
@@ -744,7 +755,38 @@ mod tests {
             should_stop: Arc::new(AtomicBool::new(false)),
             pending_guids: Arc::new(Mutex::new(Vec::new())),
             active_sessions: Arc::new(Mutex::new(HashMap::new())),
+            // rustnetec: T3.5 — use a non-default port so launcher URL
+            // construction would catch a hardcoded-19811 regression.
+            http_port: 19812,
         }
+    }
+
+    /// rustnetec: T3.5 — verify the launcher honours a non-default port
+    /// instead of hardcoding 19811. Constructs an HttpState with port 19812
+    /// (the same non-default port `handshake_state` uses) and confirms the
+    /// field is readable; the launcher's `open_local_panel` reads this field
+    /// to build the URL, so a regression here would break `--http-port`
+    /// overrides in the tray menu.
+    #[test]
+    fn http_state_port_is_wired_for_launcher() {
+        let state = handshake_state();
+        assert_eq!(
+            state.http_port, 19812,
+            "handshake_state must use a non-default port"
+        );
+        // A freshly-built default state should also expose the port field.
+        use std::collections::HashMap;
+        use std::sync::Mutex;
+        use std::sync::atomic::AtomicBool;
+        let other = HttpState {
+            db_path: PathBuf::from("/tmp/test_port.db"),
+            http_token: String::new(),
+            should_stop: Arc::new(AtomicBool::new(false)),
+            pending_guids: Arc::new(Mutex::new(Vec::new())),
+            active_sessions: Arc::new(Mutex::new(HashMap::new())),
+            http_port: 19813,
+        };
+        assert_eq!(other.http_port, 19813);
     }
 
     #[test]

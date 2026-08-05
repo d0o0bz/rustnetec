@@ -751,6 +751,8 @@ fn main() -> Result<()> {
                 active_sessions: std::sync::Arc::new(std::sync::Mutex::new(
                     std::collections::HashMap::new(),
                 )),
+                // rustnetec: HTTP listen port for launcher URL (T3.5, R6)
+                http_port,
             });
 
             if let Err(e) = telemetry::http::start_http_server(http_port, state.clone()) {
@@ -1191,7 +1193,9 @@ fn run_daemon_loop(
                         Cmd::OpenSettings => {
                             // rustnetec: launcher T3.3 — /config page; session cookie is already
                             // established by the OpenLocalPanel handshake so the browser can reach it.
-                            ui::open_browser("http://127.0.0.1:19811/config");
+                            // rustnetec: T3.5 — honour --http-port override via http_state.http_port.
+                            let port = http_state.as_ref().map(|s| s.http_port).unwrap_or(19811);
+                            ui::open_browser(&format!("http://127.0.0.1:{port}/config"));
                         }
                         Cmd::None => {}
                     }

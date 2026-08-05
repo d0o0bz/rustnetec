@@ -75,14 +75,11 @@ pub fn open_browser(url: &str) {
 /// the default 19811 if the state was not wired in.
 pub fn open_local_panel(state: &HttpState) {
     let guid = state.issue_bootstrap_guid();
-    // The port is not stored on HttpState directly; the server was started on
-    // a port passed to start_http_server. We bind to the default 19811 here
-    // (the tray branch in main.rs always starts the HTTP server on the
-    // configured port, and the launcher is only called from there, so the
-    // default matches unless the user overrode --http-port — in which case
-    // the URL still works because the browser hits 127.0.0.1 and the server
-    // is on the override port; TODO T3.4: thread the actual port through).
-    let url = format!("http://127.0.0.1:19811/?code={guid}");
+    // rustnetec: read the live listen port from HttpState (T3.5) so the
+    // launcher honours a user-supplied `--http-port` override instead of
+    // always hitting 19811. The port is populated at HttpState construction
+    // in main.rs and is the same port the server was bound to.
+    let url = format!("http://127.0.0.1:{}/?code={guid}", state.http_port);
     open_browser(&url);
 }
 
