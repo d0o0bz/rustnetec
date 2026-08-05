@@ -1,0 +1,35 @@
+[package]
+name = "rustnet-server"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Centralized rustnet server: ingest, query, and stats over SQLite with axum + tokio"
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+license.workspace = true
+keywords = ["network", "monitoring", "server", "ingest", "axum"]
+categories = ["network-programming", "web-programming::http-server"]
+
+[lib]
+name = "rustnet_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rustnet-server"
+path = "src/main.rs"
+
+[dependencies]
+rustnet-core.workspace = true
+anyhow.workspace = true
+log.workspace = true
+axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+blake3 = "1.5"
+chrono = "0.4"

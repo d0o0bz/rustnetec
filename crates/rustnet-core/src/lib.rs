@@ -30,6 +30,10 @@
 
 pub mod network;
 
+// rustnetec: shared client/server wire protocol (ADR-5, T2.2).
+// Standalone module — no dependency on `network` internals.
+pub mod ingest;
+
 // Flat re-exports so external users can write `rustnet_core::types` instead of
 // `rustnet_core::network::types`. The `network` module remains the canonical
 // home and keeps internal `crate::network::*` paths working unchanged.
