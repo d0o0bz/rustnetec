@@ -119,8 +119,8 @@ pub struct ClientEvent {
 pub struct IngestResponse {
     pub accepted: u64,
     pub duplicates: u64,
-    /// Highest server-side event id persisted for this batch — used as the
-    /// client's upload cursor advance point.
+    /// 本批次成功处理的最大 `local_event_id`（方案 1 双 ID 空间，cursor 推进
+    /// 锚定客户端本地自增 id）。客户端收到后据此推进 `upload_cursor`。
     pub cursor: i64,
 }
 
