@@ -59,7 +59,31 @@ pub fn build_cli() -> Command {
         .subcommand(
             Command::new("uninstall-autostart")
                 .about("Remove the boot-time autostart entry registered by install-autostart. Idempotent: Ok when no entry exists."),
+        );
+
+    // rustnetec: --install-launchdaemon / --uninstall-launchdaemon (T4.2, macOS)
+    // 一次性授权安装系统 LaunchDaemon，之后 launchd 以 root 托管 daemon，
+    // 无需每次弹授权窗口（永久授权方案）。cfg 属性不能放方法链中间，故
+    // 拆成独立 `let cmd = cmd…` 语句。
+    #[cfg(target_os = "macos")]
+    let cmd = cmd
+        .subcommand(
+            Command::new("install-launchdaemon")
+                .about("Install rustnet --daemon as a system LaunchDaemon (macOS). Requires one-time admin authorization; afterwards launchd runs the daemon as root at boot and restarts it on crash — no repeated password prompts.")
+                .arg(
+                    Arg::new("http-port")
+                        .long("http-port")
+                        .value_name("PORT")
+                        .help("HTTP listen port for the daemon (default 19811)")
+                        .required(false),
+                ),
         )
+        .subcommand(
+            Command::new("uninstall-launchdaemon")
+                .about("Remove the system LaunchDaemon installed by install-launchdaemon (macOS). Idempotent: Ok when not installed."),
+        );
+
+    let cmd = cmd
         .arg(
             Arg::new("interface")
                 .short('i')
