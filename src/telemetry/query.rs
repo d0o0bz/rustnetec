@@ -103,7 +103,33 @@ fn run_default_query(conn: &Connection) -> Result<()> {
 /// Live query: poll the local HTTP /live endpoint.
 /// This requires the daemon to be running with the HTTP server enabled.
 fn run_live_query() -> Result<()> {
-    bail!("--live mode requires a running daemon with HTTP server. Not yet available (T1.4).");
+    use std::time::Duration;
+
+    use crate::config::PersistentConfig;
+
+    let pc = PersistentConfig::load().unwrap_or_default();
+    let port = pc.http_port;
+    let token = pc.http_token.unwrap_or_default();
+    let base = format!("http://127.0.0.1:{port}");
+
+    // Probe the daemon's HTTP server; if it is not up, say so clearly.
+    let mut req = ureq::get(&format!("{base}/live")).timeout(Duration::from_secs(2));
+    if !token.is_empty() {
+        req = req.set("Authorization", &format!("Bearer {token}"));
+    }
+    let resp = req.call().map_err(|e| {
+        anyhow::anyhow!(
+            "--live mode requires a running daemon with HTTP server on {base} (start with `rustnet --daemon` or the tray app): {e}"
+        )
+    })?;
+
+    let live: Value = resp
+        .into_json()
+        .map_err(|e| anyhow::anyhow!("failed to parse /live response: {e}"))?;
+    let output =
+        serde_json::to_string_pretty(&live).unwrap_or_else(|e| format!("{{\"error\": \"{e}\"}}"));
+    println!("{output}");
+    Ok(())
 }
 
 /// Translate a ConnectionFilter into a SQL WHERE clause with parameterized values.
