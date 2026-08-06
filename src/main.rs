@@ -1105,7 +1105,10 @@ fn run_tray_helper(matches: &clap::ArgMatches) -> Result<()> {
     let daemon_up = daemon_port_open(http_port);
 
     // --- Spawn the daemon child if it is not running ---
-    let mut daemon_child: Option<std::process::Child> = None;
+    // rustnetec: T3.6.11 — shared handle so the macOS command thread can reap
+    // the daemon BEFORE NSApp.terminate kills the helper process (terminate
+    // would otherwise skip the end-of-function reaping, leaking the daemon).
+    let daemon_child = std::sync::Arc::new(std::sync::Mutex::new(None::<std::process::Child>));
     if !daemon_up {
         let exe = std::env::current_exe()?;
         info!(
@@ -1118,7 +1121,7 @@ fn run_tray_helper(matches: &clap::ArgMatches) -> Result<()> {
             .arg(http_port.to_string())
             .spawn()
             .map_err(|e| anyhow::anyhow!("failed to spawn daemon child: {e}"))?;
-        daemon_child = Some(child);
+        *daemon_child.lock().unwrap() = Some(child);
         // Wait for the daemon HTTP server to come up (up to ~10s).
         let mut ready = false;
         for _ in 0..100 {
@@ -1147,7 +1150,8 @@ fn run_tray_helper(matches: &clap::ArgMatches) -> Result<()> {
             warn!("Failed to create system tray icon: {e}; continuing headless");
             eprintln!("Warning: failed to create system tray icon: {e}; continuing headless");
             // Headless fallback: keep running so the daemon we spawned stays up.
-            if let Some(mut child) = daemon_child {
+            // rustnetec: T3.6.11 — daemon_child is a shared Arc<Mutex<Option<Child>>>.
+            if let Some(mut child) = daemon_child.lock().unwrap().take() {
                 let _ = child.wait();
             }
             return Ok(());
@@ -1184,6 +1188,9 @@ fn run_tray_helper(matches: &clap::ArgMatches) -> Result<()> {
         let quit_flag = Arc::new(AtomicBool::new(false));
         let qf = Arc::clone(&quit_flag);
         let daemon_base_cmd = daemon_base.clone();
+        // rustnetec: T3.6.11 — clone the shared daemon handle so this worker
+        // can reap the daemon child BEFORE NSApp.terminate ends the process.
+        let daemon_child_cmd = std::sync::Arc::clone(&daemon_child);
         std::thread::Builder::new()
             .name("tray-command".to_string())
             .spawn(move || {
@@ -1195,6 +1202,15 @@ fn run_tray_helper(matches: &clap::ArgMatches) -> Result<()> {
                     match cmd_rx.try_recv() {
                         Ok(Cmd::Quit) => {
                             info!("Tray menu: Quit selected — shutting down");
+                            // rustnetec: T3.6.11 — reap the daemon child here,
+                            // BEFORE setting qf (the timer callback then calls
+                            // NSApp.terminate, which would otherwise skip the
+                            // end-of-function reaping and leak the daemon).
+                            if let Some(mut child) = daemon_child_cmd.lock().unwrap().take() {
+                                info!("Tray helper: stopping daemon child");
+                                let _ = child.kill();
+                                let _ = child.wait();
+                            }
                             qf.store(true, Ordering::Relaxed);
                             break;
                         }
@@ -1207,9 +1223,9 @@ fn run_tray_helper(matches: &clap::ArgMatches) -> Result<()> {
                             ui::open_terminal("rustnet query --live");
                         }
                         Ok(Cmd::OpenLocalPanel) => {
-                            // T3.3 bootstrap-guid endpoint lands in the http.rs
-                            // bridge task; open the bare URL for now.
-                            ui::open_browser(&format!("{daemon_base_cmd}/"));
+                            // rustnetec: T3.6.9 — bootstrap-handshake URL so the
+                            // browser gets a session cookie (avoids 401 on /config).
+                            ui::open_browser(&bootstrap_guid_url(&daemon_base_cmd));
                         }
                         Ok(Cmd::OpenRemotePanel) => {
                             let server_url = rustnet_monitor::config::PersistentConfig::load()
@@ -1221,7 +1237,9 @@ fn run_tray_helper(matches: &clap::ArgMatches) -> Result<()> {
                             }
                         }
                         Ok(Cmd::OpenSettings) => {
-                            ui::open_browser(&format!("{daemon_base_cmd}/config"));
+                            // rustnetec: T3.6.9 — handshake first (session cookie),
+                            // then the /config link in the index page is reachable.
+                            ui::open_browser(&bootstrap_guid_url(&daemon_base_cmd));
                         }
                         Ok(Cmd::None) | Err(_) => {}
                     }
@@ -1320,7 +1338,10 @@ fn run_tray_helper(matches: &clap::ArgMatches) -> Result<()> {
                     info!("Tray menu: TogglePause selected (pause/resume not yet implemented)");
                 }
                 Cmd::OpenTerminal => ui::open_terminal("rustnet query --live"),
-                Cmd::OpenLocalPanel => ui::open_browser(&format!("{daemon_base}/")),
+                Cmd::OpenLocalPanel => {
+                    // rustnetec: T3.6.9 — bootstrap-handshake URL (session cookie)
+                    ui::open_browser(&bootstrap_guid_url(&daemon_base));
+                }
                 Cmd::OpenRemotePanel => {
                     let server_url = rustnet_monitor::config::PersistentConfig::load()
                         .ok()
@@ -1330,7 +1351,10 @@ fn run_tray_helper(matches: &clap::ArgMatches) -> Result<()> {
                         None => warn!("OpenRemotePanel but server_url not configured"),
                     }
                 }
-                Cmd::OpenSettings => ui::open_browser(&format!("{daemon_base}/config")),
+                Cmd::OpenSettings => {
+                    // rustnetec: T3.6.9 — handshake first, /config link reachable
+                    ui::open_browser(&bootstrap_guid_url(&daemon_base));
+                }
                 Cmd::None => {}
             }
             // Poll /live for the status line on the configured cadence.
@@ -1349,7 +1373,11 @@ fn run_tray_helper(matches: &clap::ArgMatches) -> Result<()> {
     }
 
     // --- Reap the daemon child (only if we spawned it) on exit ---
-    if let Some(mut child) = daemon_child {
+    // rustnetec: T3.6.11 — daemon_child is now a shared Arc<Mutex<...>>; the
+    // macOS command thread already reaped it before NSApp.terminate, so this
+    // take() is normally None (idempotent). Kept as a safety net for the
+    // non-macOS branch / abnormal exits.
+    if let Some(mut child) = daemon_child.lock().unwrap().take() {
         info!("Tray helper: stopping daemon child");
         let _ = child.kill();
         let _ = child.wait();
@@ -1366,6 +1394,44 @@ fn daemon_port_open(port: u16) -> bool {
     use std::time::Duration;
     let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
     TcpStream::connect_timeout(&addr, Duration::from_millis(300)).is_ok()
+}
+
+/// rustnetec: T3.6.9 — build the bootstrap-handshake panel URL for the tray
+/// helper.
+///
+/// The helper is a separate process from the daemon, so it cannot call
+/// `HttpState::issue_bootstrap_guid()` directly. It POSTs `/bootstrap-guid`
+/// (Bearer token from config, like all non-/ endpoints), receives
+/// `{"guid":"<hex>"}`, and returns `http://127.0.0.1:<port>/?code=<guid>` —
+/// the daemon's `/` handler redeems the guid and issues a session cookie so
+/// the browser can then reach `/config`, `/live`, etc. On failure falls back
+/// to the bare base URL (login page) so the user still sees a page.
+#[cfg(all(feature = "tray", not(target_os = "freebsd")))]
+fn bootstrap_guid_url(daemon_base: &str) -> String {
+    let token = rustnet_monitor::config::PersistentConfig::load()
+        .ok()
+        .and_then(|c| c.http_token)
+        .unwrap_or_default();
+    let url = format!("{daemon_base}/bootstrap-guid");
+    match ureq::post(&url)
+        .set("Authorization", &format!("Bearer {token}"))
+        .timeout(Duration::from_millis(800))
+        .call()
+    {
+        Ok(resp) => {
+            if let Ok(json) = resp.into_json::<serde_json::Value>()
+                && let Some(guid) = json.get("guid").and_then(|g| g.as_str())
+            {
+                return format!("{daemon_base}/?code={guid}");
+            }
+            warn!("Tray helper: /bootstrap-guid response missing guid");
+            format!("{daemon_base}/")
+        }
+        Err(e) => {
+            warn!("Tray helper: POST /bootstrap-guid failed: {e}");
+            format!("{daemon_base}/")
+        }
+    }
 }
 
 // rustnetec: Daemon mode main loop (R1)

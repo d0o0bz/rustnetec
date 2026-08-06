@@ -188,6 +188,25 @@ fn handle_request(request: tiny_http::Request, state: &HttpState) {
         return;
     }
 
+    // rustnetec: POST /bootstrap-guid — NO-AUTH endpoint (T3.6.10).
+    //
+    // The tray helper is a separate process and needs a one-time guid to
+    // complete the browser handshake. Auth was dropped because the helper
+    // reads `PersistentConfig.http_token`, which can be null when config.yml
+    // was generated without a token (e.g. sudo root vs user HOME mismatch) —
+    // an empty/mismatched Bearer made the POST 401 and the helper fell back
+    // to the bare URL, leaving the panel stuck on LOGIN_HTML.
+    //
+    // This stays safe for two reasons:
+    //  1. Server binds 127.0.0.1 only — remote callers cannot reach it.
+    //  2. A guid is one-time and expires after BOOTSTRAP_GUID_TTL (5 min);
+    //     it only grants a session to the local browser, equivalent to what
+    //     any local process could already do by reading config.yml directly.
+    if path_only == "/bootstrap-guid" && method == tiny_http::Method::Post {
+        handle_bootstrap_guid(request, state);
+        return;
+    }
+
     // All other endpoints require authentication
     if !check_auth(&request, state, &state.http_token) {
         let _ = respond_text(
@@ -234,6 +253,15 @@ fn handle_request(request: tiny_http::Request, state: &HttpState) {
         // stop (T12-A). Requires auth like all non-/ endpoints.
         ("/admin/shutdown", tiny_http::Method::Post) => {
             handle_admin_shutdown(request, state);
+        }
+
+        // rustnetec: POST /bootstrap-guid — tray helper → daemon one-time
+        // bootstrap code (T3.6.9). The tray helper is a separate process and
+        // cannot call HttpState::issue_bootstrap_guid() directly, so it asks
+        // the daemon over HTTP, then opens the browser at
+        // http://127.0.0.1:<port>/?code=<guid> to complete the handshake.
+        ("/bootstrap-guid", tiny_http::Method::Post) => {
+            handle_bootstrap_guid(request, state);
         }
 
         _ => {
@@ -319,6 +347,20 @@ fn handle_admin_shutdown(request: tiny_http::Request, state: &HttpState) {
         "status": "ok",
         "note": "should_stop set — daemon will exit gracefully"
     });
+    let _ = respond_json(request, 200, &response);
+}
+
+/// POST /bootstrap-guid — issue a one-time bootstrap guid for the tray helper
+/// (T3.6.9).
+///
+/// The tray helper is a separate process from the daemon and cannot call
+/// `HttpState::issue_bootstrap_guid()` directly, so it POSTs here (Bearer
+/// auth, like all non-/ endpoints) and receives `{"guid":"<hex>"}`. It then
+/// opens the browser at `http://127.0.0.1:<port>/?code=<guid>`; the daemon's
+/// `/` handler redeems the guid and issues a session cookie (T3.3).
+fn handle_bootstrap_guid(request: tiny_http::Request, state: &HttpState) {
+    let guid = state.issue_bootstrap_guid();
+    let response = serde_json::json!({ "guid": guid });
     let _ = respond_json(request, 200, &response);
 }
 
