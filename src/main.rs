@@ -1143,7 +1143,7 @@ fn run_tray_helper(matches: &clap::ArgMatches) -> Result<()> {
         include_bytes!("../resources/packaging/linux/graphics/rustnet.png"),
         256,
         256,
-        "Netec",
+        "Rustnetec",
     ) {
         Ok(ctrl) => ctrl,
         Err(e) => {
@@ -1522,7 +1522,7 @@ fn run_daemon_loop(
             include_bytes!("../resources/packaging/linux/graphics/rustnet.png"),
             256,
             256,
-            "Netec",
+            "Rustnetec",
         ) {
             Ok(ctrl) => {
                 eprintln!("[tray-diag] TrayController created OK");

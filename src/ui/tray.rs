@@ -7,7 +7,7 @@
 //   refreshes the dynamic status line.
 //
 // Design notes:
-// - Tooltip/brand name is `Netec` (per T3.2 revision).
+// - Tooltip/brand name is `Rustnetec` (per T3.2 revision; 显示名改版).
 // - The status line is rendered from `RuntimeConfig.tray_status_fields` in
 //   the user-configured order; refresh cadence is
 //   `RuntimeConfig.tray_refresh_interval_secs` (1-15s, default 2).
@@ -97,7 +97,7 @@ impl TrayController {
     /// Build the tray icon, menu, and event channel.
     ///
     /// `icon_bytes` is the encoded icon file content (PNG) — decoded to 32bpp
-    /// RGBA internally (T7); `tooltip` is shown on hover — use `"Netec"`.
+    /// RGBA internally (T7); `tooltip` is shown on hover — use `"Rustnetec"`.
     pub fn new(
         icon_bytes: &[u8],
         _icon_width: u32,
@@ -257,8 +257,8 @@ impl TrayController {
 
         let status_text = Self::render_status_line(&ctx, &runtime_config.tray_status_fields);
 
-        // Update tooltip — brand name "Netec" prefix per T3.2 revision
-        let tooltip = format!("Netec\n{}", status_text);
+        // Update tooltip — brand name "Rustnetec" prefix per T3.2 revision
+        let tooltip = format!("Rustnetec\n{}", status_text);
         let _ = self._tray_icon.set_tooltip(Some(&tooltip));
 
         // Update status menu item text
@@ -296,8 +296,8 @@ impl TrayController {
 
         let status_text = Self::render_status_line(&ctx, fields);
 
-        // Update tooltip — brand name "Netec" prefix per T3.2 revision
-        let tooltip = format!("Netec\n{}", status_text);
+        // Update tooltip — brand name "Rustnetec" prefix per T3.2 revision
+        let tooltip = format!("Rustnetec\n{}", status_text);
         let _ = self._tray_icon.set_tooltip(Some(&tooltip));
 
         // Update status menu item text

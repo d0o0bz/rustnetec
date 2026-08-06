@@ -9,11 +9,11 @@
     <key>CFBundleIconFile</key>
     <string>rustnet.icns</string>
     <key>CFBundleIdentifier</key>
-    <string>com.domcyrus.rustnet</string>
+    <string>com.domcyrus.rustnetec</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>Rustnet</string>
+    <string>Rustnetec</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
