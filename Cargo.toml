@@ -90,6 +90,10 @@ ureq = { version = "2", features = ["json"] }
 # rustnetec: optional system tray deps (R1/R6, T3.1) — only pulled in by the `tray` feature
 tray-icon = { version = "0.24", optional = true }
 muda = { version = "0.19", optional = true }
+# rustnetec: PNG decoding for the tray icon (R6, T7) — image 0.25 is already in
+# the dependency graph via arboard, promoted to a direct optional dep so the
+# tray icon can decode PNG → RGBA8 before calling tray_icon::Icon::from_rgba.
+image = { version = "0.25", optional = true }
 # Note: dns-lookup, ring, aes, flate2, and maxminddb moved to rustnet-core,
 # which is the only place they are used. They are re-exported transitively
 # through the `crate::network` facade in src/network/mod.rs.
@@ -110,6 +114,17 @@ windows = { version = "0.62", features = [
     "Win32_System_LibraryLoader",
     "Win32_System_Threading",
 ] }
+
+# rustnetec: macOS tray icon requires a running Cocoa event loop on the main
+# thread (tray-icon platform note). CFRunLoopRunInMode drives it, and
+# objc2-app-kit initializes the NSApplication singleton that AppKit's menu
+# popup / click dispatch requires (T8/T9). Only pulled in by the `tray`
+# feature; both are already in the dependency graph transitively, promoted to
+# direct optional deps.
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = { version = "0.9", optional = true }
+objc2 = { version = "0.6", optional = true }
+objc2-app-kit = { version = "0.3", optional = true }
 
 # FreeBSD support uses the system's sockstat command for process lookup
 # and native libpcap (via pcap crate) for packet capture.
@@ -152,10 +167,20 @@ macos-sandbox = []
 # on-disk kubelet pods directory. Linux-only at runtime; no extra dependencies.
 kubernetes = ["rustnet-core/kubernetes"]
 # rustnetec: System tray support (R1/R6) — optional, default off (T3.1)
-# tray-icon provides the cross-platform tray icon; muda provides the menu.
-# Both are optional and only pulled in when `--features tray` is enabled.
-# Linux backend defaults to ksni (pure DBus, no GTK).
-tray = ["dep:tray-icon", "dep:muda"]
+# tray-icon provides the cross-platform tray icon; muda provides the menu;
+# image decodes the tray PNG icon (T7); core-foundation drives the Cocoa
+# event loop on macOS (T8); objc2-app-kit initializes NSApplication for
+# AppKit menu dispatch (T9). All are optional and only pulled in when
+# `--features tray` is enabled. Linux backend defaults to ksni (pure DBus,
+# no GTK).
+tray = [
+    "dep:tray-icon",
+    "dep:muda",
+    "dep:image",
+    "dep:core-foundation",
+    "dep:objc2",
+    "dep:objc2-app-kit",
+]
 
 # Minimal cross configuration to override dependency conflicts
 [workspace.metadata.cross.build.env]

@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -57,9 +57,53 @@ pub struct HttpState {
     /// the daemon may be started with `--http-port <override>`, and the
     /// launcher must honour that override to hit the right server.
     pub http_port: u16,
+    /// rustnetec: live snapshot for the tray helper (T12-A, R6).
+    ///
+    /// The daemon periodically writes the minimal status fields (interface
+    /// rates, active connections, uptime) into this shared value; the tray
+    /// helper process polls `GET /live` over HTTP and renders them in the
+    /// menu status line. This is the daemon→tray state bridge — the tray
+    /// helper never touches `App` directly (separate process).
+    pub live_snapshot: Arc<RwLock<serde_json::Value>>,
 }
 
 impl HttpState {
+    /// rustnetec: Refresh the live snapshot from the running App (T12-A).
+    ///
+    /// Called by the daemon main loop on the refresh cadence so the tray
+    /// helper can pull `GET /live` and render a status line without an App
+    /// handle of its own. Minimal field set: interface, in/out rates,
+    /// active connection count, uptime, paused.
+    pub fn update_live_snapshot(&self, app: &crate::app::App) {
+        let rates = app.get_interface_rates();
+        let (rate_in_bps, rate_out_bps) = rates.values().fold((0u64, 0u64), |(rx, tx), r| {
+            (rx + r.rx_bytes_per_sec, tx + r.tx_bytes_per_sec)
+        });
+        let connections = app
+            .get_connections()
+            .iter()
+            .filter(|c| !c.is_historic)
+            .count();
+        let uptime = app
+            .get_connections()
+            .iter()
+            .map(|c| c.created_at)
+            .min()
+            .and_then(|start| start.elapsed().ok())
+            .unwrap_or_default();
+        let snapshot = serde_json::json!({
+            "interface": app.get_current_interface(),
+            "rate_in_bps": rate_in_bps,
+            "rate_out_bps": rate_out_bps,
+            "connections": connections,
+            "uptime_secs": uptime.as_secs(),
+            "paused": app.is_stopping(),
+        });
+        if let Ok(mut slot) = self.live_snapshot.write() {
+            *slot = snapshot;
+        }
+    }
+
     /// rustnetec: Issue a one-time bootstrap guid for the tray launcher (T3.3).
     ///
     /// The guid is written to `pending_guids` with the current timestamp and
@@ -186,6 +230,12 @@ fn handle_request(request: tiny_http::Request, state: &HttpState) {
             handle_restart_capture(request, state);
         }
 
+        // rustnetec: POST /admin/shutdown — tray helper → daemon graceful
+        // stop (T12-A). Requires auth like all non-/ endpoints.
+        ("/admin/shutdown", tiny_http::Method::Post) => {
+            handle_admin_shutdown(request, state);
+        }
+
         _ => {
             let _ = respond_text(request, 404, "text/plain", "Not Found");
         }
@@ -239,12 +289,35 @@ fn check_cors_origin(request: &tiny_http::Request) -> bool {
     true
 }
 
-/// GET /live — return real-time connection snapshot.
-fn handle_live(request: tiny_http::Request, _state: &HttpState) {
+/// GET /live — return the daemon's live snapshot (daemon→tray bridge, T12-A).
+///
+/// The tray helper polls this endpoint over HTTP to render the menu status
+/// line without holding an `App` handle (separate process). The daemon main
+/// loop refreshes `live_snapshot` on the configured cadence via
+/// `HttpState::update_live_snapshot`.
+fn handle_live(request: tiny_http::Request, state: &HttpState) {
+    let snapshot = state
+        .live_snapshot
+        .read()
+        .map(|s| s.clone())
+        .unwrap_or_else(|_| serde_json::json!({}));
+    let _ = respond_json(request, 200, &snapshot);
+}
+
+/// POST /admin/shutdown — gracefully stop the daemon (T12-A).
+///
+/// The tray helper calls this when the user picks "Quit" from the tray menu:
+/// the helper is a separate process and cannot call `app.stop()` directly, so
+/// it sets `should_stop` over HTTP — the daemon's capture thread and main
+/// loop observe the flag and exit cleanly (same mechanism as
+/// `/config/restart-capture`, 偏差5/T1.5).
+fn handle_admin_shutdown(request: tiny_http::Request, state: &HttpState) {
+    state
+        .should_stop
+        .store(true, std::sync::atomic::Ordering::Relaxed);
     let response = serde_json::json!({
-        "connections": [],
-        "count": 0,
-        "note": "live endpoint placeholder — App integration pending"
+        "status": "ok",
+        "note": "should_stop set — daemon will exit gracefully"
     });
     let _ = respond_json(request, 200, &response);
 }
@@ -720,6 +793,7 @@ mod tests {
     fn http_state_creation() {
         use std::collections::HashMap;
         use std::sync::Mutex;
+        use std::sync::RwLock;
         use std::sync::atomic::AtomicBool;
         let state = HttpState {
             db_path: PathBuf::from("/tmp/test.db"),
@@ -730,6 +804,8 @@ mod tests {
             active_sessions: Arc::new(Mutex::new(HashMap::new())),
             // rustnetec: T3.5 launcher URL port (R6)
             http_port: 19811,
+            // rustnetec: T12-A daemon→tray live snapshot (R6)
+            live_snapshot: Arc::new(RwLock::new(serde_json::json!({}))),
         };
         assert_eq!(state.http_token, "test-token");
         assert!(!state.should_stop.load(std::sync::atomic::Ordering::Relaxed));
@@ -738,6 +814,8 @@ mod tests {
         assert!(state.active_sessions.lock().unwrap().is_empty());
         // rustnetec: T3.5 — confirm the listen port is wired for the launcher
         assert_eq!(state.http_port, 19811);
+        // rustnetec: T12-A — live snapshot starts empty (no daemon yet)
+        assert!(state.live_snapshot.read().unwrap().is_object());
     }
 
     // ---- rustnetec: bootstrap handshake unit tests (T3.3, R6) ----
@@ -746,6 +824,7 @@ mod tests {
     fn handshake_state() -> HttpState {
         use std::collections::HashMap;
         use std::sync::Mutex;
+        use std::sync::RwLock;
         use std::sync::atomic::AtomicBool;
         HttpState {
             db_path: PathBuf::from("/tmp/test_handshake.db"),
@@ -758,6 +837,8 @@ mod tests {
             // rustnetec: T3.5 — use a non-default port so launcher URL
             // construction would catch a hardcoded-19811 regression.
             http_port: 19812,
+            // rustnetec: T12-A daemon→tray live snapshot (R6)
+            live_snapshot: Arc::new(RwLock::new(serde_json::json!({}))),
         }
     }
 
@@ -777,6 +858,7 @@ mod tests {
         // A freshly-built default state should also expose the port field.
         use std::collections::HashMap;
         use std::sync::Mutex;
+        use std::sync::RwLock;
         use std::sync::atomic::AtomicBool;
         let other = HttpState {
             db_path: PathBuf::from("/tmp/test_port.db"),
@@ -785,6 +867,8 @@ mod tests {
             pending_guids: Arc::new(Mutex::new(Vec::new())),
             active_sessions: Arc::new(Mutex::new(HashMap::new())),
             http_port: 19813,
+            // rustnetec: T12-A daemon→tray live snapshot (R6)
+            live_snapshot: Arc::new(RwLock::new(serde_json::json!({}))),
         };
         assert_eq!(other.http_port, 19813);
     }

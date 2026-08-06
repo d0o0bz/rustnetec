@@ -297,6 +297,13 @@ fn install_macos(mode: AutostartMode) -> Result<()> {
         .replace('<', "&lt;")
         .replace('>', "&gt;");
 
+    // rustnetec: T12-A — KeepAlive semantics differ by mode. Daemon is a
+    // headless background service: crash-restart (KeepAlive=true) is desired.
+    // Tray is a user-facing GUI entry: after the user picks "Quit", launchd
+    // must NOT resurrect it, otherwise the app can never be closed — so Tray
+    // uses KeepAlive=false and relies on RunAtLoad (boot/login autostart).
+    let keep_alive = matches!(mode, AutostartMode::Daemon);
+
     let plist = format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
          <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \
@@ -313,12 +320,13 @@ fn install_macos(mode: AutostartMode) -> Result<()> {
          \t<key>RunAtLoad</key>\n\
          \t<true/>\n\
          \t<key>KeepAlive</key>\n\
-         \t<true/>\n\
+         \t<{keep_alive}/>\n\
          </dict>\n\
          </plist>\n",
         label = label,
         exe = exe_esc,
         flag = flag,
+        keep_alive = if keep_alive { "true" } else { "false" },
     );
 
     std::fs::write(&plist_path, plist)

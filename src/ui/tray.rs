@@ -81,7 +81,13 @@ pub struct TrayController {
     /// Open remote panel item; disabled when server_url is not configured.
     remote_item: muda::MenuItem,
     /// Channel the menu-event → TrayCommand translator writes into.
-    cmd_rx: Receiver<TrayCommand>,
+    ///
+    /// rustnetec: T13 — `Option` so the receiver can be moved to a dedicated
+    /// command thread. `mpsc::Receiver` is `Send` while `TrayController`
+    /// itself is NOT (it owns `Rc<RefCell<…>>` tray-icon/muda platform
+    /// objects), so in the dual-process tray helper the main thread runs the
+    /// blocking Cocoa event loop and a worker thread polls this receiver.
+    cmd_rx: Option<Receiver<TrayCommand>>,
     /// Tracks pause state for menu text flipping. Mirrors App's pause flag
     /// but cached locally so we don't read App on every menu click.
     paused: bool,
@@ -90,16 +96,25 @@ pub struct TrayController {
 impl TrayController {
     /// Build the tray icon, menu, and event channel.
     ///
-    /// `icon_rgba` is the raw RGBA pixels of the tray icon; pass the project
-    /// logo (32×32 recommended). `tooltip` is shown on hover — use `"Netec"`.
+    /// `icon_bytes` is the encoded icon file content (PNG) — decoded to 32bpp
+    /// RGBA internally (T7); `tooltip` is shown on hover — use `"Netec"`.
     pub fn new(
-        icon_rgba: &[u8],
-        icon_width: u32,
-        icon_height: u32,
+        icon_bytes: &[u8],
+        _icon_width: u32,
+        _icon_height: u32,
         tooltip: &str,
     ) -> anyhow::Result<Self> {
-        // rustnetec: load icon from raw RGBA (caller passes include_bytes! data)
-        let icon = tray_icon::Icon::from_rgba(icon_rgba.to_vec(), icon_width, icon_height)
+        // rustnetec: decode the PNG icon to 32bpp RGBA before handing it to
+        // tray-icon (T7). tray_icon::Icon::from_rgba requires raw RGBA pixels
+        // with len == width*height*4 and fails with BadIcon on anything else;
+        // passing the compressed PNG bytes directly (as before) always failed,
+        // leaving the tray headless. image is an optional dep pulled in by the
+        // `tray` feature (already in the graph via arboard, promoted to direct).
+        let decoded = image::load_from_memory(icon_bytes)
+            .map_err(|e| anyhow::anyhow!("failed to decode tray icon PNG: {e}"))?;
+        let rgba = decoded.to_rgba8();
+        let (icon_width, icon_height) = rgba.dimensions();
+        let icon = tray_icon::Icon::from_rgba(rgba.into_raw(), icon_width, icon_height)
             .map_err(|e| anyhow::anyhow!("failed to create tray icon from RGBA: {e}"))?;
 
         // Build menu items
@@ -149,9 +164,24 @@ impl TrayController {
             status_item,
             pause_item,
             remote_item,
-            cmd_rx: Self::spawn_translator(),
+            cmd_rx: Some(Self::spawn_translator()),
             paused: false,
         })
+    }
+
+    /// rustnetec: T13 — take the command receiver out of the controller so it
+    /// can be polled from a dedicated worker thread.
+    ///
+    /// `mpsc::Receiver<TrayCommand>` is `Send`, but `TrayController` itself
+    /// is NOT (it owns `Rc<RefCell<…>>` tray-icon/muda platform objects that
+    /// must stay on the main thread). In the dual-process tray helper the
+    /// main thread runs the blocking Cocoa event loop (`NSApp.run()`), so the
+    /// translated commands are drained here on a worker thread instead.
+    ///
+    /// After this is called, [`TrayController::poll_command`] returns
+    /// `TrayCommand::None` (the receiver is gone).
+    pub fn take_cmd_rx(&mut self) -> Option<Receiver<TrayCommand>> {
+        self.cmd_rx.take()
     }
 
     /// Spawn a thread that drains `muda::MenuEvent` + `tray_icon::TrayIconEvent`
@@ -196,10 +226,16 @@ impl TrayController {
     ///
     /// Returns `TrayCommand::None` when no event is pending. Call this every
     /// ~50ms from the daemon main loop for ≤50ms menu-click latency.
+    ///
+    /// rustnetec: T13 — after `take_cmd_rx()` moves the receiver to a worker
+    /// thread, this always returns `TrayCommand::None`.
     pub fn poll_command(&self) -> TrayCommand {
-        match self.cmd_rx.try_recv() {
-            Ok(cmd) => cmd,
-            Err(_) => TrayCommand::None,
+        match self.cmd_rx.as_ref() {
+            Some(rx) => match rx.try_recv() {
+                Ok(cmd) => cmd,
+                Err(_) => TrayCommand::None,
+            },
+            None => TrayCommand::None,
         }
     }
 
@@ -240,6 +276,81 @@ impl TrayController {
             "⏸ 暂停捕获"
         };
         let _ = self.pause_item.set_text(pause_label);
+    }
+
+    /// Refresh the dynamic status line + tooltip from the daemon's live
+    /// snapshot pulled over HTTP (T12-A, dual-process tray helper).
+    ///
+    /// The tray helper is a separate process and never holds an `App`, so it
+    /// cannot call [`TrayController::refresh_status`]. Instead the daemon
+    /// publishes a minimal JSON snapshot (`HttpState::update_live_snapshot`)
+    /// and the helper renders it here. `live` is the parsed `GET /live`
+    /// response body.
+    pub fn refresh_status_from_live(
+        &mut self,
+        live: &serde_json::Value,
+        fields: &[TrayStatusField],
+    ) {
+        let ctx = Self::status_context_from_live(live);
+        self.paused = ctx.is_paused;
+
+        let status_text = Self::render_status_line(&ctx, fields);
+
+        // Update tooltip — brand name "Netec" prefix per T3.2 revision
+        let tooltip = format!("Netec\n{}", status_text);
+        let _ = self._tray_icon.set_tooltip(Some(&tooltip));
+
+        // Update status menu item text
+        let menu_label = if ctx.is_paused {
+            format!("⏸ 已暂停 · {}", status_text)
+        } else {
+            format!("● 监控中 · {}", status_text)
+        };
+        self.status_item.set_text(menu_label);
+
+        // Flip pause menu item text
+        let pause_label = if ctx.is_paused {
+            "▶ 继续捕获"
+        } else {
+            "⏸ 暂停捕获"
+        };
+        self.pause_item.set_text(pause_label);
+    }
+
+    /// Build a `StatusContext` from the daemon's `/live` JSON snapshot.
+    ///
+    /// Field names match `HttpState::update_live_snapshot`:
+    /// `interface`, `rate_in_bps`, `rate_out_bps`, `connections`,
+    /// `uptime_secs`, `paused`. Missing/malformed fields fall back to
+    /// neutral values so the tray never panics on a schema drift.
+    fn status_context_from_live(live: &serde_json::Value) -> StatusContext {
+        StatusContext {
+            is_paused: live
+                .get("paused")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            interface: live
+                .get("interface")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+            rate_in_bps: live
+                .get("rate_in_bps")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as f64,
+            rate_out_bps: live
+                .get("rate_out_bps")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as f64,
+            connections: live
+                .get("connections")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize,
+            uptime: Duration::from_secs(
+                live.get("uptime_secs")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0),
+            ),
+        }
     }
 
     /// Collect status context from public App accessors.

@@ -37,15 +37,38 @@ fn main() -> Result<()> {
         setup_logging(log_level)?;
     }
 
-    // Check privileges BEFORE initializing TUI (so error messages are visible)
-    check_privileges_early()?;
-
     // rustnetec: Determine run mode (TUI / daemon / tray)
     let daemon_mode = matches.get_flag("daemon");
     #[cfg(feature = "tray")]
     let tray_mode = matches.get_flag("tray");
     #[cfg(not(feature = "tray"))]
     let tray_mode = false;
+
+    // rustnetec: Check privileges BEFORE initializing TUI (so error messages
+    // are visible). Tray mode uses a soft check (warn, continue) because the
+    // tray menu itself (open terminal / local panel / settings / quit) needs
+    // no packet capture — unprivileged capture already degrades to
+    // process-only mode inside App::start_capture_thread. TUI/daemon keep the
+    // hard check so a missing capture permission fails fast with clear
+    // guidance instead of a half-working UI.
+    #[cfg(feature = "tray")]
+    if tray_mode {
+        check_privileges_tray();
+    } else {
+        check_privileges_early()?;
+    }
+    #[cfg(not(feature = "tray"))]
+    check_privileges_early()?;
+
+    // rustnetec: T12-A — tray is now an independent helper process (A
+    // topology: tray is the entry point, it spawns the daemon child and runs
+    // the pure GUI with a blocking platform event loop). Route to it BEFORE
+    // App/capture initialization — the helper must not create an App or open
+    // the BPF device itself.
+    #[cfg(all(feature = "tray", not(target_os = "freebsd")))]
+    if tray_mode && !daemon_mode {
+        return run_tray_helper(&matches);
+    }
 
     // rustnetec: Ensure data and config directories exist, chown before uid drop
     if let Err(e) = telemetry::paths::ensure_dirs() {
@@ -753,6 +776,8 @@ fn main() -> Result<()> {
                 )),
                 // rustnetec: HTTP listen port for launcher URL (T3.5, R6)
                 http_port,
+                // rustnetec: daemon→tray live snapshot bridge (T12-A, R6)
+                live_snapshot: std::sync::Arc::new(std::sync::RwLock::new(serde_json::json!({}))),
             });
 
             if let Err(e) = telemetry::http::start_http_server(http_port, state.clone()) {
@@ -1062,6 +1087,287 @@ mod output_file_tests {
 /// Sort connections based on the specified column and direction
 use ui::{clear_all_with_confirmation, copy_to_clipboard, sort_connections};
 
+/// rustnetec: T12-A — tray helper entry point (A topology: tray spawns the
+/// daemon child and runs the pure GUI). Executes as `rustnet --tray` without
+/// `--daemon`: probes/spawns the daemon, performs the HTTP handshake, builds
+/// the tray controller, then drives the platform event loop on the main
+/// thread while a consumer thread translates menu clicks into actions.
+/// On exit the daemon child (if we spawned it) is reaped.
+#[cfg(all(feature = "tray", not(target_os = "freebsd")))]
+fn run_tray_helper(matches: &clap::ArgMatches) -> Result<()> {
+    let http_port = matches
+        .get_one::<u16>("http-port")
+        .copied()
+        .unwrap_or(19811);
+    let daemon_base = format!("http://127.0.0.1:{http_port}");
+
+    // --- HTTP handshake: is a daemon already listening? ---
+    let daemon_up = daemon_port_open(http_port);
+
+    // --- Spawn the daemon child if it is not running ---
+    let mut daemon_child: Option<std::process::Child> = None;
+    if !daemon_up {
+        let exe = std::env::current_exe()?;
+        info!(
+            "Tray helper: daemon not running — spawning child {:?} --daemon --http-port {http_port}",
+            exe
+        );
+        let child = std::process::Command::new(&exe)
+            .arg("--daemon")
+            .arg("--http-port")
+            .arg(http_port.to_string())
+            .spawn()
+            .map_err(|e| anyhow::anyhow!("failed to spawn daemon child: {e}"))?;
+        daemon_child = Some(child);
+        // Wait for the daemon HTTP server to come up (up to ~10s).
+        let mut ready = false;
+        for _ in 0..100 {
+            if daemon_port_open(http_port) {
+                ready = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        if !ready {
+            warn!("Tray helper: daemon child did not become HTTP-ready in time");
+        }
+    } else {
+        info!("Tray helper: connecting to existing daemon at {daemon_base}");
+    }
+
+    // --- Build the pure-GUI tray controller (no App, no capture) ---
+    let mut tray_controller = match ui::TrayController::new(
+        include_bytes!("../resources/packaging/linux/graphics/rustnet.png"),
+        256,
+        256,
+        "Netec",
+    ) {
+        Ok(ctrl) => ctrl,
+        Err(e) => {
+            warn!("Failed to create system tray icon: {e}; continuing headless");
+            eprintln!("Warning: failed to create system tray icon: {e}; continuing headless");
+            // Headless fallback: keep running so the daemon we spawned stays up.
+            if let Some(mut child) = daemon_child {
+                let _ = child.wait();
+            }
+            return Ok(());
+        }
+    };
+    let pc = rustnet_monitor::config::PersistentConfig::load().unwrap_or_default();
+    tray_controller.set_remote_enabled(pc.server_url.is_some());
+
+    // --- macOS: initialize NSApplication and run the blocking Cocoa event
+    //     loop (T13). AppKit only dispatches menu clicks/tracking events
+    //     while the main thread is inside NSApp.run() — the old 50ms
+    //     CFRunLoopRunInMode polling left the menu dead (T8-T11). Translated
+    //     commands are drained on a worker thread (the mpsc receiver is Send;
+    //     TrayController itself is not), and a CFRunLoopTimer refreshes the
+    //     status line on the main thread. Non-macOS keeps the simple loop.
+    #[cfg(target_os = "macos")]
+    {
+        use objc2::MainThreadMarker;
+        use objc2_app_kit::NSApp;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let mtm = MainThreadMarker::new().expect("tray helper runs on the main thread");
+        let ns_app = NSApp(mtm);
+        // Keep a raw pointer for the timer callback / quit path; the Retained
+        // handle below keeps the instance alive for the whole helper.
+        let ns_app_ptr: *const _ = &*ns_app;
+
+        // --- Take the command receiver out of the controller (Send) and run
+        //     a worker thread that executes menu actions. ---
+        let cmd_rx = tray_controller
+            .take_cmd_rx()
+            .expect("tray command receiver must exist after construction");
+        let quit_flag = Arc::new(AtomicBool::new(false));
+        let qf = Arc::clone(&quit_flag);
+        let daemon_base_cmd = daemon_base.clone();
+        std::thread::Builder::new()
+            .name("tray-command".to_string())
+            .spawn(move || {
+                use ui::TrayCommand as Cmd;
+                loop {
+                    if qf.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    match cmd_rx.try_recv() {
+                        Ok(Cmd::Quit) => {
+                            info!("Tray menu: Quit selected — shutting down");
+                            qf.store(true, Ordering::Relaxed);
+                            break;
+                        }
+                        Ok(Cmd::TogglePause) => {
+                            info!(
+                                "Tray menu: TogglePause selected (pause/resume not yet implemented)"
+                            );
+                        }
+                        Ok(Cmd::OpenTerminal) => {
+                            ui::open_terminal("rustnet query --live");
+                        }
+                        Ok(Cmd::OpenLocalPanel) => {
+                            // T3.3 bootstrap-guid endpoint lands in the http.rs
+                            // bridge task; open the bare URL for now.
+                            ui::open_browser(&format!("{daemon_base_cmd}/"));
+                        }
+                        Ok(Cmd::OpenRemotePanel) => {
+                            let server_url = rustnet_monitor::config::PersistentConfig::load()
+                                .ok()
+                                .and_then(|c| c.server_url);
+                            match server_url {
+                                Some(u) => ui::open_browser(&u),
+                                None => warn!("OpenRemotePanel but server_url not configured"),
+                            }
+                        }
+                        Ok(Cmd::OpenSettings) => {
+                            ui::open_browser(&format!("{daemon_base_cmd}/config"));
+                        }
+                        Ok(Cmd::None) | Err(_) => {}
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            })?;
+
+        // --- CFRunLoopTimer: refresh the status line on the main thread. ---
+        struct RefreshCtx {
+            controller: *mut ui::TrayController,
+            quit: *const AtomicBool,
+            ns_app: *const std::ffi::c_void,
+            daemon_base: String,
+            status_fields: Vec<rustnet_monitor::config::TrayStatusField>,
+        }
+        // SAFETY: `controller` and `quit` point to values owned by this
+        // function's scope; the timer callback runs on the main run loop,
+        // which only executes while we are inside ns_app.run() below — the
+        // pointers stay valid for the whole blocking run.
+        extern "C" fn refresh_cb(
+            _timer: core_foundation::runloop::CFRunLoopTimerRef,
+            info: *mut std::ffi::c_void,
+        ) {
+            let ctx = unsafe { &mut *(info as *mut RefreshCtx) };
+            if unsafe { (*ctx.quit).load(Ordering::Relaxed) } {
+                // Quit requested: ask NSApplication to terminate so
+                // ns_app.run() below returns and the helper can reap the
+                // daemon child.
+                let app = unsafe { &*(ctx.ns_app as *const objc2_app_kit::NSApplication) };
+                app.terminate(None);
+                return;
+            }
+            let live_url = format!("{}/live", ctx.daemon_base);
+            if let Ok(resp) = ureq::get(&live_url)
+                .timeout(Duration::from_millis(800))
+                .call()
+                && let Ok(live) = resp.into_json::<serde_json::Value>()
+            {
+                let ctrl = unsafe { &mut *ctx.controller };
+                ctrl.refresh_status_from_live(&live, &ctx.status_fields);
+            }
+        }
+
+        let pc0 = rustnet_monitor::config::PersistentConfig::load().unwrap_or_default();
+        let refresh_interval = pc0.tray_refresh_interval_secs.max(1) as f64;
+        let mut refresh_ctx = Box::new(RefreshCtx {
+            controller: &mut tray_controller,
+            quit: Arc::as_ptr(&quit_flag),
+            ns_app: ns_app_ptr.cast(),
+            daemon_base: daemon_base.clone(),
+            status_fields: pc0.tray_status_fields.clone(),
+        });
+        let mut timer_ctx = core_foundation::runloop::CFRunLoopTimerContext {
+            version: 0,
+            info: (&mut *refresh_ctx as *mut RefreshCtx).cast(),
+            retain: None,
+            release: None,
+            copyDescription: None,
+        };
+        let fire_date = core_foundation::date::CFDate::now().abs_time() + refresh_interval;
+        let timer = core_foundation::runloop::CFRunLoopTimer::new(
+            fire_date,
+            refresh_interval,
+            0,
+            0,
+            refresh_cb,
+            &mut timer_ctx,
+        );
+        unsafe {
+            core_foundation::runloop::CFRunLoop::get_main()
+                .add_timer(&timer, core_foundation::runloop::kCFRunLoopDefaultMode);
+        }
+        // Keep the refresh context alive for the duration of the blocking run.
+        std::mem::forget(refresh_ctx);
+
+        info!("Tray helper: entering NSApp.run() (blocking Cocoa event loop)");
+        ns_app.run();
+        info!("Tray helper: NSApp.run() returned");
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        // Non-macOS backends (ksni/Win32) manage their own event pumps. Poll
+        // translated commands directly; no AppKit run loop needed.
+        let quit_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let pc0 = rustnet_monitor::config::PersistentConfig::load().unwrap_or_default();
+        let status_fields = pc0.tray_status_fields.clone();
+        while !quit_flag.load(std::sync::atomic::Ordering::Relaxed) {
+            use ui::TrayCommand as Cmd;
+            match tray_controller.poll_command() {
+                Cmd::Quit => {
+                    info!("Tray menu: Quit selected — shutting down");
+                    quit_flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                    break;
+                }
+                Cmd::TogglePause => {
+                    info!("Tray menu: TogglePause selected (pause/resume not yet implemented)");
+                }
+                Cmd::OpenTerminal => ui::open_terminal("rustnet query --live"),
+                Cmd::OpenLocalPanel => ui::open_browser(&format!("{daemon_base}/")),
+                Cmd::OpenRemotePanel => {
+                    let server_url = rustnet_monitor::config::PersistentConfig::load()
+                        .ok()
+                        .and_then(|c| c.server_url);
+                    match server_url {
+                        Some(u) => ui::open_browser(&u),
+                        None => warn!("OpenRemotePanel but server_url not configured"),
+                    }
+                }
+                Cmd::OpenSettings => ui::open_browser(&format!("{daemon_base}/config")),
+                Cmd::None => {}
+            }
+            // Poll /live for the status line on the configured cadence.
+            if let Ok(pc) = rustnet_monitor::config::PersistentConfig::load() {
+                if let Ok(resp) = ureq::get(&format!("{daemon_base}/live"))
+                    .timeout(Duration::from_millis(800))
+                    .call()
+                    && let Ok(live) = resp.into_json::<serde_json::Value>()
+                {
+                    tray_controller.refresh_status_from_live(&live, &status_fields);
+                }
+                let _ = pc;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    // --- Reap the daemon child (only if we spawned it) on exit ---
+    if let Some(mut child) = daemon_child {
+        info!("Tray helper: stopping daemon child");
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    Ok(())
+}
+
+/// rustnetec: T12-A — probe whether the daemon HTTP server is listening on
+/// `port`. A TCP connect is sufficient for the handshake: the daemon binds
+/// 127.0.0.1 before serving, so connectable == daemon up.
+#[cfg(all(feature = "tray", not(target_os = "freebsd")))]
+fn daemon_port_open(port: u16) -> bool {
+    use std::net::{Ipv4Addr, SocketAddr, TcpStream};
+    use std::time::Duration;
+    let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+    TcpStream::connect_timeout(&addr, Duration::from_millis(300)).is_ok()
+}
+
 // rustnetec: Daemon mode main loop (R1)
 /// Run the daemon loop: wait for SIGTERM/SIGINT, then exit gracefully.
 /// The capture pipeline runs in background threads started by App;
@@ -1102,6 +1408,42 @@ fn run_daemon_loop(
     info!(
         "Daemon loop started, waiting for shutdown signal (Ctrl+C or SIGTERM) — signal-hook registered"
     );
+    // rustnetec: T11 diagnostics — stderr directly, independent of --log-level
+    eprintln!("[tray-diag] run_daemon_loop entered, tray_mode={tray_mode}");
+
+    // rustnetec: macOS requires the main-thread Cocoa event loop to be
+    // running before the tray icon is created (tray-icon platform note:
+    // "make sure the event loop is already running and not just created
+    // before creating a TrayIcon"). Drive it once with a short run_in_mode
+    // so NSStatusItem creation and display work; the main loop below keeps
+    // driving it with CFRunLoopRunInMode instead of plain sleep (T8).
+    //
+    // T9: also initialize the NSApplication singleton FIRST — the tray-icon
+    // native example starts with `NSApp()`. Without it the status item may
+    // show but AppKit never dispatches click/menu events (menu items appear
+    // dead), because NSApplication is the hub of the Cocoa event system.
+    // `std::mem::forget` keeps the singleton alive for the process lifetime.
+    //
+    // T11: T10's kCFRunLoopCommonModes was WRONG — CFRunLoopRunInMode rejects
+    // kCFRunLoopCommonModes as a run mode ("invalid mode 'kCFRunLoopCommonModes'
+    // provided to CFRunLoopRunSpecific"), aborting the warmup and leaving no
+    // icon. Reverted to kCFRunLoopDefaultMode; the real menu-dispatch fix is
+    // the polling structure in the main loop below.
+    #[cfg(all(feature = "tray", target_os = "macos"))]
+    if tray_mode {
+        use objc2::MainThreadMarker;
+        use objc2_app_kit::NSApp;
+        let mtm = MainThreadMarker::new().expect("run_daemon_loop runs on the main thread");
+        let ns_app = NSApp(mtm);
+        std::mem::forget(ns_app); // keep NSApplication alive for the whole daemon loop
+
+        use core_foundation::runloop::{CFRunLoop, kCFRunLoopDefaultMode};
+        CFRunLoop::run_in_mode(
+            unsafe { kCFRunLoopDefaultMode },
+            Duration::from_millis(50),
+            false,
+        );
+    }
 
     // rustnetec: tray controller (T3.2). Only constructed when tray_mode is
     // true AND the tray feature is compiled in AND we are not on FreeBSD
@@ -1109,15 +1451,24 @@ fn run_daemon_loop(
     // so the branch collapses to a plain daemon loop.
     #[cfg(all(feature = "tray", not(target_os = "freebsd")))]
     let mut tray_controller: Option<ui::TrayController> = if tray_mode {
+        eprintln!("[tray-diag] creating TrayController…");
         match ui::TrayController::new(
             include_bytes!("../resources/packaging/linux/graphics/rustnet.png"),
             256,
             256,
             "Netec",
         ) {
-            Ok(ctrl) => Some(ctrl),
+            Ok(ctrl) => {
+                eprintln!("[tray-diag] TrayController created OK");
+                Some(ctrl)
+            }
             Err(e) => {
+                // rustnetec: T7 — also print to stderr so the failure is
+                // visible even when the user didn't pass --log-level (which
+                // is the only condition under which setup_logging runs and
+                // warn! becomes visible; otherwise the terminal stays blank).
                 warn!("Failed to create system tray icon: {e}; continuing headless");
+                eprintln!("Warning: failed to create system tray icon: {e}; continuing headless");
                 None
             }
         }
@@ -1145,6 +1496,19 @@ fn run_daemon_loop(
 
     loop {
         if tray_mode {
+            // rustnetec: T11 diagnostics — alive tick every ~2s (40 × 50ms)
+            #[cfg(all(feature = "tray", not(target_os = "freebsd")))]
+            {
+                static mut TICK: u64 = 0;
+                // SAFETY: single-threaded main loop, only here touches TICK
+                unsafe {
+                    TICK += 1;
+                }
+                if unsafe { TICK.is_multiple_of(40) } {
+                    eprintln!("[tray-diag] main loop alive (tick {})", unsafe { TICK });
+                }
+            }
+
             // rustnetec: tray branch — 50ms non-blocking poll for snappy menus (T3.2)
             #[cfg(all(feature = "tray", not(target_os = "freebsd")))]
             {
@@ -1152,11 +1516,13 @@ fn run_daemon_loop(
                     use ui::TrayCommand as Cmd;
                     match ctrl.poll_command() {
                         Cmd::Quit => {
+                            eprintln!("[tray-diag] got Quit command");
                             info!("Tray menu: Quit selected, stopping app");
                             app.stop();
                             break;
                         }
                         Cmd::TogglePause => {
+                            eprintln!("[tray-diag] got TogglePause command");
                             // rustnetec: TODO — App has no pause/resume API yet;
                             // log placeholder so the menu item visibly does something.
                             info!(
@@ -1164,10 +1530,12 @@ fn run_daemon_loop(
                             );
                         }
                         Cmd::OpenTerminal => {
+                            eprintln!("[tray-diag] got OpenTerminal command");
                             // rustnetec: launcher T3.3 — open a terminal running rustnet query --live
                             ui::open_terminal("rustnet query --live");
                         }
                         Cmd::OpenLocalPanel => {
+                            eprintln!("[tray-diag] got OpenLocalPanel command");
                             // rustnetec: launcher T3.3 — one-time bootstrap guid handshake
                             if let Some(ref state) = http_state {
                                 ui::open_local_panel(state);
@@ -1205,6 +1573,7 @@ fn run_daemon_loop(
             // rustnetec: status refresh on configurable 1-15s cadence (T3.2)
             #[cfg(all(feature = "tray", not(target_os = "freebsd")))]
             if last_refresh.elapsed().as_secs() >= current_interval_secs {
+                eprintln!("[tray-diag] status refresh starting");
                 if let Some(ref mut ctrl) = tray_controller {
                     let pc = rustnet_monitor::config::PersistentConfig::load().unwrap_or_default();
                     let rc = rustnet_monitor::config::RuntimeConfig::from_persistent(&pc);
@@ -1212,12 +1581,36 @@ fn run_daemon_loop(
                     // hot-update: pick up new interval each cycle
                     current_interval_secs = pc.tray_refresh_interval_secs;
                 }
+                eprintln!("[tray-diag] status refresh done");
                 last_refresh = std::time::Instant::now();
             }
 
-            // Short sleep for responsive menu polling (50ms)
+            // rustnetec: T8 — macOS tray needs the main-thread Cocoa event
+            // loop running continuously to display the icon and dispatch menu
+            // events. CFRunLoopRunInMode with a 50ms timeout drives it while
+            // keeping the poll cadence; other platforms keep plain sleep.
+            //
+            // T11: T10's kCFRunLoopCommonModes was WRONG — CFRunLoopRunInMode
+            // rejects it as a run mode. Reverted to kCFRunLoopDefaultMode.
+            #[cfg(all(feature = "tray", target_os = "macos"))]
+            {
+                use core_foundation::runloop::{CFRunLoop, kCFRunLoopDefaultMode};
+                CFRunLoop::run_in_mode(
+                    unsafe { kCFRunLoopDefaultMode },
+                    Duration::from_millis(50),
+                    false,
+                );
+            }
+            #[cfg(not(all(feature = "tray", target_os = "macos")))]
             std::thread::sleep(Duration::from_millis(50));
         } else {
+            // rustnetec: T12-A — plain daemon branch also publishes the live
+            // snapshot so the tray helper can poll GET /live over HTTP (the
+            // helper is a separate process and has no App handle).
+            #[cfg(all(feature = "tray", not(target_os = "freebsd")))]
+            if let Some(ref state) = http_state {
+                state.update_live_snapshot(app);
+            }
             // rustnetec: plain daemon branch — coarse 1s wait (original behavior)
             std::thread::sleep(Duration::from_secs(1));
         }
@@ -1762,6 +2155,43 @@ fn check_privileges_early() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// rustnetec: Soft privilege check for tray mode (T6).
+///
+/// The tray menu (open terminal / local panel / settings / quit) does not
+/// need packet capture, so an unprivileged user should still be able to
+/// start the tray. Capture itself degrades to process-only mode inside
+/// `App::start_capture_thread` (it sets `CaptureStatus::Failed` and logs
+/// "Application will run in process-only mode" instead of aborting), so the
+/// tray keeps working with an empty/zero status line.
+///
+/// Unlike [`check_privileges_early`], this prints a warning and continues —
+/// it never aborts the process. This is feature-gated because `tray_mode` is
+/// only a real flag when the `tray` feature is compiled in.
+#[cfg(feature = "tray")]
+fn check_privileges_tray() {
+    match network::privileges::check_packet_capture_privileges() {
+        Ok(status) if !status.has_privileges => {
+            warn!(
+                "Tray started without packet capture privileges — the tray menu works, \
+                 but live traffic will be unavailable. {}",
+                status.error_message()
+            );
+            eprintln!(
+                "Warning: insufficient privileges for packet capture — the tray is running, \
+                 but live traffic will be unavailable.\n{}",
+                status.error_message()
+            );
+        }
+        Err(e) => {
+            // Privilege check failed - warn but continue
+            warn!("Failed to check privileges (tray mode): {}", e);
+        }
+        _ => {
+            // Privileges OK
+        }
+    }
 }
 
 #[cfg(target_os = "windows")]
