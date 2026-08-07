@@ -57,7 +57,7 @@ pub struct HttpState {
     /// the daemon may be started with `--http-port <override>`, and the
     /// launcher must honour that override to hit the right server.
     pub http_port: u16,
-    /// rustnetec: live snapshot for the tray helper (T12-A, R6).
+    /// rustnetec: live snapshot for the tray helper (T3.6.7, R6).
     ///
     /// The daemon periodically writes the minimal status fields (interface
     /// rates, active connections, uptime) into this shared value; the tray
@@ -68,7 +68,7 @@ pub struct HttpState {
 }
 
 impl HttpState {
-    /// rustnetec: Refresh the live snapshot from the running App (T12-A).
+    /// rustnetec: Refresh the live snapshot from the running App (T3.6.7).
     ///
     /// Called by the daemon main loop on the refresh cadence so the tray
     /// helper can pull `GET /live` and render a status line without an App
@@ -92,7 +92,10 @@ impl HttpState {
             .and_then(|start| start.elapsed().ok())
             .unwrap_or_default();
         let snapshot = serde_json::json!({
-            "interface": app.get_current_interface(),
+            // rustnetec: resolve virtual capture devices (pktap/any/NPF) to
+            // the real active interface so the tray status line shows e.g.
+            // "en0" instead of the meaningless "pktap" (T3.6.7 follow-up).
+            "interface": app.get_display_interface(),
             "rate_in_bps": rate_in_bps,
             "rate_out_bps": rate_out_bps,
             "connections": connections,
@@ -250,7 +253,7 @@ fn handle_request(request: tiny_http::Request, state: &HttpState) {
         }
 
         // rustnetec: POST /admin/shutdown — tray helper → daemon graceful
-        // stop (T12-A). Requires auth like all non-/ endpoints.
+        // stop (T3.6.7). Requires auth like all non-/ endpoints.
         ("/admin/shutdown", tiny_http::Method::Post) => {
             handle_admin_shutdown(request, state);
         }
@@ -317,7 +320,7 @@ fn check_cors_origin(request: &tiny_http::Request) -> bool {
     true
 }
 
-/// GET /live — return the daemon's live snapshot (daemon→tray bridge, T12-A).
+/// GET /live — return the daemon's live snapshot (daemon→tray bridge, T3.6.7).
 ///
 /// The tray helper polls this endpoint over HTTP to render the menu status
 /// line without holding an `App` handle (separate process). The daemon main
@@ -332,7 +335,7 @@ fn handle_live(request: tiny_http::Request, state: &HttpState) {
     let _ = respond_json(request, 200, &snapshot);
 }
 
-/// POST /admin/shutdown — gracefully stop the daemon (T12-A).
+/// POST /admin/shutdown — gracefully stop the daemon (T3.6.7).
 ///
 /// The tray helper calls this when the user picks "Quit" from the tray menu:
 /// the helper is a separate process and cannot call `app.stop()` directly, so
@@ -846,7 +849,7 @@ mod tests {
             active_sessions: Arc::new(Mutex::new(HashMap::new())),
             // rustnetec: T3.5 launcher URL port (R6)
             http_port: 19811,
-            // rustnetec: T12-A daemon→tray live snapshot (R6)
+            // rustnetec: T3.6.7 daemon→tray live snapshot (R6)
             live_snapshot: Arc::new(RwLock::new(serde_json::json!({}))),
         };
         assert_eq!(state.http_token, "test-token");
@@ -856,7 +859,7 @@ mod tests {
         assert!(state.active_sessions.lock().unwrap().is_empty());
         // rustnetec: T3.5 — confirm the listen port is wired for the launcher
         assert_eq!(state.http_port, 19811);
-        // rustnetec: T12-A — live snapshot starts empty (no daemon yet)
+        // rustnetec: T3.6.7 — live snapshot starts empty (no daemon yet)
         assert!(state.live_snapshot.read().unwrap().is_object());
     }
 
@@ -879,7 +882,7 @@ mod tests {
             // rustnetec: T3.5 — use a non-default port so launcher URL
             // construction would catch a hardcoded-19811 regression.
             http_port: 19812,
-            // rustnetec: T12-A daemon→tray live snapshot (R6)
+            // rustnetec: T3.6.7 daemon→tray live snapshot (R6)
             live_snapshot: Arc::new(RwLock::new(serde_json::json!({}))),
         }
     }
@@ -909,7 +912,7 @@ mod tests {
             pending_guids: Arc::new(Mutex::new(Vec::new())),
             active_sessions: Arc::new(Mutex::new(HashMap::new())),
             http_port: 19813,
-            // rustnetec: T12-A daemon→tray live snapshot (R6)
+            // rustnetec: T3.6.7 daemon→tray live snapshot (R6)
             live_snapshot: Arc::new(RwLock::new(serde_json::json!({}))),
         };
         assert_eq!(other.http_port, 19813);

@@ -2724,6 +2724,44 @@ impl App {
             .collect()
     }
 
+    /// rustnetec: resolve the interface name to display in status UIs (tray,
+    /// daemon /live snapshot).
+    ///
+    /// The capture device name is not always a real interface:
+    /// - macOS PKTAP returns the virtual aggregate device `pktap` (captures
+    ///   all interfaces);
+    /// - Linux `any` is also a virtual aggregate;
+    /// - Windows NPF devices start with `\Device\NPF_`.
+    ///
+    /// When the current capture device is one of those virtual names, resolve
+    /// it to the real interface with the highest combined in/out rate (the
+    /// "busiest" active link), falling back to the raw device name when no
+    /// rate data is available yet.
+    pub fn get_display_interface(&self) -> Option<String> {
+        let current = self.get_current_interface();
+        let is_virtual = current
+            .as_deref()
+            .map(Self::is_virtual_capture_device)
+            .unwrap_or(false);
+        if !is_virtual {
+            return current;
+        }
+        // Pick the real (non-virtual) interface carrying the most traffic.
+        let rates = self.get_interface_rates();
+        rates
+            .iter()
+            .filter(|(name, _)| !Self::is_virtual_capture_device(name))
+            .max_by_key(|(_, r)| r.rx_bytes_per_sec + r.tx_bytes_per_sec)
+            .map(|(name, _)| name.clone())
+            .or(current)
+    }
+
+    /// Whether an interface/device name is a virtual capture device rather
+    /// than a real network interface (see [`App::get_display_interface`]).
+    fn is_virtual_capture_device(name: &str) -> bool {
+        name == "pktap" || name == "any" || name.starts_with("\\Device\\NPF_")
+    }
+
     /// Get traffic transferred over each interface's rolling 60-second window.
     pub fn get_interface_traffic_windows(&self) -> HashMap<String, InterfaceTrafficWindow> {
         self.interface_traffic_windows
@@ -4072,5 +4110,80 @@ mod pcapng_export_tests {
         let pos_a = out.iter().position(|&b| b == 0xAA).unwrap();
         let pos_b = out.iter().position(|&b| b == 0xBB).unwrap();
         assert!(pos_a < pos_b, "records were written out of arrival order");
+    }
+}
+
+#[cfg(test)]
+mod display_interface_tests {
+    use super::*;
+
+    fn test_app() -> App {
+        App::new(Config {
+            enable_dpi: false,
+            resolve_dns: false,
+            disable_geoip: true,
+            ..Config::default()
+        })
+        .unwrap()
+    }
+
+    fn rates(rx: u64, tx: u64) -> InterfaceRates {
+        InterfaceRates {
+            rx_bytes_per_sec: rx,
+            tx_bytes_per_sec: tx,
+        }
+    }
+
+    /// A real interface name passes through unchanged.
+    #[test]
+    fn real_interface_passes_through() {
+        let app = test_app();
+        app.set_current_interface_for_test(Some("en0".to_string()));
+        assert_eq!(app.get_display_interface().as_deref(), Some("en0"));
+    }
+
+    /// pktap (macOS virtual aggregate) resolves to the busiest real interface.
+    #[test]
+    fn pktap_resolves_to_busiest_real_interface() {
+        let app = test_app();
+        app.set_current_interface_for_test(Some("pktap".to_string()));
+        app.set_interface_rates_for_test("en0", rates(1_000, 500));
+        app.set_interface_rates_for_test("en1", rates(9_000, 4_000));
+        app.set_interface_rates_for_test("awdl0", rates(10, 10));
+        assert_eq!(app.get_display_interface().as_deref(), Some("en1"));
+    }
+
+    /// `any` (Linux virtual aggregate) resolves to a real interface.
+    #[test]
+    fn any_resolves_to_real_interface() {
+        let app = test_app();
+        app.set_current_interface_for_test(Some("any".to_string()));
+        app.set_interface_rates_for_test("eth0", rates(100, 200));
+        assert_eq!(app.get_display_interface().as_deref(), Some("eth0"));
+    }
+
+    /// Windows NPF device names resolve to a real interface too.
+    #[test]
+    fn npf_device_resolves_to_real_interface() {
+        let app = test_app();
+        app.set_current_interface_for_test(Some("\\Device\\NPF_{ABC123}".to_string()));
+        app.set_interface_rates_for_test("Ethernet", rates(50, 60));
+        assert_eq!(app.get_display_interface().as_deref(), Some("Ethernet"));
+    }
+
+    /// Virtual device with no rate data yet falls back to the raw name.
+    #[test]
+    fn virtual_without_rates_falls_back_to_raw_name() {
+        let app = test_app();
+        app.set_current_interface_for_test(Some("pktap".to_string()));
+        assert_eq!(app.get_display_interface().as_deref(), Some("pktap"));
+    }
+
+    /// No capture interface at all stays None.
+    #[test]
+    fn none_passes_through() {
+        let app = test_app();
+        app.set_current_interface_for_test(None);
+        assert_eq!(app.get_display_interface(), None);
     }
 }

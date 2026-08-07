@@ -10,7 +10,7 @@
 // - Tooltip/brand name is `Rustnetec` (per T3.2 revision; 显示名改版).
 // - The status line is rendered from `RuntimeConfig.tray_status_fields` in
 //   the user-configured order; refresh cadence is
-//   `RuntimeConfig.tray_refresh_interval_secs` (1-15s, default 2).
+//   `RuntimeConfig.tray_refresh_interval_secs` (1-15s, default 1).
 // - In/out rates use ↓/↑ Unicode arrows and reuse `ui::format::format_rate`
 //   (2-decimal precision, B/KB/MB/GB) to stay consistent with the TUI.
 // - FreeBSD is excluded at compile time: tray code only builds on
@@ -97,7 +97,7 @@ impl TrayController {
     /// Build the tray icon, menu, and event channel.
     ///
     /// `icon_bytes` is the encoded icon file content (PNG) — decoded to 32bpp
-    /// RGBA internally (T7); `tooltip` is shown on hover — use `"Rustnetec"`.
+    /// RGBA internally (T3.6.2); `tooltip` is shown on hover — use `"Rustnetec"`.
     pub fn new(
         icon_bytes: &[u8],
         _icon_width: u32,
@@ -105,7 +105,7 @@ impl TrayController {
         tooltip: &str,
     ) -> anyhow::Result<Self> {
         // rustnetec: decode the PNG icon to 32bpp RGBA before handing it to
-        // tray-icon (T7). tray_icon::Icon::from_rgba requires raw RGBA pixels
+        // tray-icon (T3.6.2). tray_icon::Icon::from_rgba requires raw RGBA pixels
         // with len == width*height*4 and fails with BadIcon on anything else;
         // passing the compressed PNG bytes directly (as before) always failed,
         // leaving the tray headless. image is an optional dep pulled in by the
@@ -279,7 +279,7 @@ impl TrayController {
     }
 
     /// Refresh the dynamic status line + tooltip from the daemon's live
-    /// snapshot pulled over HTTP (T12-A, dual-process tray helper).
+    /// snapshot pulled over HTTP (T3.6.7, dual-process tray helper).
     ///
     /// The tray helper is a separate process and never holds an `App`, so it
     /// cannot call [`TrayController::refresh_status`]. Instead the daemon
@@ -383,7 +383,9 @@ impl TrayController {
 
         StatusContext {
             is_paused: app.is_stopping(), // rustnetec: TODO wire real pause flag if added
-            interface: app.get_current_interface(),
+            // rustnetec: resolve virtual capture devices (pktap/any/NPF) to
+            // the real active interface for an accurate status line.
+            interface: app.get_display_interface(),
             rate_in_bps,
             rate_out_bps,
             connections,

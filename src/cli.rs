@@ -227,7 +227,7 @@ pub fn build_cli() -> Command {
                 .action(clap::ArgAction::SetTrue),
         );
 
-    // rustnetec: --tray flag (R1, feature-gated; T12-A: independent helper
+    // rustnetec: --tray flag (R1, feature-gated; T3.6.7: independent helper
     // entry — spawns the daemon child, runs the pure GUI tray)
     #[cfg(feature = "tray")]
     let cmd = cmd.arg(

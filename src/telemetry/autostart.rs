@@ -297,7 +297,7 @@ fn install_macos(mode: AutostartMode) -> Result<()> {
         .replace('<', "&lt;")
         .replace('>', "&gt;");
 
-    // rustnetec: T12-A — KeepAlive semantics differ by mode. Daemon is a
+    // rustnetec: T3.6.7 — KeepAlive semantics differ by mode. Daemon is a
     // headless background service: crash-restart (KeepAlive=true) is desired.
     // Tray is a user-facing GUI entry: after the user picks "Quit", launchd
     // must NOT resurrect it, otherwise the app can never be closed — so Tray

@@ -345,7 +345,7 @@ pub struct PersistentConfig {
     /// Order in the vec determines left-to-right render order.
     #[serde(default = "default_tray_status_fields")]
     pub tray_status_fields: Vec<TrayStatusField>,
-    /// Tray status-line refresh interval in seconds (1-15, default 2).
+    /// Tray status-line refresh interval in seconds (1-15, default 1).
     #[serde(default = "default_tray_refresh_interval_secs")]
     pub tray_refresh_interval_secs: u64,
 
@@ -388,7 +388,7 @@ fn default_tray_status_fields() -> Vec<TrayStatusField> {
 }
 
 fn default_tray_refresh_interval_secs() -> u64 {
-    2
+    1
 }
 
 impl Default for PersistentConfig {

@@ -118,7 +118,7 @@ windows = { version = "0.62", features = [
 # rustnetec: macOS tray icon requires a running Cocoa event loop on the main
 # thread (tray-icon platform note). CFRunLoopRunInMode drives it, and
 # objc2-app-kit initializes the NSApplication singleton that AppKit's menu
-# popup / click dispatch requires (T8/T9). Only pulled in by the `tray`
+# popup / click dispatch requires (T3.6.3/T3.6.4). Only pulled in by the `tray`
 # feature; both are already in the dependency graph transitively, promoted to
 # direct optional deps.
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -168,9 +168,9 @@ macos-sandbox = []
 kubernetes = ["rustnet-core/kubernetes"]
 # rustnetec: System tray support (R1/R6) — optional, default off (T3.1)
 # tray-icon provides the cross-platform tray icon; muda provides the menu;
-# image decodes the tray PNG icon (T7); core-foundation drives the Cocoa
-# event loop on macOS (T8); objc2-app-kit initializes NSApplication for
-# AppKit menu dispatch (T9). All are optional and only pulled in when
+# image decodes the tray PNG icon (T3.6.2); core-foundation drives the Cocoa
+# event loop on macOS (T3.6.3); objc2-app-kit initializes NSApplication for
+# AppKit menu dispatch (T3.6.4). All are optional and only pulled in when
 # `--features tray` is enabled. Linux backend defaults to ksni (pure DBus,
 # no GTK).
 tray = [
