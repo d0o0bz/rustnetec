@@ -28,6 +28,15 @@ fn main() -> Result<()> {
     if matches.subcommand_matches("uninstall-autostart").is_some() {
         return run_uninstall_autostart();
     }
+    // rustnetec: Handle LaunchDaemon subcommands (T4.2, macOS 永久授权)
+    #[cfg(target_os = "macos")]
+    if matches.subcommand_matches("install-launchdaemon").is_some() {
+        return run_install_launchdaemon(&matches);
+    }
+    #[cfg(target_os = "macos")]
+    if matches.subcommand_matches("uninstall-launchdaemon").is_some() {
+        return run_uninstall_launchdaemon();
+    }
 
     // Set up logging only if log-level was provided
     if let Some(log_level_str) = matches.get_one::<String>("log-level") {
@@ -51,8 +60,12 @@ fn main() -> Result<()> {
     // process-only mode inside App::start_capture_thread. TUI/daemon keep the
     // hard check so a missing capture permission fails fast with clear
     // guidance instead of a half-working UI.
+    // rustnetec: a daemon spawned by the tray helper (marked via the
+    // RUSTNETEC_TRAY_DAEMON env var, see run_tray_helper) also uses the soft
+    // check: the tray panels (/live, /config) must stay reachable even
+    // without capture privileges, with capture degrading to process-only.
     #[cfg(feature = "tray")]
-    if tray_mode {
+    if tray_mode || std::env::var("RUSTNETEC_TRAY_DAEMON").is_ok() {
         check_privileges_tray();
     } else {
         check_privileges_early()?;
@@ -74,6 +87,16 @@ fn main() -> Result<()> {
     if let Err(e) = telemetry::paths::ensure_dirs() {
         warn!("Failed to create data/config directories: {}", e);
     }
+
+    // rustnetec: 提前生成 http_token（T1.4 修复）
+    // Seatbelt (fs_restricted=true) 在本函数稍后应用，会阻止 config.yml 的
+    // 写入；若等到 daemon 分支（原 761 行）才生成 token，save 会被 sandbox
+    // 静默拒绝，config.yml 的 http_token 保持 null，导致 `query --live`
+    // 读取空 token → daemon 鉴权 401。这里在 sandbox 之前生成并随 identity
+    // 一起落盘，并缓存到外层变量供 daemon 分支直接使用——sandbox 还会
+    // `deny file-read*`，此时再 load config.yml 会失败、重新生成新 token，
+    // 造成 daemon 内存 token 与落盘 token 不一致。
+    let http_token_early: Option<String>;
 
     // rustnetec: Initialize host identity (R8+R10, T1.6)
     // Load PersistentConfig, generate missing user_id/machine_id, save back if needed.
@@ -100,11 +123,24 @@ fn main() -> Result<()> {
             pc.machine_id = Some(machine_id.clone());
         }
 
-        let (identity, needs_save) = telemetry::identity::HostIdentity::initialize(
+        let (identity, mut needs_save) = telemetry::identity::HostIdentity::initialize(
             pc.username.as_deref(),
             pc.user_id,
             pc.machine_id.as_deref(),
         );
+
+        // rustnetec: 提前生成 http_token（T1.4 修复）
+        // Seatbelt (fs_restricted=true) 在本函数稍后应用，会阻止 config.yml 的
+        // 写入；若等到 daemon 分支（原 761 行）才生成 token，save 会被 sandbox
+        // 静默拒绝，config.yml 的 http_token 保持 null，导致 `query --live`
+        // 读取空 token → daemon 鉴权 401。这里在 sandbox 之前生成并随 identity
+        // 一起落盘，保证 daemon/query 读到同一个持久化 token。
+        if pc.http_token.is_none() {
+            pc.http_token =
+                Some(rustnet_monitor::config::PersistentConfig::generate_http_token());
+            needs_save = true;
+        }
+        http_token_early = pc.http_token.clone();
 
         // Log identity info before potential move
         let mid_prefix = &identity.machine_id[..8.min(identity.machine_id.len())];
@@ -345,6 +381,17 @@ fn main() -> Result<()> {
     };
     if !daemon_mode {
         info!("Terminal UI initialized");
+        // rustnetec: TUI 单实例标记（方案 B）。
+        // 写 PID 文件供托盘「打开终端监控」检测：已存在→调到前台，不存在→新开，
+        // 保证只打开一个前台 TUI。同时在终端窗口设置固定标题，便于 macOS
+        // osascript 按标题定位窗口。退出时在 cleanup 段删除并恢复标题。
+        if let Ok(dir) = telemetry::paths::data_dir() {
+            let _ = std::fs::write(dir.join("tui.pid"), std::process::id().to_string());
+        }
+        let _ = crossterm::execute!(
+            io::stdout(),
+            crossterm::terminal::SetTitle("Rustnetec Monitor")
+        );
     } else {
         info!("Running in daemon mode (headless)");
     }
@@ -755,14 +802,18 @@ fn main() -> Result<()> {
             let db_path =
                 telemetry::paths::db_path().unwrap_or_else(|_| std::path::PathBuf::from("data.db"));
             let http_token = {
-                // Load token from PersistentConfig; generate if missing
-                let mut pc = rustnet_monitor::config::PersistentConfig::load().unwrap_or_default();
-                if pc.http_token.is_none() {
-                    pc.http_token =
-                        Some(rustnet_monitor::config::PersistentConfig::generate_http_token());
-                    let _ = pc.save();
+                // rustnetec: 优先用 sandbox 之前缓存/落盘的 token。Seatbelt
+                // `deny file-read*` 使此处的 load() 失败 → default → 重新生成
+                // 新 token，导致 daemon 内存 token 与 config.yml 落盘 token
+                // 不一致，`query --live` 用落盘 token 请求会 401。
+                if let Some(t) = http_token_early {
+                    t
+                } else {
+                    rustnet_monitor::config::PersistentConfig::load()
+                        .unwrap_or_default()
+                        .http_token
+                        .unwrap_or_default()
                 }
-                pc.http_token.unwrap_or_default()
             };
 
             let state = std::sync::Arc::new(telemetry::http::HttpState {
@@ -847,6 +898,12 @@ fn main() -> Result<()> {
     app.stop();
     if let Some(ref mut term) = terminal {
         ui::restore_terminal(term)?;
+    }
+    // rustnetec: 删除 TUI 单实例 PID 文件（方案 B）并恢复终端标题。
+    if !daemon_mode {
+        if let Ok(dir) = telemetry::paths::data_dir() {
+            let _ = std::fs::remove_file(dir.join("tui.pid"));
+        }
     }
 
     info!("RustNet Monitor shutting down");
@@ -1087,6 +1144,23 @@ mod output_file_tests {
 /// Sort connections based on the specified column and direction
 use ui::{clear_all_with_confirmation, copy_to_clipboard, sort_connections};
 
+/// rustnetec: 安装 LaunchDaemon 成功后重启托盘应用（T4.2 永久授权配套）。
+///
+/// 用**完整 argv**（`std::env::args().skip(1)`）重新 spawn 当前可执行文件，
+/// 保证任何启动方式（双击 app / 终端命令）重启后参数一致；然后提示并
+/// 退出当前进程。重启后 `run_tray_helper` 检测到 LaunchDaemon 已装，
+/// 不再弹窗，直接连接 launchd 托管的 daemon。
+/// `-> !`：spawn 后必然退出，不会返回。
+#[cfg(all(feature = "tray", not(target_os = "freebsd")))]
+fn restart_tray_helper() -> ! {
+    let exe = std::env::current_exe().expect("failed to resolve current executable");
+    let args: Vec<String> = std::env::args().skip(1).collect(); // 完整 argv（跳过 argv[0]）
+    info!("Restarting tray helper after LaunchDaemon install: {exe:?} {args:?}");
+    println!("永久授权安装成功，正在重启应用…");
+    let _ = std::process::Command::new(&exe).args(&args).spawn();
+    std::process::exit(0);
+}
+
 /// rustnetec: T12-A — tray helper entry point (A topology: tray spawns the
 /// daemon child and runs the pure GUI). Executes as `rustnet --tray` without
 /// `--daemon`: probes/spawns the daemon, performs the HTTP handshake, builds
@@ -1101,6 +1175,21 @@ fn run_tray_helper(matches: &clap::ArgMatches) -> Result<()> {
         .unwrap_or(19811);
     let daemon_base = format!("http://127.0.0.1:{http_port}");
 
+    // rustnetec: 启动引导（T4.2 永久授权配套）——macOS 下若未安装
+    // LaunchDaemon，弹窗询问用户是否现在安装永久授权；用户确认后执行
+    // 一次性系统授权安装，成功后重启应用（重启后检测到已装，不再弹窗）。
+    // 用户选「暂不」或安装失败 → 继续原流程（每启动一次弹授权窗口）。
+    #[cfg(target_os = "macos")]
+    if !telemetry::launchdaemon::is_installed() && ui::prompt_launchdaemon_install() {
+        match telemetry::launchdaemon::install(http_port) {
+            Ok(()) => restart_tray_helper(), // 安装成功 → 重启应用
+            Err(e) => {
+                warn!("LaunchDaemon install failed, continuing with per-launch auth: {e}");
+                eprintln!("LaunchDaemon install failed: {e}");
+            }
+        }
+    }
+
     // --- HTTP handshake: is a daemon already listening? ---
     let daemon_up = daemon_port_open(http_port);
 
@@ -1109,22 +1198,95 @@ fn run_tray_helper(matches: &clap::ArgMatches) -> Result<()> {
     // the daemon BEFORE NSApp.terminate kills the helper process (terminate
     // would otherwise skip the end-of-function reaping, leaking the daemon).
     let daemon_child = std::sync::Arc::new(std::sync::Mutex::new(None::<std::process::Child>));
-    if !daemon_up {
+    // rustnetec: T4.2 — 已安装 LaunchDaemon 时，daemon 由 launchd 以 root
+    // 托管（RunAtLoad 开机自启 + KeepAlive 崩溃重启），托盘无需 spawn 也
+    // 拿不到 child 句柄；直接等 HTTP 就绪即可。未安装时才走下面的
+    // spawn / osascript 弹窗路径。
+    #[cfg(target_os = "macos")]
+    let launchdaemon_managed = telemetry::launchdaemon::is_installed();
+    #[cfg(not(target_os = "macos"))]
+    let launchdaemon_managed = false;
+
+    if !daemon_up && !launchdaemon_managed {
         let exe = std::env::current_exe()?;
         info!(
             "Tray helper: daemon not running — spawning child {:?} --daemon --http-port {http_port}",
             exe
         );
-        let child = std::process::Command::new(&exe)
-            .arg("--daemon")
-            .arg("--http-port")
-            .arg(http_port.to_string())
-            .spawn()
-            .map_err(|e| anyhow::anyhow!("failed to spawn daemon child: {e}"))?;
-        *daemon_child.lock().unwrap() = Some(child);
-        // Wait for the daemon HTTP server to come up (up to ~10s).
+        // rustnetec: T4.2 — macOS 下若无 BPF 抓包权限，通过系统授权窗口
+        // （osascript `do shell script ... with administrator privileges`）
+        // 以 root 启动 daemon，让抓包真正可用，而不是降级 process-only。
+        // 有权限时保持普通 spawn。
+        #[cfg(target_os = "macos")]
+        let _spawned_privately = {
+            let has_bpf = network::privileges::check_packet_capture_privileges()
+                .map(|s| s.has_privileges)
+                .unwrap_or(false);
+            if has_bpf {
+                let child = std::process::Command::new(&exe)
+                    .arg("--daemon")
+                    .arg("--http-port")
+                    .arg(http_port.to_string())
+                    .env("RUSTNETEC_TRAY_DAEMON", "1")
+                    .spawn()
+                    .map_err(|e| anyhow::anyhow!("failed to spawn daemon child: {e}"))?;
+                *daemon_child.lock().unwrap() = Some(child);
+                true
+            } else {
+                // 弹系统授权窗口提权启动 daemon。约束：
+                // 1. 命令被 AppleScript 的 do shell script "..." 包裹，内部
+                //    不能出现 `"`（会提前终止字符串 → -2740），路径一律单引号。
+                // 2. osascript 提权不设 SUDO_UID/SUDO_GID/HOME，而 daemon 的
+                //    resolve_drop_target() 依赖 SUDO_UID/GID 才能正确降权回
+                //    原用户（否则降为 nobody 并 chown 用户目录），HOME 决定
+                //    config.yml/token 路径——三者必须显式传入。
+                // 3. 绝不能加 `nohup`：osascript 授权会话无控制终端，macOS 的
+                //    nohup 会报 "can't detach from console: Inappropriate ioctl
+                //    for device" 并**直接退出**，env/daemon 根本不会执行（实测
+                //    日志只有两行 nohup 报错、无 daemon 输出）。用 `&` 后台化
+                //    + `</dev/null` 断开 stdin + 输出重定向即可——非交互 sh
+                //    退出时不会向后台作业发 SIGHUP，daemon 保持存活。
+                let uid = unsafe { libc::getuid() };
+                let gid = unsafe { libc::getgid() };
+                let home = std::env::var("HOME").unwrap_or_default();
+                let exe_q = exe.display().to_string().replace('\'', "'\\''");
+                let home_q = home.replace('\'', "'\\''");
+                let log = format!("/tmp/rustnetec-daemon-{http_port}.log");
+                let script = format!(
+                    "do shell script \"env SUDO_UID={uid} SUDO_GID={gid} \
+                     HOME='{home_q}' RUSTNETEC_TRAY_DAEMON=1 '{exe_q}' --daemon \
+                     --http-port {http_port} < /dev/null >> '{log}' 2>&1 &\" \
+                     with administrator privileges"
+                );
+                info!("Tray helper: no BPF access — launching daemon via system auth dialog");
+                let _ = std::process::Command::new("osascript")
+                    .arg("-e")
+                    .arg(&script)
+                    .spawn()
+                    .map_err(|e| anyhow::anyhow!("failed to spawn auth dialog: {e}"))?;
+                // 提权路径拿不到 daemon 子进程句柄（osascript 立即返回，
+                // daemon 是 nohup 后台孙进程）；daemon_child 保持 None，
+                // 退出时靠 POST /admin/shutdown 优雅回收（见 Quit 分支）。
+                false
+            }
+        };
+        // rustnetec: T4.2 — 非 macOS 保持原路径。
+        #[cfg(not(target_os = "macos"))]
+        let _spawned_privately = {
+            let child = std::process::Command::new(&exe)
+                .arg("--daemon")
+                .arg("--http-port")
+                .arg(http_port.to_string())
+                .env("RUSTNETEC_TRAY_DAEMON", "1")
+                .spawn()
+                .map_err(|e| anyhow::anyhow!("failed to spawn daemon child: {e}"))?;
+            *daemon_child.lock().unwrap() = Some(child);
+            false
+        };
+        // Wait for the daemon HTTP server to come up (up to ~30s; the auth
+        // dialog path needs the user to type the password first).
         let mut ready = false;
-        for _ in 0..100 {
+        for _ in 0..300 {
             if daemon_port_open(http_port) {
                 ready = true;
                 break;
@@ -1133,6 +1295,27 @@ fn run_tray_helper(matches: &clap::ArgMatches) -> Result<()> {
         }
         if !ready {
             warn!("Tray helper: daemon child did not become HTTP-ready in time");
+        }
+    } else if !daemon_up {
+        // rustnetec: T4.2 — LaunchDaemon 已安装但端口未起。注意 RunAtLoad
+        // 只在系统加载服务时触发一次，托盘退出停掉 daemon 后 launchd 不会
+        // 自动再拉起（KeepAlive=false 也不复活）——所以这里必须主动
+        // `launchctl kickstart` 拉起 launchd 托管的 daemon，再等待 HTTP 就绪。
+        // kickstart 对已加载的 system 服务无需 root（实测普通用户可行）。
+        info!("Tray helper: LaunchDaemon installed — kickstarting launchd daemon");
+        let _ = std::process::Command::new("launchctl")
+            .args(["kickstart", "system/com.rustnetec.daemon"])
+            .status();
+        let mut ready = false;
+        for _ in 0..300 {
+            if daemon_port_open(http_port) {
+                ready = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        if !ready {
+            warn!("Tray helper: launchd-managed daemon did not become HTTP-ready in time");
         }
     } else {
         info!("Tray helper: connecting to existing daemon at {daemon_base}");
@@ -1202,6 +1385,9 @@ fn run_tray_helper(matches: &clap::ArgMatches) -> Result<()> {
                     match cmd_rx.try_recv() {
                         Ok(Cmd::Quit) => {
                             info!("Tray menu: Quit selected — shutting down");
+                            // rustnetec: 退出托盘前检测前台 TUI，询问是否一起关闭
+                            // （用户确认后关闭其 Terminal 窗口，TUI 进程随之退出）。
+                            ui::close_tui_if_confirmed();
                             // rustnetec: T3.6.11 — reap the daemon child here,
                             // BEFORE setting qf (the timer callback then calls
                             // NSApp.terminate, which would otherwise skip the
@@ -1210,6 +1396,15 @@ fn run_tray_helper(matches: &clap::ArgMatches) -> Result<()> {
                                 info!("Tray helper: stopping daemon child");
                                 let _ = child.kill();
                                 let _ = child.wait();
+                            } else if daemon_port_open(http_port) {
+                                // rustnetec: 托盘退出时，无论 daemon 是弹窗
+                                // 启动还是 LaunchDaemon 托管，都随托盘一起退出
+                                // （HTTP shutdown）。KeepAlive=false，daemon
+                                // 退出后 launchd 不会复活它。
+                                info!(
+                                    "Tray helper: stopping daemon via HTTP (tray quit)"
+                                );
+                                stop_daemon_via_http(&daemon_base_cmd);
                             }
                             qf.store(true, Ordering::Relaxed);
                             break;
@@ -1220,7 +1415,7 @@ fn run_tray_helper(matches: &clap::ArgMatches) -> Result<()> {
                             );
                         }
                         Ok(Cmd::OpenTerminal) => {
-                            ui::open_terminal("rustnet query --live");
+                            ui::open_terminal_monitor();
                         }
                         Ok(Cmd::OpenLocalPanel) => {
                             // rustnetec: T3.6.9 — bootstrap-handshake URL so the
@@ -1273,9 +1468,20 @@ fn run_tray_helper(matches: &clap::ArgMatches) -> Result<()> {
                 return;
             }
             let live_url = format!("{}/live", ctx.daemon_base);
-            if let Ok(resp) = ureq::get(&live_url)
-                .timeout(Duration::from_millis(800))
-                .call()
+            // rustnetec: T4.3 — /live 端点需要 Bearer 鉴权（check_auth，仅
+            // `/` 与 `/bootstrap-guid` 免鉴权）；http_token 落盘非空后不带
+            // token 会 401，refresh_status_from_live 从不执行，托盘动态状态
+            // 停在初始文案不更新。与 bootstrap_guid_url / stop_daemon_via_http
+            // 同款模式：读 PersistentConfig.http_token，非空时附加 Bearer。
+            let mut req = ureq::get(&live_url).timeout(Duration::from_millis(800));
+            if let Some(token) = rustnet_monitor::config::PersistentConfig::load()
+                .ok()
+                .and_then(|c| c.http_token)
+                .filter(|t| !t.is_empty())
+            {
+                req = req.set("Authorization", &format!("Bearer {token}"));
+            }
+            if let Ok(resp) = req.call()
                 && let Ok(live) = resp.into_json::<serde_json::Value>()
             {
                 let ctrl = unsafe { &mut *ctx.controller };
@@ -1331,13 +1537,15 @@ fn run_tray_helper(matches: &clap::ArgMatches) -> Result<()> {
             match tray_controller.poll_command() {
                 Cmd::Quit => {
                     info!("Tray menu: Quit selected — shutting down");
+                    // rustnetec: 退出托盘前检测前台 TUI，询问是否一起关闭。
+                    ui::close_tui_if_confirmed();
                     quit_flag.store(true, std::sync::atomic::Ordering::Relaxed);
                     break;
                 }
                 Cmd::TogglePause => {
                     info!("Tray menu: TogglePause selected (pause/resume not yet implemented)");
                 }
-                Cmd::OpenTerminal => ui::open_terminal("rustnet query --live"),
+                Cmd::OpenTerminal => ui::open_terminal_monitor(),
                 Cmd::OpenLocalPanel => {
                     // rustnetec: T3.6.9 — bootstrap-handshake URL (session cookie)
                     ui::open_browser(&bootstrap_guid_url(&daemon_base));
@@ -1358,15 +1566,19 @@ fn run_tray_helper(matches: &clap::ArgMatches) -> Result<()> {
                 Cmd::None => {}
             }
             // Poll /live for the status line on the configured cadence.
+            // rustnetec: T4.3 — 与 macOS refresh_cb 同款修复：/live 需要
+            // Bearer 鉴权，http_token 非空时不带 token 会 401，动态状态不刷新。
             if let Ok(pc) = rustnet_monitor::config::PersistentConfig::load() {
-                if let Ok(resp) = ureq::get(&format!("{daemon_base}/live"))
-                    .timeout(Duration::from_millis(800))
-                    .call()
+                let mut req = ureq::get(&format!("{daemon_base}/live"))
+                    .timeout(Duration::from_millis(800));
+                if let Some(token) = pc.http_token.as_deref().filter(|t| !t.is_empty()) {
+                    req = req.set("Authorization", &format!("Bearer {token}"));
+                }
+                if let Ok(resp) = req.call()
                     && let Ok(live) = resp.into_json::<serde_json::Value>()
                 {
                     tray_controller.refresh_status_from_live(&live, &status_fields);
                 }
-                let _ = pc;
             }
             std::thread::sleep(Duration::from_millis(50));
         }
@@ -1394,6 +1606,31 @@ fn daemon_port_open(port: u16) -> bool {
     use std::time::Duration;
     let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
     TcpStream::connect_timeout(&addr, Duration::from_millis(300)).is_ok()
+}
+
+/// rustnetec: T4.2 — gracefully stop the daemon over HTTP (`/admin/shutdown`).
+///
+/// Used when the daemon was launched via the auth dialog (osascript): the
+/// helper has no `Child` handle for it (it is a nohup'd grandchild), so the
+/// normal `child.kill()` reap cannot reach it. `handle_admin_shutdown` sets
+/// `should_stop`, which the daemon's main loop observes and exits cleanly.
+/// Best-effort: no-op / warn when the daemon is already gone.
+#[cfg(all(feature = "tray", not(target_os = "freebsd")))]
+fn stop_daemon_via_http(daemon_base: &str) {
+    use std::time::Duration;
+    let token = rustnet_monitor::config::PersistentConfig::load()
+        .ok()
+        .and_then(|c| c.http_token)
+        .unwrap_or_default();
+    let url = format!("{daemon_base}/admin/shutdown");
+    let mut req = ureq::post(&url).timeout(Duration::from_millis(800));
+    if !token.is_empty() {
+        req = req.set("Authorization", &format!("Bearer {token}"));
+    }
+    match req.call() {
+        Ok(_) => info!("Tray helper: sent /admin/shutdown to daemon"),
+        Err(e) => warn!("Tray helper: /admin/shutdown failed: {e}"),
+    }
 }
 
 /// rustnetec: T3.6.9 — build the bootstrap-handshake panel URL for the tray
@@ -1741,6 +1978,28 @@ fn run_uninstall_autostart() -> Result<()> {
     } else {
         info!("removed the rustnet boot-time autostart entry");
     }
+    Ok(())
+}
+
+// rustnetec: Handle `rustnet install-launchdaemon` subcommand (T4.2, macOS)
+// 一次性授权安装系统 LaunchDaemon，之后 launchd 以 root 托管 daemon，
+// 开机自启、崩溃重启、无需重复授权（永久授权方案）。
+#[cfg(target_os = "macos")]
+fn run_install_launchdaemon(matches: &clap::ArgMatches) -> Result<()> {
+    let http_port = matches
+        .get_one::<u16>("http-port")
+        .copied()
+        .unwrap_or(19811);
+    telemetry::launchdaemon::install(http_port)?;
+    println!("LaunchDaemon installed — daemon will run as root via launchd (no more password prompts).");
+    Ok(())
+}
+
+// rustnetec: Handle `rustnet uninstall-launchdaemon` subcommand (T4.2, macOS)
+#[cfg(target_os = "macos")]
+fn run_uninstall_launchdaemon() -> Result<()> {
+    telemetry::launchdaemon::uninstall()?;
+    println!("LaunchDaemon removed.");
     Ok(())
 }
 

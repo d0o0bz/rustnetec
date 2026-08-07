@@ -116,7 +116,10 @@ pub use tray::{TrayCommand, TrayController};
 #[cfg(feature = "tray")]
 mod launcher;
 #[cfg(feature = "tray")]
-pub use launcher::{open_browser, open_local_panel, open_terminal};
+pub use launcher::{
+    close_tui_if_confirmed, open_browser, open_local_panel, open_terminal, open_terminal_monitor,
+    prompt_launchdaemon_install,
+};
 
 mod actions;
 pub use actions::{
