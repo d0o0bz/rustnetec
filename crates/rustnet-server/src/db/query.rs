@@ -294,6 +294,58 @@ pub fn rejection_of_sql() -> &'static str {
     "raw `sql` parameter is never executed by the server"
 }
 
+/// rustnetec: W5.3 — 按 process_name 聚合 top 50,供 WebUI Activity 页专用。
+///
+/// 与 daemon 侧 `handle_processes` 逻辑同源,但服务端走 `server_events` 表
+/// (字段名 `process_name` 同 daemon)。返回 `Vec<ProcessRow>` 扁平数组,
+/// 按 `bytes_total = bytes_sent + bytes_received` 降序取 top 50。
+/// 过滤 NULL/空 process_name(进程归因未启用或未命中)。
+pub fn processes(conn: &mut Connection) -> Result<Vec<ProcessRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT process_name, COUNT(*) as cnt, \
+         COALESCE(SUM(bytes_sent),0) as sent, \
+         COALESCE(SUM(bytes_received),0) as recv \
+         FROM server_events \
+         WHERE process_name IS NOT NULL AND process_name != '' \
+         GROUP BY process_name \
+         ORDER BY (sent + recv) DESC \
+         LIMIT 50",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        let sent: i64 = r.get(2)?;
+        let recv: i64 = r.get(3)?;
+        Ok(ProcessRow {
+            process: r.get(0)?,
+            connections: r.get::<_, i64>(1)? as u64,
+            bytes_sent: sent as u64,
+            bytes_received: recv as u64,
+            bytes_total: (sent + recv) as u64,
+        })
+    })?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// rustnetec: W5.3 — `/processes` 响应行(与 daemon 侧 JSON 结构对齐)。
+///
+/// `bytes_total = bytes_sent + bytes_received` 供前端按字节降序排序展示。
+/// 故意不放进 `rustnet-core::ingest`(共享 schema):daemon 侧用 serde_json::json!
+/// 手写,服务端用结构体;两端 JSON 形状一致即可,不必共用类型。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ProcessRow {
+    pub process: String,
+    pub connections: u64,
+    pub bytes_sent: u64,
+    pub bytes_received: u64,
+    pub bytes_total: u64,
+}
+
+/// rustnetec: W5.3 — `/processes` 响应壳(与 daemon 侧 `{processes, count}` 形状对齐)。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ProcessesResponse {
+    pub processes: Vec<ProcessRow>,
+    pub count: usize,
+}
+
 // Silence unused import for `AggregateRow` until T2.5 bucket queries land.
 #[allow(dead_code)]
 fn _retain_aggregate_row_type(_: AggregateRow) {}

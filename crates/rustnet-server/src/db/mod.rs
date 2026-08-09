@@ -95,6 +95,14 @@ impl ServerDb {
         query::stats(&mut conn)
     }
 
+    /// rustnetec: W5.3 — 按 process_name 聚合 top 50,供 WebUI Activity 页专用。
+    pub fn processes(&self) -> Result<query::ProcessesResponse> {
+        let mut conn = self.lock_writer();
+        let rows = query::processes(&mut conn)?;
+        let count = rows.len();
+        Ok(query::ProcessesResponse { processes: rows, count })
+    }
+
     /// Path of the underlying database file (for backups/debugging).
     pub fn db_path(&self) -> &Path {
         &self.db_path

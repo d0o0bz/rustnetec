@@ -829,6 +829,13 @@ fn main() -> Result<()> {
                 http_port,
                 // rustnetec: daemon→tray live snapshot bridge (T3.6.7, R6)
                 live_snapshot: std::sync::Arc::new(std::sync::RwLock::new(serde_json::json!({}))),
+                // rustnetec: G2 — 运行时配置共享态(R7 双轨制)。
+                // PUT /config 落盘后经 apply_hot_update/apply_restart_items 写入此锁。
+                runtime_config: std::sync::Arc::new(std::sync::RwLock::new(
+                    rustnet_monitor::config::RuntimeConfig::from_persistent(
+                        &rustnet_monitor::config::PersistentConfig::load().unwrap_or_default(),
+                    ),
+                )),
             });
 
             if let Err(e) = telemetry::http::start_http_server(http_port, state.clone()) {
@@ -1969,7 +1976,13 @@ fn run_query_subcommand(matches: &clap::ArgMatches) -> Result<()> {
     let sql = matches.get_one::<String>("sql").map(|s| s.as_str());
     let live = matches.get_flag("live");
 
-    telemetry::query::run_query(&db_path, filter, sql, live)
+    // rustnetec: G1 改造 — `run_query` 现返回 `Vec<Value>`,
+    // CLI 侧负责序列化为 pretty JSON 输出到 stdout。
+    let rows = telemetry::query::run_query(&db_path, filter, sql, live)?;
+    let output = serde_json::to_string_pretty(&serde_json::Value::Array(rows))
+        .unwrap_or_else(|e| format!("{{\"error\": \"{}\"}}", e));
+    println!("{output}");
+    Ok(())
 }
 
 // rustnetec: Handle `rustnet install-autostart` subcommand (R1 boot autostart, T1.11)

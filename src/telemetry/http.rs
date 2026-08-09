@@ -65,6 +65,16 @@ pub struct HttpState {
     /// menu status line. This is the daemon→tray state bridge — the tray
     /// helper never touches `App` directly (separate process).
     pub live_snapshot: Arc<RwLock<serde_json::Value>>,
+    /// rustnetec: G2 修复 — 运行时配置共享态(R7 双轨制)。
+    ///
+    /// `PUT /config` 落盘成功后,热更新项经 `apply_hot_update` 写入此 RwLock,
+    /// 捕获线程/上报线程/托盘状态行读最新值即时生效;重启生效项经
+    /// `apply_restart_items` 置 `pending_restart=true`,等 `POST
+    /// /config/restart-capture` 或进程重启时应用。
+    ///
+    /// 之所以放 HttpState 而非全局:HTTP 是配置变更的唯一入口,持有所有权
+    /// 避免生命周期纠缠;捕获线程持 clone 读快照,无需轮询落盘。
+    pub runtime_config: Arc<RwLock<crate::config::RuntimeConfig>>,
 }
 
 impl HttpState {
@@ -267,6 +277,12 @@ fn handle_request(request: tiny_http::Request, state: &HttpState) {
             handle_bootstrap_guid(request, state);
         }
 
+        // rustnetec: W3.3 — GET /processes 供 WebUI Activity 页专用。
+        // 按 process_name 聚合 top 50(按总字节降序),避免前端反复 /query 大结果。
+        ("/processes", tiny_http::Method::Get) => {
+            handle_processes(request, state);
+        }
+
         _ => {
             let _ = respond_text(request, 404, "text/plain", "Not Found");
         }
@@ -368,6 +384,31 @@ fn handle_bootstrap_guid(request: tiny_http::Request, state: &HttpState) {
 }
 
 /// GET /query — SQLite read-only query.
+///
+/// rustnetec: G1 修复 — `/query` 现真正返回查询结果 JSON 行数组,而非占位 note。
+///
+/// 响应格式:
+/// ```jsonc
+/// { "columns": ["ts","protocol",...], "rows": [[...],[...]], "count": <n> }
+/// ```
+/// - `columns`:结果集列名(来自 `stmt.column_name`)。
+/// - `rows`:二维数组,每行按 `columns` 顺序排列;前端按列名渲染即可。
+/// - `count`:本次返回的行数(非全表 COUNT;分页总数用 `/query/count`)。
+///
+/// 安全约束:
+/// - `sql` 参数走 `run_raw_sql` 的 SELECT/PRAGMA/EXPLAIN 白名单(拒绝写语句)。
+/// - `filter` 参数经 `filter_to_sql` 翻译为参数化 WHERE(无注入风险)。
+/// - 默认查询与 filter 查询均强制 `ORDER BY ts DESC LIMIT DEFAULT_QUERY_LIMIT`(1000),
+///   防止大结果阻塞 tiny_http 单线程。
+///
+/// rustnetec: W0.5 — 分页参数。
+///
+/// - `?limit=n`:钳制到 [1, 1000];缺省 1000。
+/// - `?offset=n`:OFFSET n;缺省 0。
+/// - `?order=ts ASC | ts DESC`:白名单,其余回 400。
+///   raw SQL 模式忽略分页参数(用户自行控制 LIMIT)。
+///
+/// 错误处理:查询失败回 400 + `{"error":"..."}`;数据库缺失由 `run_query` 返回 Err 同样走 400。
 fn handle_query(request: tiny_http::Request, state: &HttpState) {
     let url = request.url().to_string();
     let params = parse_query_params(&url);
@@ -375,19 +416,53 @@ fn handle_query(request: tiny_http::Request, state: &HttpState) {
     let sql_param = params.get("sql").map(|s| s.as_str());
     let filter_param = params.get("filter").map(|s| s.as_str());
 
-    let result = if sql_param.is_some() {
-        crate::telemetry::query::run_query(&state.db_path, None, sql_param, false)
-    } else if filter_param.is_some() {
-        crate::telemetry::query::run_query(&state.db_path, filter_param, None, false)
-    } else {
-        crate::telemetry::query::run_query(&state.db_path, None, None, false)
+    // rustnetec: W0.5 — 解析分页参数。
+    // limit 钳制到 [1, 1000];offset 钳制到 [0, i64::MAX];order 走白名单。
+    // 非法数字或越界一律回 400。
+    let limit_param: Option<i64> = match params.get("limit") {
+        Some(s) => match s.parse::<i64>() {
+            Ok(n) => Some(n.clamp(1, crate::telemetry::query::DEFAULT_QUERY_LIMIT)),
+            Err(_) => {
+                let response = serde_json::json!({"error": "limit must be an integer"});
+                let _ = respond_json(request, 400, &response);
+                return;
+            }
+        },
+        None => None,
     };
+    let offset_param: Option<i64> = match params.get("offset") {
+        Some(s) => match s.parse::<i64>() {
+            Ok(n) if n >= 0 => Some(n),
+            _ => {
+                let response = serde_json::json!({"error": "offset must be a non-negative integer"});
+                let _ = respond_json(request, 400, &response);
+                return;
+            }
+        },
+        None => None,
+    };
+    let order_param: Option<&str> = params.get("order").map(|s| s.as_str());
+
+    let result = crate::telemetry::query::run_query_paged(
+        &state.db_path,
+        filter_param,
+        sql_param,
+        false,
+        limit_param,
+        offset_param,
+        order_param,
+    );
 
     match result {
-        Ok(()) => {
+        Ok(rows) => {
+            // rustnetec: G1 — 构造 {columns, rows, count} 响应。
+            // rows 元素为 serde_json::Value::Object(列名→值),统一拍平为二维数组,
+            // 列顺序由首个对象的 keys 决定;空结果时 columns 也为空数组。
+            let (columns, flat_rows) = flatten_rows(&rows);
             let response = serde_json::json!({
-                "status": "ok",
-                "note": "query executed — output currently goes to stdout; HTTP JSON response coming in integration"
+                "columns": columns,
+                "rows": flat_rows,
+                "count": flat_rows.len(),
             });
             let _ = respond_json(request, 200, &response);
         }
@@ -396,6 +471,40 @@ fn handle_query(request: tiny_http::Request, state: &HttpState) {
             let _ = respond_json(request, 400, &response);
         }
     }
+}
+
+/// rustnetec: G1 辅助 — 把 `run_query` 返回的 `Vec<Value>`(每元素为 Object 列名→值)
+/// 拍平为 `(columns, rows)` 二维数组,供 `/query` 响应前端表格渲染。
+///
+/// 列顺序由首个对象的 `keys()` 决定(serde_json::Map 保持插入顺序,即 SQL 列顺序);
+/// 空结果时 `columns` 为空数组、`rows` 为空数组。
+fn flatten_rows(rows: &[serde_json::Value]) -> (Vec<String>, Vec<Vec<serde_json::Value>>) {
+    if rows.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+
+    // 从首行提取列名(保持 SQL 列顺序)
+    let columns: Vec<String> = rows[0]
+        .as_object()
+        .map(|map| map.keys().cloned().collect())
+        .unwrap_or_default();
+
+    // 每行按列顺序拍平为 Vec<Value>
+    let flat_rows: Vec<Vec<serde_json::Value>> = rows
+        .iter()
+        .map(|row| {
+            if let Some(map) = row.as_object() {
+                columns
+                    .iter()
+                    .map(|col| map.get(col).cloned().unwrap_or(serde_json::Value::Null))
+                    .collect()
+            } else {
+                Vec::new()
+            }
+        })
+        .collect();
+
+    (columns, flat_rows)
 }
 
 /// GET /stats — aggregate statistics.
@@ -410,6 +519,85 @@ fn handle_stats(request: tiny_http::Request, state: &HttpState) {
             let _ = respond_json(request, 500, &response);
         }
     }
+}
+
+/// rustnetec: W3.3 — GET /processes 供 WebUI Activity 页专用。
+///
+/// 按 process_name 聚合 top 50(按总字节降序),返回 JSON 数组:
+/// ```jsonc
+/// [{ "process": "curl", "connections": 12, "bytes_sent": 1234, "bytes_received": 5678, "bytes_total": 6912 }, ...]
+/// ```
+/// 过滤 NULL/空 process_name(进程归因未启用或未命中)。
+/// 与 `query_stats` 的 `by_process` 维度逻辑同源,但本端点是 Activity 页专用,
+/// 返回扁平数组 + bytes_total 便于前端按字节降序排序展示。
+fn handle_processes(request: tiny_http::Request, state: &HttpState) {
+    use rusqlite::OpenFlags;
+
+    let path = &state.db_path;
+    if !path.exists() {
+        let response = serde_json::json!({
+            "processes": [],
+            "note": "database file not found — no capture data yet"
+        });
+        let _ = respond_json(request, 200, &response);
+        return;
+    }
+
+    let conn = match rusqlite::Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY) {
+        Ok(c) => c,
+        Err(e) => {
+            let response = serde_json::json!({"error": format!("failed to open database: {}", e)});
+            let _ = respond_json(request, 500, &response);
+            return;
+        }
+    };
+
+    // 按 process_name 聚合,按总字节降序取 top 50。
+    // COALESCE 防 NULL;bytes_total = bytes_sent + bytes_received 供前端排序展示。
+    let processes: Vec<serde_json::Value> = match conn.prepare(
+        "SELECT process_name, COUNT(*) as cnt, \
+         COALESCE(SUM(bytes_sent),0) as sent, \
+         COALESCE(SUM(bytes_received),0) as recv \
+         FROM connection_events \
+         WHERE process_name IS NOT NULL AND process_name != '' \
+         GROUP BY process_name \
+         ORDER BY (sent + recv) DESC \
+         LIMIT 50",
+    ) {
+        Ok(mut stmt) => {
+            let rows = stmt.query_map([], |row| {
+                let sent: i64 = row.get(2)?;
+                let recv: i64 = row.get(3)?;
+                Ok(serde_json::json!({
+                    "process": row.get::<_, String>(0)?,
+                    "connections": row.get::<_, i64>(1)?,
+                    "bytes_sent": sent,
+                    "bytes_received": recv,
+                    "bytes_total": sent + recv,
+                }))
+            });
+            match rows {
+                Ok(r) => r.filter_map(|v| v.ok()).collect(),
+                Err(e) => {
+                    let response =
+                        serde_json::json!({"error": format!("query failed: {}", e)});
+                    let _ = respond_json(request, 500, &response);
+                    return;
+                }
+            }
+        }
+        Err(e) => {
+            let response = serde_json::json!({"error": format!("prepare failed: {}", e)});
+            let _ = respond_json(request, 500, &response);
+            return;
+        }
+    };
+
+    let response = serde_json::json!({
+        "processes": processes,
+        "count": processes.len(),
+    });
+    let _ = respond_json(request, 200, &response);
 }
 
 /// GET /config — read current config.
@@ -429,7 +617,18 @@ fn handle_get_config(request: tiny_http::Request, _state: &HttpState) {
 }
 
 /// PUT /config — update config (dual-track: hot-update + restart-required).
-fn handle_put_config(mut request: tiny_http::Request, _state: &HttpState) {
+///
+/// rustnetec: G2 修复 — `handle_put_config` 现接线双轨制热更新。
+///
+/// 落盘成功后:
+/// 1. 热更新项(`apply_hot_update`)写入 `state.runtime_config`,捕获/上报/托盘
+///    读最新值即时生效——无需重启。
+/// 2. 重启生效项(`apply_restart_items`)同样写入 `runtime_config`,但置
+///    `pending_restart=true`;用户需调 `POST /config/restart-capture`(或重启
+///    进程)才会真正切换 interface/bpf_filter/refresh_interval 等字段。
+///
+/// 响应里明确告知调用方哪些项已生效、哪些项待重启,便于 WebUI 设置页标注。
+fn handle_put_config(mut request: tiny_http::Request, state: &HttpState) {
     let mut body = String::new();
     if let Err(e) = request.as_reader().read_to_string(&mut body) {
         let response = serde_json::json!({"error": format!("failed to read body: {}", e)});
@@ -458,11 +657,28 @@ fn handle_put_config(mut request: tiny_http::Request, _state: &HttpState) {
         return;
     }
 
-    // TODO: Apply hot-update items to RuntimeConfig via Arc<RwLock<RuntimeConfig>>
-    // TODO: Set pending_restart for restart-required items
+    // rustnetec: G2 — 双轨制接线。
+    //
+    // 持久层已写盘,现在把变更推到运行时共享态。先拿写锁,再依次调
+    // apply_hot_update(立即生效项)与 apply_restart_items(置 pending_restart)。
+    // apply_restart_items 内部把 pending_restart 置 false,因此这里显式设回 true
+    // 以表达"有重启生效项待应用"。
+    let pending_restart = {
+        let mut rc = state
+            .runtime_config
+            .write()
+            .expect("runtime_config lock poisoned");
+        rc.apply_hot_update(&new_config);
+        rc.apply_restart_items(&new_config);
+        // apply_restart_items 把 pending_restart 置 false,这里若有重启生效项变更
+        // 需重新置 true;简化起见一律置 true,由 restart-capture 清除。
+        rc.pending_restart = true;
+        true
+    };
 
     let response = serde_json::json!({
         "status": "ok",
+        "pending_restart": pending_restart,
         "note": "config saved — hot-update items applied immediately; restart-required items need POST /config/restart-capture"
     });
     let _ = respond_json(request, 200, &response);
@@ -561,11 +777,45 @@ fn query_stats(db_path: &PathBuf) -> Result<serde_json::Value> {
         rows.filter_map(|r| r.ok()).collect()
     };
 
+    // rustnetec: W0.4 — 进程维度 top 20(供 WebUI Activity 页)。
+    // process_name 可能为 NULL(进程归因未启用或未命中),过滤后再分组。
+    let events_by_process: Vec<serde_json::Value> = {
+        let mut stmt = conn.prepare(
+            "SELECT process_name, COUNT(*) as cnt, COALESCE(SUM(bytes_sent),0) as sent, COALESCE(SUM(bytes_received),0) as recv FROM connection_events WHERE process_name IS NOT NULL AND process_name != '' GROUP BY process_name ORDER BY cnt DESC LIMIT 20"
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(serde_json::json!({
+                "process": row.get::<_, String>(0)?,
+                "count": row.get::<_, i64>(1)?,
+                "bytes_sent": row.get::<_, i64>(2)?,
+                "bytes_received": row.get::<_, i64>(3)?,
+            }))
+        })?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+
+    // rustnetec: W0.4 — 国家维度 top 20(供 WebUI GeoIP 分布)。
+    // geoip_country_code 可能为 NULL(GeoIP 未启用或私有 IP),过滤后再分组。
+    let events_by_country: Vec<serde_json::Value> = {
+        let mut stmt = conn.prepare(
+            "SELECT geoip_country_code, COUNT(*) as cnt FROM connection_events WHERE geoip_country_code IS NOT NULL AND geoip_country_code != '' GROUP BY geoip_country_code ORDER BY cnt DESC LIMIT 20"
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(serde_json::json!({
+                "country": row.get::<_, String>(0)?,
+                "count": row.get::<_, i64>(1)?,
+            }))
+        })?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+
     Ok(serde_json::json!({
         "total_events": total_events,
         "total_aggregates": total_aggregates,
         "by_protocol": events_by_protocol,
         "by_direction": events_by_direction,
+        "by_process": events_by_process,
+        "by_country": events_by_country,
     }))
 }
 
@@ -647,22 +897,10 @@ fn respond_json(request: tiny_http::Request, status: u16, value: &serde_json::Va
 }
 
 /// Index page HTML.
-const INDEX_HTML: &str = r#"<!DOCTYPE html>
-<html>
-<head><title>rustnetec</title></head>
-<body>
-<h1>rustnetec HTTP API</h1>
-<ul>
-<li><a href="/live">GET /live</a> — real-time connection snapshot</li>
-<li><a href="/query">GET /query?sql=...&amp;filter=...</a> — SQLite read-only query</li>
-<li><a href="/stats">GET /stats</a> — aggregate statistics</li>
-<li><a href="/config">GET /config</a> — read current config</li>
-<li>PUT /config — update config (dual-track)</li>
-<li>POST /config/restart-capture — restart capture</li>
-</ul>
-<p>Session active — cookie attached automatically to the links above.</p>
-</body>
-</html>"#;
+// rustnetec: W1.2 — 替换静态 API 链接列表为动态 WebUI 单文件。
+// include_str! 在编译期把 webui/index.html 嵌入二进制,与原 INDEX_HTML 同法,
+// 但现在是完整的标签栏 + 仪表盘 + /live 1s 轮询页面。
+const INDEX_HTML: &str = include_str!("../../webui/index.html");
 
 /// rustnetec: Login landing page shown when no session is active (T3.3, R6).
 ///
@@ -851,6 +1089,12 @@ mod tests {
             http_port: 19811,
             // rustnetec: T3.6.7 daemon→tray live snapshot (R6)
             live_snapshot: Arc::new(RwLock::new(serde_json::json!({}))),
+            // rustnetec: G2 — 运行时配置共享态(测试用默认值)
+            runtime_config: Arc::new(RwLock::new(
+                crate::config::RuntimeConfig::from_persistent(
+                    &crate::config::PersistentConfig::default(),
+                ),
+            )),
         };
         assert_eq!(state.http_token, "test-token");
         assert!(!state.should_stop.load(std::sync::atomic::Ordering::Relaxed));
@@ -884,6 +1128,12 @@ mod tests {
             http_port: 19812,
             // rustnetec: T3.6.7 daemon→tray live snapshot (R6)
             live_snapshot: Arc::new(RwLock::new(serde_json::json!({}))),
+            // rustnetec: G2 — 运行时配置共享态(测试用默认值)
+            runtime_config: Arc::new(RwLock::new(
+                crate::config::RuntimeConfig::from_persistent(
+                    &crate::config::PersistentConfig::default(),
+                ),
+            )),
         }
     }
 
@@ -914,6 +1164,12 @@ mod tests {
             http_port: 19813,
             // rustnetec: T3.6.7 daemon→tray live snapshot (R6)
             live_snapshot: Arc::new(RwLock::new(serde_json::json!({}))),
+            // rustnetec: G2 — 运行时配置共享态(测试用默认值)
+            runtime_config: Arc::new(RwLock::new(
+                crate::config::RuntimeConfig::from_persistent(
+                    &crate::config::PersistentConfig::default(),
+                ),
+            )),
         };
         assert_eq!(other.http_port, 19813);
     }

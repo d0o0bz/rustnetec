@@ -35,6 +35,16 @@ use rustnet_core::ingest::{
 
 use crate::db::{Error as DbError, ServerDb};
 
+/// rustnetec: W5.1 — WebUI 静态资产嵌入。
+///
+/// 与 daemon 侧 `INDEX_HTML` 同法,用 `include_str!` 把 `webui/index.html`
+/// 嵌入 rustnet-server 二进制。服务端是远程查看通道(R5 远程 HTTP),
+/// 同一 HTML 复用,前端 JS 据 `window.location` 切 API base(W5.2)。
+///
+/// 服务端无 `/live`(本机 daemon 专属),前端检测到 server 模式时
+/// 隐藏仪表盘的实时轮询与设置页,只暴露历史查询/统计/进程活动。
+const WEBUI_HTML: &str = include_str!("../../../../webui/index.html");
+
 /// Shared application state injected into the router.
 pub type AppState = Arc<ServerDb>;
 
@@ -50,6 +60,10 @@ pub fn build_router(db: AppState) -> Router {
     Router::new()
         // /health is unauthenticated so probes/load balancers can reach it.
         .route("/health", get(health))
+        // rustnetec: W5.1 — WebUI 静态资产(免鉴权,与 /health 同级)。
+        // 远程浏览器经 Bearer token 访问 /query、/stats 等 API 端点;
+        // HTML 本身是静态资产,不含敏感数据,免鉴权降低部署门槛。
+        .route("/", get(webui))
         // Authed routes — each is gated by the role it requires.
         .route(
             "/ingest",
@@ -62,6 +76,11 @@ pub fn build_router(db: AppState) -> Router {
         .route(
             "/stats",
             get(stats).route_layer(from_fn_with_state(db.clone(), require_query)),
+        )
+        // rustnetec: W5.3 — /processes 供 WebUI Activity 页专用(与 daemon 对齐)。
+        .route(
+            "/processes",
+            get(processes).route_layer(from_fn_with_state(db.clone(), require_query)),
         )
         .layer(cors_layer())
         .with_state(db)
@@ -77,6 +96,15 @@ async fn health() -> Json<HealthResponse> {
         status: "ok".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
     })
+}
+
+/// rustnetec: W5.1 — 返回 WebUI 静态 HTML。
+///
+/// 与 daemon 侧 `INDEX_HTML` 同源(`webui/index.html`),前端 JS 据
+/// `window.location` 切 API base(W5.2)。服务端无 `/live`,前端检测到
+/// server 模式时隐藏仪表盘实时轮询与设置页,只暴露历史查询/统计/进程活动。
+async fn webui() -> axum::response::Html<&'static str> {
+    axum::response::Html(WEBUI_HTML)
 }
 
 /// Accept a client batch and persist it through the single writer.
@@ -100,6 +128,17 @@ async fn query(
 /// Aggregate statistics.
 async fn stats(State(db): State<AppState>) -> Result<Json<StatsResponse>, ApiError> {
     let resp = db.stats().map_err(ApiError::from)?;
+    Ok(Json(resp))
+}
+
+/// rustnetec: W5.3 — 按 process_name 聚合 top 50,供 WebUI Activity 页专用。
+///
+/// 与 daemon 侧 `handle_processes` JSON 形状对齐:`{processes, count}`。
+/// 鉴权同 `/query`/`/stats`(Query/Admin 角色)。
+async fn processes(
+    State(db): State<AppState>,
+) -> Result<Json<crate::db::query::ProcessesResponse>, ApiError> {
+    let resp = db.processes().map_err(ApiError::from)?;
     Ok(Json(resp))
 }
 

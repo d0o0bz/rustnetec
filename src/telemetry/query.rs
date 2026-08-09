@@ -9,19 +9,114 @@ use std::path::Path;
 use crate::filter::{ConnectionFilter, FilterCriteria, FilterValue, PortMatch};
 
 /// Default row limit for query results to avoid accidental huge outputs.
-const DEFAULT_QUERY_LIMIT: i64 = 1000;
+// rustnetec: W0.5 — 改 `pub` 供 http.rs 分页钳制使用。
+pub const DEFAULT_QUERY_LIMIT: i64 = 1000;
 
 /// Run the `rustnet query` subcommand.
+///
+/// rustnetec: G1 改造 — `run_query` 现返回 `Result<Vec<Value>>` 而非打印到 stdout。
+/// CLI 层(`run_query_subcommand`)拿到 `Vec<Value>` 后自行序列化输出;
+/// HTTP 层(`handle_query`)直接把 `Vec<Value>` 作为 JSON 响应体返回。
+/// 这让查询逻辑与输出方式解耦,WebUI 的 G1 硬缺口依赖此改造。
+///
+/// rustnetec: W0.5 — 本函数现为向后兼容的薄包装,分页参数全 `None`,
+/// 交给 `run_query_paged` 实现分页/order 白名单。HTTP 层直接调
+/// `run_query_paged` 传入 limit/offset/order。
 pub fn run_query(
     // rustnetec: 签名改为 &Path（clippy ptr_arg），调用处传 &PathBuf 自动兼容
     db_path: &Path,
     filter: Option<&str>,
     sql: Option<&str>,
     live: bool,
-) -> Result<()> {
+) -> Result<Vec<Value>> {
+    run_query_paged(db_path, filter, sql, live, None, None, None)
+}
+
+/// rustnetec: W0.5 — 分页版 `run_query`。
+///
+/// 新增参数:
+/// - `limit`:`Some(n)` 覆盖 `DEFAULT_QUERY_LIMIT`;`None` 用默认 1000。
+///   HTTP 层负责钳制到 [1, 1000] 后传入(本函数也再钳一次防越界)。
+/// - `offset`:`Some(n)` 生成 `OFFSET n`;`None` 无 offset。
+/// - `order`:`Some("ts ASC" | "ts DESC")` 白名单值,控制 ORDER BY;
+///   `None` 默认 `ts DESC`。任何不在白名单的值会被 `bail!` 拒绝。
+///
+/// 安全约束:
+/// - `order` 走白名单,防止前端注入任意 ORDER BY 表达式。
+/// - `limit` 钳制到 [1, DEFAULT_QUERY_LIMIT],防大结果阻塞 tiny_http 单线程。
+/// - raw SQL 模式不分页(用户显式写 SQL,自行控制 LIMIT)。
+pub fn run_query_paged(
+    db_path: &Path,
+    filter: Option<&str>,
+    sql: Option<&str>,
+    live: bool,
+    limit: Option<i64>,
+    offset: Option<i64>,
+    order: Option<&str>,
+) -> Result<Vec<Value>> {
     if live {
         return run_live_query();
     }
+
+    // rustnetec: W2.1 — order 白名单扩展。
+    // W0.5 仅允许 `ts ASC` / `ts DESC`;W2.1 连接表列排序需支持
+    // protocol / source_ip / dest_ip / source_port / dest_port /
+    // process_name / dest_hostname / bytes_sent / bytes_received / rtt_ms。
+    // 白名单用 HashSet 静态构造,查询 O(1);非法值 bail!。
+    use std::sync::OnceLock;
+    static ALLOWED_ORDER_COLS: OnceLock<std::collections::HashSet<&'static str>> =
+        OnceLock::new();
+    let allowed = ALLOWED_ORDER_COLS.get_or_init(|| {
+        let mut s = std::collections::HashSet::new();
+        s.insert("ts");
+        s.insert("protocol");
+        s.insert("source_ip");
+        s.insert("dest_ip");
+        s.insert("source_port");
+        s.insert("dest_port");
+        s.insert("process_name");
+        s.insert("dest_hostname");
+        s.insert("bytes_sent");
+        s.insert("bytes_received");
+        s.insert("rtt_ms");
+        s.insert("id");
+        s
+    });
+
+    let order_clause = match order {
+        None => "ts DESC".to_string(),
+        Some(o) => {
+            let trimmed = o.trim();
+            // 解析 "<col> <ASC|DESC>",col 与方向之间至少一个空白。
+            let parts: Vec<&str> = trimmed.splitn(2, char::is_whitespace).collect();
+            if parts.len() != 2 {
+                bail!(
+                    "invalid order parameter: expected '<column> ASC|DESC', got: {}",
+                    trimmed
+                );
+            }
+            let col = parts[0].to_lowercase();
+            let dir = parts[1].to_uppercase();
+            if !allowed.contains(col.as_str()) {
+                bail!(
+                    "invalid order column: {} not in whitelist",
+                    col
+                );
+            }
+            if dir != "ASC" && dir != "DESC" {
+                bail!(
+                    "invalid order direction: expected ASC|DESC, got: {}",
+                    dir
+                );
+            }
+            format!("{} {}", col, dir)
+        }
+    };
+
+    // rustnetec: W0.5 — limit 钳制。
+    // 上限 DEFAULT_QUERY_LIMIT(1000)防大结果阻塞;下限 1 防空结果。
+    // None 时用默认 1000。
+    let limit_val = limit.unwrap_or(DEFAULT_QUERY_LIMIT).clamp(1, DEFAULT_QUERY_LIMIT);
 
     // Resolve database path
     let path = if db_path.as_os_str().is_empty() {
@@ -38,18 +133,20 @@ pub fn run_query(
     let conn = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(|e| anyhow::anyhow!("Failed to open database (read-only): {}", e))?;
 
+    // rustnetec: W0.5 — raw SQL 模式不分页(用户显式写 SQL,自行控制 LIMIT)。
+    // filter / default 模式才应用 limit/offset/order。
     if let Some(raw_sql) = sql {
         run_raw_sql(&conn, raw_sql)
     } else if let Some(filter_str) = filter {
-        run_filter_query(&conn, filter_str)
+        run_filter_query_paged(&conn, filter_str, limit_val, offset, &order_clause)
     } else {
-        // Default: show recent events
-        run_default_query(&conn)
+        run_default_query_paged(&conn, limit_val, offset, &order_clause)
     }
 }
 
 /// Execute a raw SQL query (SELECT only).
-fn run_raw_sql(conn: &Connection, sql: &str) -> Result<()> {
+// rustnetec: G1 改造 — 返回 `Result<Vec<Value>>` 而非打印到 stdout。
+fn run_raw_sql(conn: &Connection, sql: &str) -> Result<Vec<Value>> {
     let trimmed = sql.trim();
     let upper = trimmed.to_uppercase();
 
@@ -62,47 +159,63 @@ fn run_raw_sql(conn: &Connection, sql: &str) -> Result<()> {
         );
     }
 
-    let results = execute_sql_to_json(conn, trimmed)?;
-    print_json(&results);
-    Ok(())
+    execute_sql_to_json(conn, trimmed)
 }
 
-/// Execute a filter-based query by translating ConnectionFilter syntax to SQL WHERE.
-fn run_filter_query(conn: &Connection, filter_str: &str) -> Result<()> {
+/// rustnetec: W0.5 — filter 查询分页版。
+///
+/// `limit` 已由上层钳制到 [1, DEFAULT_QUERY_LIMIT];`offset` 为 `Some(n)` 时追加
+/// `OFFSET n`;`order_clause` 已通过白名单校验(`ts ASC` / `ts DESC`)。
+fn run_filter_query_paged(
+    conn: &Connection,
+    filter_str: &str,
+    limit: i64,
+    offset: Option<i64>,
+    order_clause: &str,
+) -> Result<Vec<Value>> {
     let filter = ConnectionFilter::parse(filter_str);
     let (where_clause, params) = filter_to_sql(&filter);
 
-    let sql = if where_clause.is_empty() {
-        format!(
-            "SELECT * FROM connection_events ORDER BY ts DESC LIMIT {}",
-            DEFAULT_QUERY_LIMIT
-        )
+    // rustnetec: W0.5 — 安全拼接:order 已白名单化,limit 已钳制,offset 仅数字。
+    let mut sql = if where_clause.is_empty() {
+        format!("SELECT * FROM connection_events ORDER BY {} LIMIT {}", order_clause, limit)
     } else {
         format!(
-            "SELECT * FROM connection_events WHERE {} ORDER BY ts DESC LIMIT {}",
-            where_clause, DEFAULT_QUERY_LIMIT
+            "SELECT * FROM connection_events WHERE {} ORDER BY {} LIMIT {}",
+            where_clause, order_clause, limit
         )
     };
+    if let Some(off) = offset {
+        sql.push_str(&format!(" OFFSET {}", off));
+    }
 
-    let results = execute_param_query(conn, &sql, &params)?;
-    print_json(&results);
-    Ok(())
+    execute_param_query(conn, &sql, &params)
 }
 
 /// Default query: show recent events.
-fn run_default_query(conn: &Connection) -> Result<()> {
-    let sql = format!(
-        "SELECT * FROM connection_events ORDER BY ts DESC LIMIT {}",
-        DEFAULT_QUERY_LIMIT
+/// rustnetec: W0.5 — 默认查询分页版(无 filter,展示最近事件)。
+fn run_default_query_paged(
+    conn: &Connection,
+    limit: i64,
+    offset: Option<i64>,
+    order_clause: &str,
+) -> Result<Vec<Value>> {
+    let mut sql = format!(
+        "SELECT * FROM connection_events ORDER BY {} LIMIT {}",
+        order_clause, limit
     );
-    let results = execute_sql_to_json(conn, &sql)?;
-    print_json(&results);
-    Ok(())
+    if let Some(off) = offset {
+        sql.push_str(&format!(" OFFSET {}", off));
+    }
+    execute_sql_to_json(conn, &sql)
 }
 
 /// Live query: poll the local HTTP /live endpoint.
 /// This requires the daemon to be running with the HTTP server enabled.
-fn run_live_query() -> Result<()> {
+// rustnetec: G1 改造 — 返回 `Result<Vec<Value>>` 而非打印到 stdout。
+// live 模式返回单元素数组(含 /live 快照对象),保持与历史查询一致的数组语义,
+// CLI 层负责序列化输出。
+fn run_live_query() -> Result<Vec<Value>> {
     use std::time::Duration;
 
     use crate::config::PersistentConfig;
@@ -126,10 +239,7 @@ fn run_live_query() -> Result<()> {
     let live: Value = resp
         .into_json()
         .map_err(|e| anyhow::anyhow!("failed to parse /live response: {e}"))?;
-    let output =
-        serde_json::to_string_pretty(&live).unwrap_or_else(|e| format!("{{\"error\": \"{e}\"}}"));
-    println!("{output}");
-    Ok(())
+    Ok(vec![live])
 }
 
 /// Translate a ConnectionFilter into a SQL WHERE clause with parameterized values.
@@ -402,12 +512,8 @@ fn row_get_json_value(row: &rusqlite::Row, idx: usize) -> Value {
     Value::Null
 }
 
-/// Print JSON array to stdout.
-fn print_json(results: &[Value]) {
-    let output = serde_json::to_string_pretty(&Value::Array(results.to_vec()))
-        .unwrap_or_else(|e| format!("{{\"error\": \"{}\"}}", e));
-    println!("{}", output);
-}
+// rustnetec: G1 改造 — `print_json` 已移除。`run_query` 现返回 `Result<Vec<Value>>`,
+// 输出职责上移至 CLI 层(`run_query_subcommand`)和 HTTP 层(`handle_query`)。
 
 #[cfg(test)]
 mod tests {

@@ -1,0 +1,1528 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>rustnetec</title>
+<style>
+  /* rustnetec: W1 零构建前端 — 单文件内联 CSS/JS,无 npm 无框架。
+     配色对齐 TUI theme.rs 深色基调,便于浏览器与本机终端视觉一致。 */
+  :root {
+    --bg: #0e1116;
+    --panel: #161b22;
+    --border: #30363d;
+    --text: #c9d1d9;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --red: #f85149;
+    --yellow: #d29922;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+
+  /* 顶栏:状态行 + 标签栏 */
+  #topbar {
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    padding: 8px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  #status-line {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    align-items: center;
+    font-size: 13px;
+  }
+  #status-line .label { color: var(--muted); }
+  #status-line .value { color: var(--text); font-weight: 600; }
+  #status-line .capture-state.running { color: var(--green); }
+  #status-line .capture-state.paused { color: var(--yellow); }
+  #status-line .capture-state.stopped { color: var(--red); }
+
+  #tabs {
+    display: flex;
+    gap: 4px;
+    border-bottom: 1px solid var(--border);
+    padding: 0 16px;
+    background: var(--panel);
+  }
+  #tabs button {
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--muted);
+    padding: 10px 16px;
+    cursor: pointer;
+    font-size: 14px;
+  }
+  #tabs button:hover { color: var(--text); }
+  #tabs button.active {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+  }
+
+  /* 内容区 */
+  #content {
+    padding: 16px;
+  }
+  .view { display: none; }
+  .view.active { display: block; }
+
+  /* 指标卡栅格 */
+  #metric-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  .metric-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px 16px;
+  }
+  .metric-card .metric-label {
+    color: var(--muted);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 4px;
+  }
+  .metric-card .metric-value {
+    font-size: 24px;
+    font-weight: 700;
+    color: var(--text);
+  }
+  .metric-card .metric-sub {
+    color: var(--muted);
+    font-size: 12px;
+    margin-top: 2px;
+  }
+
+  /* 速率图占位(W3 Canvas 实现) */
+  #rate-chart-placeholder {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 24px;
+    text-align: center;
+    color: var(--muted);
+    margin-bottom: 16px;
+  }
+
+  /* 协议分布占位(W3 横向条形) */
+  #protocol-dist-placeholder {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 24px;
+    text-align: center;
+    color: var(--muted);
+  }
+
+  /* 帮助页 */
+  #help-view pre {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px;
+    overflow-x: auto;
+  }
+  #help-view code { color: var(--accent); }
+
+  /* 轮询状态指示 */
+  #poll-indicator {
+    margin-left: auto;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  #poll-indicator.ok::before { content: "● "; color: var(--green); }
+  #poll-indicator.err::before { content: "● "; color: var(--red); }
+  #poll-indicator.paused::before { content: "● "; color: var(--yellow); }
+
+  /* rustnetec: W2.2 连接表样式 */
+  .muted { color: var(--muted); font-size: 12px; }
+  #details-toolbar {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+  }
+  #details-filter {
+    flex: 1;
+    min-width: 280px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 6px 10px;
+    color: var(--text);
+    font-size: 13px;
+  }
+  #details-filter:focus { outline: none; border-color: var(--accent); }
+  #details-toolbar button, #details-pagination button, #details-drawer-close {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 6px 12px;
+    color: var(--text);
+    cursor: pointer;
+    font-size: 13px;
+  }
+  #details-toolbar button:hover, #details-pagination button:hover,
+  #details-drawer-close:hover { border-color: var(--accent); color: var(--accent); }
+  #details-table-wrap {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: auto;
+    max-height: 60vh;
+  }
+  #details-table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 13px;
+  }
+  #details-table th, #details-table td {
+    padding: 8px 10px;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  #details-table th {
+    background: var(--bg);
+    color: var(--muted);
+    font-weight: 600;
+    cursor: pointer;
+    user-select: none;
+    position: sticky;
+    top: 0;
+    z-index: 1;
+  }
+  #details-table th:hover { color: var(--accent); }
+  #details-table th.sorted-asc::after { content: " ▲"; color: var(--accent); }
+  #details-table th.sorted-desc::after { content: " ▼"; color: var(--accent); }
+  #details-table tbody tr:hover { background: rgba(88,166,255,0.06); cursor: pointer; }
+  #details-pagination {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    justify-content: center;
+    margin-top: 12px;
+    flex-wrap: wrap;
+  }
+  #details-page-size {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 4px 8px;
+    color: var(--text);
+    font-size: 13px;
+  }
+  /* rustnetec: W2.4 详情抽屉 */
+  #details-drawer {
+    position: fixed;
+    top: 0; right: 0;
+    width: min(420px, 90vw);
+    height: 100vh;
+    background: var(--panel);
+    border-left: 1px solid var(--border);
+    box-shadow: -4px 0 16px rgba(0,0,0,0.4);
+    padding: 16px;
+    overflow-y: auto;
+    z-index: 10;
+  }
+  #details-drawer h3 { margin: 0 0 12px; color: var(--accent); }
+  #details-drawer-content dl { display: grid; grid-template-columns: 110px 1fr; gap: 6px 12px; }
+  #details-drawer-content dt { color: var(--muted); font-size: 12px; }
+  #details-drawer-content dd { margin: 0; word-break: break-all; }
+  #details-drawer-close { position: absolute; top: 12px; right: 12px; }
+
+  /* rustnetec: W3.1 流量图样式 */
+  #graph-toolbar {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+  }
+  #graph-range {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 4px 8px;
+    color: var(--text);
+    font-size: 13px;
+  }
+  #graph-canvas-wrap {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px;
+    overflow: auto;
+  }
+  #graph-canvas {
+    display: block;
+    width: 100%;
+    height: 300px;
+    max-width: 100%;
+  }
+  #graph-legend {
+    display: flex;
+    gap: 16px;
+    margin-top: 8px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .legend-item { display: inline-flex; align-items: center; gap: 6px; }
+  .legend-dot {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+  }
+  .legend-dot.in { background: #58a6ff; }
+  .legend-dot.out { background: #3fb950; }
+
+  /* rustnetec: W3.4 进程活动表样式 */
+  #activity-toolbar {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 12px;
+  }
+  #activity-refresh {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 6px 12px;
+    color: var(--text);
+    cursor: pointer;
+    font-size: 13px;
+  }
+  #activity-refresh:hover { border-color: var(--accent); color: var(--accent); }
+  #activity-table-wrap {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: auto;
+    max-height: 60vh;
+  }
+  #activity-table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 13px;
+  }
+  #activity-table th, #activity-table td {
+    padding: 8px 10px;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  #activity-table th {
+    background: var(--bg);
+    color: var(--muted);
+    font-weight: 600;
+    position: sticky;
+    top: 0;
+    z-index: 1;
+  }
+  #activity-table tbody tr:hover { background: rgba(88,166,255,0.06); }
+
+  /* rustnetec: W4 设置页样式 */
+  #settings-form fieldset {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px 16px;
+    margin-bottom: 12px;
+    background: var(--panel);
+  }
+  #settings-form legend {
+    color: var(--accent);
+    font-weight: 600;
+    padding: 0 6px;
+  }
+  .restart-hint { color: var(--yellow); font-size: 12px; font-weight: 400; }
+  #settings-form label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin: 4px 12px 4px 0;
+    font-size: 13px;
+    color: var(--text);
+  }
+  #settings-form input[type="text"],
+  #settings-form input[type="number"] {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 4px 8px;
+    color: var(--text);
+    font-size: 13px;
+    width: 200px;
+  }
+  #settings-form input:focus { outline: none; border-color: var(--accent); }
+  #settings-actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-top: 12px;
+    flex-wrap: wrap;
+  }
+  #settings-save, #settings-restart {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 8px 16px;
+    color: var(--text);
+    cursor: pointer;
+    font-size: 13px;
+  }
+  #settings-save:hover { border-color: var(--accent); color: var(--accent); }
+  #settings-restart { border-color: var(--yellow); color: var(--yellow); }
+  #settings-restart:hover { background: rgba(210,153,34,0.1); }
+</style>
+</head>
+<body>
+<div id="topbar">
+  <div id="status-line">
+    <span><span class="label">接口</span> <span class="value" id="s-interface">—</span></span>
+    <span><span class="label">↓入</span> <span class="value" id="s-rate-in">—</span></span>
+    <span><span class="label">↑出</span> <span class="value" id="s-rate-out">—</span></span>
+    <span><span class="label">连接</span> <span class="value" id="s-connections">—</span></span>
+    <span><span class="label">捕获</span> <span class="value capture-state" id="s-capture-state">—</span></span>
+    <span><span class="label">运行时长</span> <span class="value" id="s-uptime">—</span></span>
+    <span id="poll-indicator">初始化…</span>
+  </div>
+</div>
+<div id="tabs">
+  <button data-view="overview" class="active">仪表盘</button>
+  <button data-view="details">连接表</button>
+  <button data-view="activity">进程活动</button>
+  <button data-view="graph">流量图</button>
+  <button data-view="settings">设置</button>
+  <button data-view="help">帮助</button>
+</div>
+<div id="content">
+  <section id="overview-view" class="view active">
+    <div id="metric-grid">
+      <div class="metric-card">
+        <div class="metric-label">活动连接</div>
+        <div class="metric-value" id="m-connections">—</div>
+        <div class="metric-sub">实时(非历史)</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">入站速率</div>
+        <div class="metric-value" id="m-rate-in">—</div>
+        <div class="metric-sub">字节/秒</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">出站速率</div>
+        <div class="metric-value" id="m-rate-out">—</div>
+        <div class="metric-sub">字节/秒</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">运行时长</div>
+        <div class="metric-value" id="m-uptime">—</div>
+        <div class="metric-sub">daemon 启动至今</div>
+      </div>
+    </div>
+    <div id="rate-chart-placeholder">流量曲线(W3 阶段 Canvas 实现)</div>
+    <div id="protocol-dist-placeholder">协议分布(W3 阶段横向条形)</div>
+  </section>
+
+  <section id="details-view" class="view">
+    <div id="details-toolbar">
+      <input type="text" id="details-filter" placeholder="过滤:proto:TCP port:443 process:curl sni:example.com country:US …" autocomplete="off">
+      <button id="details-refresh">刷新</button>
+      <button id="details-mode-toggle" data-mode="realtime">实时:开</button>
+      <span id="details-count" class="muted"></span>
+    </div>
+    <div id="details-table-wrap">
+      <table id="details-table">
+        <thead id="details-thead"></thead>
+        <tbody id="details-tbody"></tbody>
+      </table>
+      <div id="details-empty" class="muted" style="display:none;">无数据</div>
+    </div>
+    <div id="details-pagination">
+      <button id="details-prev">上一页</button>
+      <span id="details-page-info" class="muted"></span>
+      <button id="details-next">下一页</button>
+      <label class="muted">每页</label>
+      <select id="details-page-size">
+        <option value="20">20</option>
+        <option value="50" selected>50</option>
+        <option value="100">100</option>
+        <option value="200">200</option>
+      </select>
+    </div>
+    <div id="details-drawer" style="display:none;">
+      <div id="details-drawer-content"></div>
+      <button id="details-drawer-close">关闭</button>
+    </div>
+  </section>
+
+  <section id="activity-view" class="view">
+    <div id="activity-toolbar">
+      <button id="activity-refresh">刷新</button>
+      <span id="activity-count" class="muted"></span>
+    </div>
+    <div id="activity-table-wrap">
+      <table id="activity-table">
+        <thead>
+          <tr>
+            <th>进程名</th>
+            <th>连接数</th>
+            <th>发送字节</th>
+            <th>接收字节</th>
+            <th>总字节</th>
+          </tr>
+        </thead>
+        <tbody id="activity-tbody"></tbody>
+      </table>
+      <div id="activity-empty" class="muted" style="display:none;">无进程数据(需进程归因启用且有捕获数据)</div>
+    </div>
+  </section>
+
+  <section id="graph-view" class="view">
+    <div id="graph-toolbar">
+      <label class="muted">时间轴</label>
+      <select id="graph-range">
+        <option value="60">1m</option>
+        <option value="300" selected>5m</option>
+        <option value="900">15m</option>
+        <option value="3600">1h</option>
+        <option value="28800">8h</option>
+        <option value="86400">1d</option>
+      </select>
+      <span id="graph-info" class="muted"></span>
+    </div>
+    <div id="graph-canvas-wrap">
+      <canvas id="graph-canvas" width="800" height="300"></canvas>
+    </div>
+    <div id="graph-legend">
+      <span class="legend-item"><span class="legend-dot in"></span>入站(↓)</span>
+      <span class="legend-item"><span class="legend-dot out"></span>出站(↑)</span>
+    </div>
+  </section>
+
+  <section id="settings-view" class="view">
+    <div id="settings-status" class="muted"></div>
+    <form id="settings-form">
+      <fieldset>
+        <legend>记录字段</legend>
+        <label><input type="checkbox" data-cfg="record_dns">DNS 反向解析</label>
+        <label><input type="checkbox" data-cfg="record_process">进程归因</label>
+        <label><input type="checkbox" data-cfg="record_service">服务识别</label>
+        <label><input type="checkbox" data-cfg="record_rtt">RTT</label>
+        <label><input type="checkbox" data-cfg="record_stats">连接统计</label>
+        <label><input type="checkbox" data-cfg="record_geoip">GeoIP</label>
+        <label><input type="checkbox" data-cfg="record_dpi">DPI</label>
+      </fieldset>
+      <fieldset>
+        <legend>捕获配置 <span class="restart-hint">(重启生效)</span></legend>
+        <label>接口<input type="text" data-cfg="interface" placeholder="auto"></label>
+        <label>BPF 过滤<input type="text" data-cfg="bpf_filter" placeholder="(默认)"></label>
+        <label><input type="checkbox" data-cfg="enable_dpi">启用 DPI</label>
+        <label>刷新间隔(秒)<input type="number" data-cfg="refresh_interval" min="1"></label>
+      </fieldset>
+      <fieldset>
+        <legend>输出</legend>
+        <label>JSON 日志<input type="text" data-cfg="json_log_file" placeholder="(空=关闭)"></label>
+        <label>pcap 导出<input type="text" data-cfg="pcap_export_file" placeholder="(空=关闭)"></label>
+        <label>pcapng 导出<input type="text" data-cfg="pcapng_export_file" placeholder="(空=关闭)"></label>
+      </fieldset>
+      <fieldset>
+        <legend>显示</legend>
+        <label><input type="checkbox" data-cfg="show_ptr_lookups">PTR 查询</label>
+        <label><input type="checkbox" data-cfg="show_historic">历史</label>
+        <label>语言<input type="text" data-cfg="language" placeholder="zh-CN"></label>
+      </fieldset>
+      <fieldset>
+        <legend>上传到服务端</legend>
+        <label>URL<input type="text" data-cfg="server_url" placeholder="https://…"></label>
+        <label>Token<input type="text" data-cfg="server_token" placeholder="(空=关闭)"></label>
+        <label>批量大小<input type="number" data-cfg="upload_batch_size" min="1"></label>
+      </fieldset>
+      <fieldset>
+        <legend>本机 HTTP</legend>
+        <label>端口<input type="number" data-cfg="http_port" min="1" max="65535"></label>
+        <label>Token<input type="text" data-cfg="http_token" placeholder="(自动生成)"></label>
+      </fieldset>
+      <fieldset>
+        <legend>数据保留</legend>
+        <label>保留天数<input type="number" data-cfg="retention_days" min="1"></label>
+      </fieldset>
+      <div id="settings-actions">
+        <button type="submit" id="settings-save">保存</button>
+        <button type="button" id="settings-restart">重启捕获</button>
+        <span id="settings-result" class="muted"></span>
+      </div>
+    </form>
+  </section>
+
+  <section id="help-view" class="view">
+    <h2>HTTP 端点</h2>
+    <pre>
+<code>GET  /live</code>                     实时连接快照(轮询 1s)
+<code>GET  /query?filter=&amp;limit=</code>     SQLite 只读查询(JSON 行数组)
+<code>GET  /stats</code>                     SQLite 聚合统计
+<code>GET  /config</code>                    读取当前配置
+<code>PUT  /config</code>                    更新配置(双轨制:热更新 + 重启生效)
+<code>POST /config/restart-capture</code>    重启捕获(应用重启生效项)
+    </pre>
+    <h2>过滤语法</h2>
+    <p>详见 TUI Help — <code>protocol:</code>、<code>port:</code>、<code>process:</code>、<code>sni:</code>、<code>country:</code> 等 vim/fzf 风格语法。</p>
+  </section>
+</div>
+
+<script>
+// rustnetec: W1 零构建前端 JS — 原生 ES2020,无框架无转译。
+// 设计原则:所有动态文本经 textContent 渲染,禁止 innerHTML 拼接外部数据(XSS 防护)。
+(function () {
+  "use strict";
+
+  // rustnetec: W5.2 — API base 切换:前端检测 location 切 daemon/server 端点集。
+  // 服务端是远程查看通道(R5 远程 HTTP),无 /live、/config、/config/restart-capture
+  // (本机 daemon 专属);检测到 server 模式时隐藏仪表盘实时轮询与设置页,
+  // 只暴露历史查询/统计/进程活动。
+  // 判据:服务端默认端口 19810(daemon 是 19811);或 location.host 不含 127.0.0.1/localhost。
+  var IS_SERVER_MODE = (function () {
+    var port = String(window.location.port || "");
+    if (port === "19810") return true;
+    if (port === "19811") return false;
+    // 远程部署(非回环)视为 server 模式
+    var host = window.location.hostname || "";
+    return host !== "127.0.0.1" && host !== "localhost" && host !== "::1";
+  })();
+
+  if (IS_SERVER_MODE) {
+    // 隐藏仪表盘标签(无 /live,实时轮询无意义)
+    var overviewBtn = document.querySelector('#tabs button[data-view="overview"]');
+    if (overviewBtn) overviewBtn.style.display = "none";
+    // 隐藏设置页标签(无 /config、/config/restart-capture)
+    var settingsBtn = document.querySelector('#tabs button[data-view="settings"]');
+    if (settingsBtn) settingsBtn.style.display = "none";
+    // 隐藏流量图标签(依赖 /live 采样累积,server 无 /live)
+    var graphBtn = document.querySelector('#tabs button[data-view="graph"]');
+    if (graphBtn) graphBtn.style.display = "none";
+    // 默认激活"连接表"标签(替代被隐藏的仪表盘)
+    var detailsBtn = document.querySelector('#tabs button[data-view="details"]');
+    if (detailsBtn) {
+      detailsBtn.classList.add("active");
+      var ov = document.querySelector('#tabs button[data-view="overview"]');
+      if (ov) ov.classList.remove("active");
+      document.querySelectorAll(".view").forEach(function (v) {
+        v.classList.toggle("active", v.id === "details-view");
+      });
+    }
+    // 隐藏顶栏状态行(实时字段无来源)
+    var statusLine = document.getElementById("status-line");
+    if (statusLine) statusLine.style.display = "none";
+    // server 模式提示
+    var pollInd = document.getElementById("poll-indicator");
+    if (pollInd) {
+      pollInd.className = "ok";
+      pollInd.textContent = "远程查看模式(历史查询/统计/进程活动)";
+    }
+  }
+
+  // ---- 标签栏切换 ----
+  // rustnetec: W2.2 — 切到"连接表"标签时按需触发首次 fetchDetails。
+  var detailsLoaded = false;
+  var tabs = document.querySelectorAll("#tabs button");
+  tabs.forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      tabs.forEach(function (b) { b.classList.remove("active"); });
+      btn.classList.add("active");
+      var viewId = btn.getAttribute("data-view");
+      document.querySelectorAll(".view").forEach(function (v) {
+        v.classList.toggle("active", v.id === viewId + "-view");
+      });
+      // 按需加载:首次切到连接表才启动实时轮询
+      if (viewId === "details" && !detailsLoaded) {
+        detailsLoaded = true;
+        startDetailsRealtime();
+      }
+      // 按需加载:首次切到流量图才初始化 Canvas 重绘
+      if (viewId === "graph") {
+        initGraphView();
+      }
+      // 按需加载:首次切到进程活动才启动 8s 轮询
+      if (viewId === "activity") {
+        initActivityView();
+      }
+      // 按需加载:首次切到设置才加载配置 + 绑定按钮
+      if (viewId === "settings") {
+        initSettingsView();
+      }
+    });
+  });
+
+  // ---- 工具函数 ----
+  // 格式化字节速率为人类可读单位(KB/s、MB/s)
+  function formatRate(bps) {
+    if (bps == null || isNaN(bps)) return "—";
+    if (bps < 1024) return bps.toFixed(0) + " B/s";
+    if (bps < 1024 * 1024) return (bps / 1024).toFixed(1) + " KB/s";
+    return (bps / (1024 * 1024)).toFixed(2) + " MB/s";
+  }
+
+  // 格式化运行时长(秒 → Xh Ym Zs)
+  function formatUptime(secs) {
+    if (secs == null || isNaN(secs) || secs <= 0) return "—";
+    var h = Math.floor(secs / 3600);
+    var m = Math.floor((secs % 3600) / 60);
+    var s = Math.floor(secs % 60);
+    if (h > 0) return h + "h " + m + "m " + s + "s";
+    if (m > 0) return m + "m " + s + "s";
+    return s + "s";
+  }
+
+  // 根据暂停标志映射捕获状态文案 + class
+  function captureStateText(paused) {
+    if (paused === true) return { text: "已暂停", cls: "paused" };
+    if (paused === false) return { text: "运行中", cls: "running" };
+    return { text: "未知", cls: "stopped" };
+  }
+
+  // rustnetec: W2.2 连接表 — 表格渲染 /query 结果、列排序、关键字过滤、分页。
+  // 安全:XSS 防护,所有动态文本经 textContent 渲染,禁止 innerHTML 拼接外部数据。
+  // 列顺序对齐设计文档 §3.2:时间/协议/源IP:端口/目的IP:端口/主机名/进程/服务/DPI/方向/RTT/GeoIP/字节。
+  var DETAILS_COLUMNS = [
+    { key: "ts", label: "时间", sortable: true, format: formatTs },
+    { key: "protocol", label: "协议", sortable: true },
+    { key: "source_ip", label: "源 IP", sortable: true, format: formatAddrPort.bind(null, "source_port") },
+    { key: "dest_ip", label: "目的 IP", sortable: true, format: formatAddrPort.bind(null, "dest_port") },
+    { key: "dest_hostname", label: "主机名", sortable: true },
+    { key: "process_name", label: "进程", sortable: true },
+    { key: "service_name", label: "服务", sortable: false },
+    { key: "dpi_protocol", label: "DPI", sortable: false },
+    { key: "direction", label: "方向", sortable: false },
+    { key: "rtt_ms", label: "RTT", sortable: true, format: formatRtt },
+    { key: "geoip_country_code", label: "GeoIP", sortable: false },
+    { key: "bytes_sent", label: "发", sortable: true, format: formatBytes },
+    { key: "bytes_received", label: "收", sortable: true, format: formatBytes },
+  ];
+
+  var detailsState = {
+    filter: "",
+    sortKey: "ts",
+    sortDir: "DESC",
+    page: 0,
+    pageSize: 50,
+    columns: [],
+    rows: [],
+    // rustnetec: W2.3 — 实时模式:定时轮询 /query(5s),自动回首页看最新连接。
+    // 历史模式:暂停轮询,用户手动翻页/过滤/排序。
+    realtime: true,
+    realtimeTimer: null,
+  };
+
+  // rustnetec: W2.3 — 实时模式轮询:回首页 + fetchDetails。
+  // 设计文档 §4.3 节奏:/query 用户触发 + 分页,不做自动轮询(避免大结果反复查询)。
+  // 但连接表实时性需求需要轮询,这里折中:实时模式 5s 轮询且强制回首页(page=0),
+  // 历史模式完全停止轮询,由用户手动控制。
+  function startDetailsRealtime() {
+    if (detailsState.realtimeTimer !== null) return;
+    detailsState.realtime = true;
+    detailsState.page = 0; // 实时模式始终看最新一页
+    fetchDetails();
+    detailsState.realtimeTimer = setInterval(function () {
+      if (detailsState.realtime) {
+        detailsState.page = 0;
+        fetchDetails();
+      }
+    }, 5000);
+  }
+
+  function stopDetailsRealtime() {
+    detailsState.realtime = false;
+    if (detailsState.realtimeTimer !== null) {
+      clearInterval(detailsState.realtimeTimer);
+      detailsState.realtimeTimer = null;
+    }
+  }
+
+  // 格式化时间戳(RFC3339 → HH:MM:SS)
+  function formatTs(val) {
+    if (val == null) return "—";
+    var s = String(val);
+    // 取 T 后的时间部分,截断到秒
+    var tIdx = s.indexOf("T");
+    if (tIdx >= 0) {
+      var time = s.substring(tIdx + 1, tIdx + 9);
+      return time || s;
+    }
+    return s;
+  }
+
+  // 格式化字节(B → KB/MB)
+  function formatBytes(val) {
+    if (val == null || val === 0) return "—";
+    var n = Number(val);
+    if (isNaN(n)) return String(val);
+    if (n < 1024) return n.toFixed(0) + " B";
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " K";
+    return (n / (1024 * 1024)).toFixed(2) + " M";
+  }
+
+  // 格式化 RTT(ms)
+  function formatRtt(val) {
+    if (val == null) return "—";
+    return val + "ms";
+  }
+
+  // 格式化 IP:端口(合并两列)
+  function formatAddrPort(portKey, ipVal, row) {
+    if (ipVal == null) return "—";
+    var port = row[portKey];
+    return port != null ? ipVal + ":" + port : String(ipVal);
+  }
+
+  // 构造查询 URL
+  function buildDetailsUrl() {
+    var params = [];
+    params.push("limit=" + detailsState.pageSize);
+    params.push("offset=" + (detailsState.page * detailsState.pageSize));
+    params.push("order=" + detailsState.sortKey + " " + detailsState.sortDir);
+    if (detailsState.filter) {
+      params.push("filter=" + encodeURIComponent(detailsState.filter));
+    }
+    return "/query?" + params.join("&");
+  }
+
+  // 渲染表头(带列排序指示)
+  function renderDetailsHead() {
+    var thead = document.getElementById("details-thead");
+    // 安全:表头是静态的 DETAILS_COLUMNS,无外部数据,可用 textContent 单独建行
+    thead.textContent = "";
+    var tr = document.createElement("tr");
+    DETAILS_COLUMNS.forEach(function (col) {
+      var th = document.createElement("th");
+      th.textContent = col.label;
+      th.setAttribute("data-key", col.key);
+      if (col.sortable) {
+        th.style.cursor = "pointer";
+        if (detailsState.sortKey === col.key) {
+          th.className = detailsState.sortDir === "ASC" ? "sorted-asc" : "sorted-desc";
+        }
+        th.addEventListener("click", function () {
+          // 切换排序:同列点击翻转方向,异列重置为 DESC
+          if (detailsState.sortKey === col.key) {
+            detailsState.sortDir = detailsState.sortDir === "ASC" ? "DESC" : "ASC";
+          } else {
+            detailsState.sortKey = col.key;
+            detailsState.sortDir = "DESC";
+          }
+          detailsState.page = 0; // 排序变化回首页
+          fetchDetails();
+        });
+      }
+      tr.appendChild(th);
+    });
+    thead.appendChild(tr);
+  }
+
+  // 渲染表体(按 DETAILS_COLUMNS 顺序取列值)
+  function renderDetailsBody() {
+    var tbody = document.getElementById("details-tbody");
+    var empty = document.getElementById("details-empty");
+    var countEl = document.getElementById("details-count");
+
+    tbody.textContent = ""; // 清空(安全:textContent)
+    var rows = detailsState.rows;
+    if (rows.length === 0) {
+      empty.style.display = "block";
+      countEl.textContent = "0 行";
+      return;
+    }
+    empty.style.display = "none";
+    countEl.textContent = rows.length + " 行";
+
+    rows.forEach(function (row) {
+      var tr = document.createElement("tr");
+      tr.addEventListener("click", function () {
+        openDetailsDrawer(row);
+      });
+      DETAILS_COLUMNS.forEach(function (col) {
+        var td = document.createElement("td");
+        var raw = row[col.key];
+        var formatted;
+        if (typeof col.format === "function") {
+          // format 函数签名:format(val, row) — bind 模式传 row
+          formatted = col.format(raw, row);
+        } else {
+          formatted = raw != null ? String(raw) : "—";
+        }
+        td.textContent = formatted != null ? formatted : "—";
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+  }
+
+  // 渲染分页控件状态
+  function renderDetailsPagination() {
+    var info = document.getElementById("details-page-info");
+    var prev = document.getElementById("details-prev");
+    var next = document.getElementById("details-next");
+    var page = detailsState.page;
+    var size = detailsState.pageSize;
+    var total = detailsState.rows.length;
+
+    info.textContent = "第 " + (page + 1) + " 页,本页 " + total + " 行";
+    prev.disabled = page === 0;
+    next.disabled = total < size; // 不满页说明已是末页
+    prev.style.opacity = prev.disabled ? "0.4" : "1";
+    next.style.opacity = next.disabled ? "0.4" : "1";
+  }
+
+  // 拉取 /query 并渲染
+  function fetchDetails() {
+    var url = buildDetailsUrl();
+    fetch(url, { credentials: "same-origin" })
+      .then(function (resp) {
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        return resp.json();
+      })
+      .then(function (data) {
+        // /query 返回 {columns, rows, count};rows 是二维数组,按 columns 顺序
+        // 转换为 Object 列名→值,便于 DETAILS_COLUMNS 按 key 取值
+        var cols = data.columns || [];
+        var rawRows = data.rows || [];
+        detailsState.columns = cols;
+        detailsState.rows = rawRows.map(function (arr) {
+          var obj = {};
+          cols.forEach(function (c, i) { obj[c] = arr[i]; });
+          return obj;
+        });
+        renderDetailsHead();
+        renderDetailsBody();
+        renderDetailsPagination();
+      })
+      .catch(function (err) {
+        var countEl = document.getElementById("details-count");
+        countEl.textContent = "查询失败: " + err.message;
+      });
+  }
+
+  // 绑定连接表控件事件
+  function initDetailsView() {
+    var filterInput = document.getElementById("details-filter");
+    var refreshBtn = document.getElementById("details-refresh");
+    var modeToggle = document.getElementById("details-mode-toggle");
+    var prevBtn = document.getElementById("details-prev");
+    var nextBtn = document.getElementById("details-next");
+    var pageSizeSel = document.getElementById("details-page-size");
+
+    var filterDebounce = null;
+    filterInput.addEventListener("input", function () {
+      detailsState.filter = filterInput.value.trim();
+      detailsState.page = 0;
+      // 防抖 300ms,避免每次按键触发查询
+      if (filterDebounce) clearTimeout(filterDebounce);
+      filterDebounce = setTimeout(fetchDetails, 300);
+    });
+
+    refreshBtn.addEventListener("click", fetchDetails);
+
+    // rustnetec: W2.3 — 实时/历史切换。
+    // 实时:5s 定时轮询 /query,强制回首页看最新连接。
+    // 历史:暂停轮询,用户手动翻页/过滤/排序。
+    modeToggle.addEventListener("click", function () {
+      if (detailsState.realtime) {
+        stopDetailsRealtime();
+        modeToggle.textContent = "实时:关";
+        modeToggle.setAttribute("data-mode", "history");
+      } else {
+        startDetailsRealtime();
+        modeToggle.textContent = "实时:开";
+        modeToggle.setAttribute("data-mode", "realtime");
+      }
+    });
+
+    prevBtn.addEventListener("click", function () {
+      if (detailsState.page > 0) {
+        detailsState.page--;
+        fetchDetails();
+      }
+    });
+
+    nextBtn.addEventListener("click", function () {
+      // 仅当当前页满 size 时才允许下一页(避免越界到空页)
+      if (detailsState.rows.length === detailsState.pageSize) {
+        detailsState.page++;
+        fetchDetails();
+      }
+    });
+
+    pageSizeSel.addEventListener("change", function () {
+      detailsState.pageSize = parseInt(pageSizeSel.value, 10) || 50;
+      detailsState.page = 0;
+      fetchDetails();
+    });
+  }
+
+  // rustnetec: W2.4 行点击详情抽屉 — 渲染该连接完整字段(textContent, XSS 防护)
+  function openDetailsDrawer(row) {
+    var drawer = document.getElementById("details-drawer");
+    var content = document.getElementById("details-drawer-content");
+    var closeBtn = document.getElementById("details-drawer-close");
+
+    content.textContent = ""; // 清空(安全)
+    var h3 = document.createElement("h3");
+    h3.textContent = "连接详情";
+    content.appendChild(h3);
+
+    var dl = document.createElement("dl");
+    // 按连接表列顺序展示完整字段;row 是 Object 列名→值
+    DETAILS_COLUMNS.forEach(function (col) {
+      var dt = document.createElement("dt");
+      dt.textContent = col.label;
+      var dd = document.createElement("dd");
+      var raw = row[col.key];
+      var formatted;
+      if (typeof col.format === "function") {
+        formatted = col.format(raw, row);
+      } else {
+        formatted = raw != null ? String(raw) : "—";
+      }
+      dd.textContent = formatted != null ? formatted : "—";
+      dl.appendChild(dt);
+      dl.appendChild(dd);
+    });
+    content.appendChild(dl);
+
+    drawer.style.display = "block";
+    closeBtn.onclick = function () { drawer.style.display = "none"; };
+  }
+
+  // 初始化连接表视图(标签切换时按需加载,这里先绑定控件)
+  initDetailsView();
+
+  // rustnetec: W3.1/W3.2 流量图 — Canvas 双折线 in/out,前端累积 /live 速率。
+  // 设计文档 §3.4:双折线(时间轴,最近 5 分钟,可切换 1m/5m/15m/1h/8h/1d)。
+  // 实现:纯 Canvas 2D,无第三方图表库(零构建约束)。
+  // 数据:前端累积 /live 采样(实时),每秒一次,按时间轴窗口裁剪。
+  var graphState = {
+    canvas: document.getElementById("graph-canvas"),
+    ctx: null,
+    rangeSecs: 300, // 默认 5m
+    samples: [], // {t: Date.now(), in: bps, out: bps}
+    rafId: null,
+  };
+  graphState.ctx = graphState.canvas.getContext("2d");
+
+  // 接收 /live 速率采样(由 pollLive 调用,避免独立轮询)
+  function pushGraphSample(rateIn, rateOut) {
+    graphState.samples.push({
+      t: Date.now(),
+      in: Number(rateIn) || 0,
+      out: Number(rateOut) || 0,
+    });
+    // 裁剪超出 2 倍时间轴的旧样本(保留余量供切换时间轴时回看)
+    var cutoff = Date.now() - graphState.rangeSecs * 2 * 1000;
+    while (graphState.samples.length > 2 && graphState.samples[0].t < cutoff) {
+      graphState.samples.shift();
+    }
+  }
+
+  // 绘制双折线
+  function drawGraph() {
+    var ctx = graphState.ctx;
+    var canvas = graphState.canvas;
+    var w = canvas.width;
+    var h = canvas.height;
+    var padL = 48, padR = 8, padT = 8, padB = 24;
+    var plotW = w - padL - padR;
+    var plotH = h - padT - padB;
+
+    ctx.clearRect(0, 0, w, h);
+    ctx.fillStyle = "#0e1116";
+    ctx.fillRect(0, 0, w, h);
+
+    var now = Date.now();
+    var startT = now - graphState.rangeSecs * 1000;
+    var inSamples = [];
+    var outSamples = [];
+    var maxBps = 0;
+    graphState.samples.forEach(function (s) {
+      if (s.t >= startT && s.t <= now) {
+        inSamples.push(s);
+        outSamples.push(s);
+        if (s.in > maxBps) maxBps = s.in;
+        if (s.out > maxBps) maxBps = s.out;
+      }
+    });
+    maxBps = Math.max(maxBps, 1024); // 下限 1 KB/s 防压扁
+
+    // 网格 + Y 轴刻度(4 等分)
+    ctx.strokeStyle = "#30363d";
+    ctx.fillStyle = "#8b949e";
+    ctx.font = "11px sans-serif";
+    ctx.lineWidth = 1;
+    for (var i = 0; i <= 4; i++) {
+      var y = padT + (plotH * i) / 4;
+      ctx.beginPath();
+      ctx.moveTo(padL, y);
+      ctx.lineTo(w - padR, y);
+      ctx.stroke();
+      var labelBps = maxBps * (1 - i / 4);
+      ctx.fillText(formatRate(labelBps), 4, y + 4);
+    }
+
+    // X 轴刻度(时间标签,5 等分)
+    ctx.fillStyle = "#8b949e";
+    for (var j = 0; j <= 5; j++) {
+      var x = padL + (plotW * j) / 5;
+      var secsAgo = graphState.rangeSecs * (1 - j / 5);
+      ctx.fillText(formatXLabel(secsAgo), x - 12, h - 6);
+    }
+
+    if (inSamples.length < 2) {
+      ctx.fillStyle = "#8b949e";
+      ctx.fillText("采样中…(需 /live 轮询累积)", padL + 8, padT + 16);
+      return;
+    }
+
+    // 入站折线(蓝)
+    drawLineByField(ctx, inSamples, "in", startT, now, padL, padT, plotW, plotH, maxBps, "#58a6ff");
+    // 出站折线(绿)
+    drawLineByField(ctx, outSamples, "out", startT, now, padL, padT, plotW, plotH, maxBps, "#3fb950");
+
+    var info = document.getElementById("graph-info");
+    info.textContent = inSamples.length + " 个采样点,峰值 " + formatRate(maxBps);
+  }
+
+  function drawLine(ctx, samples, startT, now, padL, padT, plotW, plotH, maxBps, color) {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    samples.forEach(function (s, i) {
+      var x = padL + (plotW * (s.t - startT)) / (now - startT);
+      var y = padT + plotH * (1 - s.in / maxBps); // 注意:in/out 共用 maxBps
+      // 用 in 字段绘制(调用方传 inSamples 或 outSamples,但两者是同一引用;
+      // 这里实际应区分 in/out — 修正:drawLine 按 field 参数取值)
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+  }
+
+  // 修正版:按 field 区分 in/out 绘制
+  function drawLineByField(ctx, samples, field, startT, now, padL, padT, plotW, plotH, maxBps, color) {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    samples.forEach(function (s, i) {
+      var x = padL + (plotW * (s.t - startT)) / (now - startT);
+      var y = padT + plotH * (1 - s[field] / maxBps);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+  }
+
+  // X 轴标签(秒 ago → 可读)
+  function formatXLabel(secsAgo) {
+    if (secsAgo < 60) return "-" + Math.round(secsAgo) + "s";
+    if (secsAgo < 3600) return "-" + Math.round(secsAgo / 60) + "m";
+    return "-" + Math.round(secsAgo / 3600) + "h";
+  }
+
+  // rustnetec: W3.2 时间轴切换
+  var graphRangeSel = document.getElementById("graph-range");
+  graphRangeSel.addEventListener("change", function () {
+    graphState.rangeSecs = parseInt(graphRangeSel.value, 10) || 300;
+    drawGraph();
+  });
+
+  // 定时重绘(1s,与 /live 轮询同节奏,用 rAF 节流)
+  function scheduleGraphRedraw() {
+    if (graphState.rafId) return;
+    graphState.rafId = requestAnimationFrame(function () {
+      graphState.rafId = null;
+      drawGraph();
+    });
+  }
+
+  // 初始化流量图视图:标签切换时按需启动重绘
+  var graphInitialized = false;
+  function initGraphView() {
+    if (graphInitialized) return;
+    graphInitialized = true;
+    // 首次绘制(可能尚无采样)
+    drawGraph();
+    // 1s 重绘节奏(由 pollLive 的采样驱动,这里设兜底定时)
+    setInterval(function () {
+      if (isPageVisible) scheduleGraphRedraw();
+    }, 1000);
+  }
+
+  // rustnetec: W3.4 进程活动视图 — 渲染 /processes,按字节降序。
+  // 设计文档 §3.3:表格列 = 进程名/PID/方向/连接数/字节 in/out;按字节降序。
+  // /processes 已按 bytes_total DESC 排序返回,前端直接渲染。
+  // 历史聚合每 5-10s 轮询(查询较重),这里用 8s 折中。
+  var activityState = {
+    initialized: false,
+    timer: null,
+    rows: [],
+  };
+
+  function fetchProcesses() {
+    fetch("/processes", { credentials: "same-origin" })
+      .then(function (resp) {
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        return resp.json();
+      })
+      .then(function (data) {
+        // /processes 返回 {processes: [...], count}
+        activityState.rows = data.processes || [];
+        renderActivity();
+      })
+      .catch(function (err) {
+        var countEl = document.getElementById("activity-count");
+        countEl.textContent = "查询失败: " + err.message;
+      });
+  }
+
+  function renderActivity() {
+    var tbody = document.getElementById("activity-tbody");
+    var empty = document.getElementById("activity-empty");
+    var countEl = document.getElementById("activity-count");
+
+    tbody.textContent = ""; // 清空(安全)
+    var rows = activityState.rows;
+    if (rows.length === 0) {
+      empty.style.display = "block";
+      countEl.textContent = "0 个进程";
+      return;
+    }
+    empty.style.display = "none";
+    countEl.textContent = rows.length + " 个进程";
+
+    // /processes 已按 bytes_total DESC 排序,前端按原序渲染
+    rows.forEach(function (p) {
+      var tr = document.createElement("tr");
+      // 进程名
+      appendTd(tr, p.process != null ? String(p.process) : "—");
+      // 连接数
+      appendTd(tr, p.connections != null ? String(p.connections) : "—");
+      // 发送字节
+      appendTd(tr, formatBytes(p.bytes_sent));
+      // 接收字节
+      appendTd(tr, formatBytes(p.bytes_received));
+      // 总字节
+      appendTd(tr, formatBytes(p.bytes_total));
+      tbody.appendChild(tr);
+    });
+  }
+
+  // 辅助:给 tr 追加一个 td,textContent 渲染(XSS 防护)
+  function appendTd(tr, text) {
+    var td = document.createElement("td");
+    td.textContent = text;
+    tr.appendChild(td);
+  }
+
+  // 初始化进程活动视图:标签切换时按需启动 8s 轮询
+  function initActivityView() {
+    if (activityState.initialized) return;
+    activityState.initialized = true;
+    fetchProcesses();
+    // 8s 轮询(设计文档 §3.3 历史聚合每 5-10s,取中值)
+    activityState.timer = setInterval(function () {
+      if (isPageVisible) fetchProcesses();
+    }, 8000);
+  }
+
+  // 绑定刷新按钮
+  document.getElementById("activity-refresh").addEventListener("click", fetchProcesses);
+
+  // rustnetec: W4.1/W4.2/W4.3 设置页 — 复用 GET /config 填表单 + PUT /config 保存 + 重启捕获。
+  // 设计文档 §3.6:表单字段 = PersistentConfig 字段;依赖 G2(W0.3)双轨制接线。
+  // 生效标注:W4.2 前端据响应 pending_restart 标注“重启生效”;W4.3 重启捕获按钮。
+  var settingsState = { initialized: false, config: {} };
+
+  // GET /config → 填表单(按 data-cfg 属性映射)
+  function loadSettings() {
+    var statusEl = document.getElementById("settings-status");
+    statusEl.textContent = "加载配置中…";
+    fetch("/config", { credentials: "same-origin" })
+      .then(function (resp) {
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        return resp.json();
+      })
+      .then(function (cfg) {
+        settingsState.config = cfg;
+        fillSettingsForm(cfg);
+        statusEl.textContent = "已加载当前配置";
+      })
+      .catch(function (err) {
+        statusEl.textContent = "加载失败: " + err.message;
+      });
+  }
+
+  // 按 data-cfg 属性填表单值(bool/Option<String>/number)
+  function fillSettingsForm(cfg) {
+    var inputs = document.querySelectorAll("#settings-form [data-cfg]");
+    inputs.forEach(function (el) {
+      var key = el.getAttribute("data-cfg");
+      var val = cfg[key];
+      if (el.type === "checkbox") {
+        el.checked = val === true;
+      } else if (val == null) {
+        el.value = ""; // Option::None → 空字符串
+      } else {
+        el.value = String(val);
+      }
+    });
+  }
+
+  // 收集表单值 → Object(按 data-cfg 属性),空字符串→ null(Option::None)
+  function collectSettingsForm() {
+    var obj = {};
+    document.querySelectorAll("#settings-form [data-cfg]").forEach(function (el) {
+      var key = el.getAttribute("data-cfg");
+      if (el.type === "checkbox") {
+        obj[key] = el.checked;
+      } else {
+        var v = el.value.trim();
+        // 数字字段保留为数字;空字符串→ null(Option::None)
+        if (v === "") {
+          obj[key] = null;
+        } else if (el.type === "number") {
+          var n = Number(v);
+          obj[key] = isNaN(n) ? null : n;
+        } else {
+          obj[key] = v;
+        }
+      }
+    });
+    return obj;
+  }
+
+  // PUT /config → 保存(YAML 序列化,后端 serde_yaml::from_str)
+  function saveSettings() {
+    var resultEl = document.getElementById("settings-result");
+    resultEl.textContent = "保存中…";
+    var cfg = collectSettingsForm();
+    // serde_yaml 期望 YAML 文本;前端用 js-yaml 会引入依赖,违反零构建。
+    // 折中:用 YAML 行格式手写(key: value),bool→true/false,null→空。
+    var yaml = yamlEncode(cfg);
+    fetch("/config", {
+      method: "PUT",
+      credentials: "same-origin",
+      headers: { "Content-Type": "text/yaml" },
+      body: yaml,
+    })
+      .then(function (resp) {
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        return resp.json();
+      })
+      .then(function (data) {
+        // rustnetec: W4.2 — 据 pending_restart 标注生效状态
+        if (data.status === "ok") {
+          if (data.pending_restart === true) {
+            resultEl.innerHTML = "";
+            var t1 = document.createTextNode("已保存(部分项需 ");
+            var b = document.createElement("b");
+            b.textContent = "重启捕获";
+            var t2 = document.createTextNode(" 后生效)");
+            resultEl.appendChild(t1);
+            resultEl.appendChild(b);
+            resultEl.appendChild(t2);
+          } else {
+            resultEl.textContent = "已保存(全部即时生效)";
+          }
+        } else {
+          resultEl.textContent = "保存失败: " + (data.error || "未知错误");
+        }
+      })
+      .catch(function (err) {
+        resultEl.textContent = "保存失败: " + err.message;
+      });
+  }
+
+  // rustnetec: W4.3 重启捕获 — POST /config/restart-capture(需 confirm:true)
+  function restartCapture() {
+    var resultEl = document.getElementById("settings-result");
+    // 二次确认(重启会停止捕获线程,需进程重启才恢复)
+    if (!window.confirm("确认重启捕获?这将停止当前捕获线程,需重启进程以新配置恢复捕获。")) {
+      return;
+    }
+    resultEl.textContent = "重启中…";
+    fetch("/config/restart-capture", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirm: true }),
+    })
+      .then(function (resp) {
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        return resp.json();
+      })
+      .then(function (data) {
+        if (data.status === "ok") {
+          resultEl.textContent = "捕获线程已停止(" +
+            (data.capture_stopped ? "曾运行" : "未运行") +
+            ")。需重启进程以新配置恢复捕获。";
+        } else {
+          resultEl.textContent = "重启失败: " + (data.error || "未知错误");
+        }
+      })
+      .catch(function (err) {
+        resultEl.textContent = "重启失败: " + err.message;
+      });
+  }
+
+  // YAML 行格式编码(零构建:不引 js-yaml,手写最小子集)
+  // 支持:bool(true/false)、null(空)、number、string。
+  // 不支持嵌套对象/数组(PersistentConfig 全是扁平字段,足够)。
+  function yamlEncode(obj) {
+    var lines = [];
+    for (var key in obj) {
+      if (!Object.prototype.hasOwnProperty.call(obj, key)) continue;
+      var v = obj[key];
+      if (v === null || v === undefined) {
+        // Option::None → YAML 空(后端 serde_yaml 反序列化为 None)
+        lines.push(key + ":");
+      } else if (v === true || v === false) {
+        lines.push(key + ": " + (v ? "true" : "false"));
+      } else if (typeof v === "number") {
+        lines.push(key + ": " + v);
+      } else {
+        // 字符串:含空格或特殊字符加引号(简化:统一加双引号)
+        lines.push(key + ': "' + String(v).replace(/"/g, '\\"') + '"');
+      }
+    }
+    return lines.join("\n") + "\n";
+  }
+
+  // 初始化设置页:标签切换时按需加载
+  function initSettingsView() {
+    if (settingsState.initialized) return;
+    settingsState.initialized = true;
+    loadSettings();
+    // 绑定保存按钮(表单 submit)
+    document.getElementById("settings-form").addEventListener("submit", function (e) {
+      e.preventDefault();
+      saveSettings();
+    });
+    // 绑定重启捕获按钮
+    document.getElementById("settings-restart").addEventListener("click", restartCapture);
+  }
+
+  // ---- /live 1s 轮询 ----
+  // 设计文档 §4.3:/live 1s 轻量内存态轮询。
+  // visibilitychange 暂停轮询,恢复时立即刷新一次。
+  var pollIndicator = document.getElementById("poll-indicator");
+  var liveTimer = null;
+  var isPageVisible = true;
+
+  function setPollState(state, msg) {
+    pollIndicator.className = state;
+    pollIndicator.textContent = msg;
+  }
+
+  function updateLive(snapshot) {
+    // 状态行
+    document.getElementById("s-interface").textContent =
+      snapshot.interface || "—";
+    document.getElementById("s-rate-in").textContent =
+      formatRate(snapshot.rate_in_bps);
+    document.getElementById("s-rate-out").textContent =
+      formatRate(snapshot.rate_out_bps);
+    document.getElementById("s-connections").textContent =
+      snapshot.connections != null ? snapshot.connections : "—";
+
+    var cs = captureStateText(snapshot.paused);
+    var captureEl = document.getElementById("s-capture-state");
+    captureEl.textContent = cs.text;
+    captureEl.className = "value capture-state " + cs.cls;
+
+    document.getElementById("s-uptime").textContent =
+      formatUptime(snapshot.uptime_secs);
+
+    // 指标卡(复用同样字段)
+    document.getElementById("m-connections").textContent =
+      snapshot.connections != null ? snapshot.connections : "—";
+    document.getElementById("m-rate-in").textContent =
+      formatRate(snapshot.rate_in_bps);
+    document.getElementById("m-rate-out").textContent =
+      formatRate(snapshot.rate_out_bps);
+    document.getElementById("m-uptime").textContent =
+      formatUptime(snapshot.uptime_secs);
+
+    // rustnetec: W3.1 — 喂采样给流量图,由 drawGraph 按 rangeSecs 窗口裁剪。
+    pushGraphSample(snapshot.rate_in_bps, snapshot.rate_out_bps);
+    // 若流量图已初始化(用户切过该标签),节流重绘
+    if (graphInitialized) scheduleGraphRedraw();
+  }
+
+  function pollLive() {
+    fetch("/live", { credentials: "same-origin" })
+      .then(function (resp) {
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        return resp.json();
+      })
+      .then(function (snapshot) {
+        updateLive(snapshot);
+        setPollState("ok", "实时");
+      })
+      .catch(function (err) {
+        setPollState("err", "轮询失败: " + err.message);
+      });
+  }
+
+  function startLivePolling() {
+    if (liveTimer !== null) return; // 已在运行
+    pollLive(); // 立即刷新一次
+    liveTimer = setInterval(pollLive, 1000);
+    setPollState("ok", "实时");
+  }
+
+  function stopLivePolling() {
+    if (liveTimer !== null) {
+      clearInterval(liveTimer);
+      liveTimer = null;
+    }
+    setPollState("paused", "已暂停(页面隐藏)");
+  }
+
+  document.addEventListener("visibilitychange", function () {
+    var nowVisible = !document.hidden;
+    if (nowVisible && !isPageVisible) {
+      // 从隐藏恢复到可见:立即刷新 + 重启轮询
+      isPageVisible = true;
+      startLivePolling();
+    } else if (!nowVisible && isPageVisible) {
+      // 页面隐藏:暂停轮询,释放本机 HTTP 单线程压力
+      isPageVisible = false;
+      stopLivePolling();
+    }
+  });
+
+  // 启动轮询
+  // rustnetec: W5.2 — server 模式无 /live,跳过 1s 轮询(顶栏已隐藏,模式提示已就位)。
+  if (!IS_SERVER_MODE) {
+    startLivePolling();
+  }
+})();
+</script>
+</body>
+</html>
