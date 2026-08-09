@@ -5,8 +5,21 @@ use rustnet_monitor::{app, cli, network, telemetry, ui};
 use simplelog::{ConfigBuilder, WriteLogger};
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+/// rustnetec: 解析 SQLite 数据库路径 — 优先 `--db` 覆盖,否则回退平台默认。
+///
+/// daemon/tray 分支此前固定用 `telemetry::paths::db_path()`(R2 回归),
+/// 忽略了 `--db`;本函数统一该语义,供 SqliteSink、HTTP state 与 uid-drop
+/// chown 共用,保证 daemon 落库路径与 `query --live` 一致。
+fn resolve_db_path(matches: &clap::ArgMatches) -> PathBuf {
+    if let Some(p) = matches.get_one::<String>("db") {
+        PathBuf::from(p)
+    } else {
+        telemetry::paths::db_path().unwrap_or_else(|_| PathBuf::from("data.db"))
+    }
+}
 
 fn main() -> Result<()> {
     // Check for required dependencies on Windows
@@ -296,11 +309,10 @@ fn main() -> Result<()> {
         if let Ok(dir) = telemetry::paths::data_dir() {
             let _ = telemetry::paths::chown_if_root(&dir, target.uid, target.gid);
         }
-        // rustnetec: collapse nested `if let` into let-chain (clippy::collapsible_if)
-        if let Ok(path) = telemetry::paths::db_path()
-            && path.exists()
-        {
-            let _ = telemetry::paths::chown_if_root(&path, target.uid, target.gid);
+        // rustnetec: 用 --db 覆盖路径(若有),保证自定义库文件也被 chown。
+        let db_path = resolve_db_path(&matches);
+        if db_path.exists() {
+            let _ = telemetry::paths::chown_if_root(&db_path, target.uid, target.gid);
         }
         if let Ok(dir) = telemetry::paths::config_dir() {
             let _ = telemetry::paths::chown_if_root(&dir, target.uid, target.gid);
@@ -790,8 +802,7 @@ fn main() -> Result<()> {
     // 持有的是 None → log_connection_event 永不落库 → 连接表(/query)与
     // 进程活动(/processes)始终无数据。此处 daemon/tray 先建 sink 再启线程。
     if daemon_mode || tray_mode {
-        let db_path =
-            telemetry::paths::db_path().unwrap_or_else(|_| std::path::PathBuf::from("data.db"));
+        let db_path = resolve_db_path(&matches);
         let runtime_config = std::sync::Arc::new(std::sync::RwLock::new(
             rustnet_monitor::config::RuntimeConfig::from_persistent(
                 &rustnet_monitor::config::PersistentConfig::load().unwrap_or_default(),
@@ -829,8 +840,7 @@ fn main() -> Result<()> {
                 .get_one::<u16>("http-port")
                 .copied()
                 .unwrap_or(19811);
-            let db_path =
-                telemetry::paths::db_path().unwrap_or_else(|_| std::path::PathBuf::from("data.db"));
+            let db_path = resolve_db_path(&matches);
             let http_token = {
                 // rustnetec: 优先用 sandbox 之前缓存/落盘的 token。Seatbelt
                 // `deny file-read*` 使此处的 load() 失败 → default → 重新生成
