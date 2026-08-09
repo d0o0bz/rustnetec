@@ -50,6 +50,11 @@ pub struct SandboxConfig {
     pub pcapng_export_path: Option<String>,
     /// GeoIP database paths that need read access (may be under /Users)
     pub geoip_paths: Vec<String>,
+    /// rustnetec: W-修复 — SQLite 数据目录(data_dir)需 sandbox 读写放行。
+    /// Seatbelt 默认 deny /Users 子路径读写,而 SqliteSink(/query、/processes)
+    /// 在 sandbox 之后才打开 data.db → EPERM/CANTOPEN。此字段仿照
+    /// geoip_paths/log_dir 的既有 allow 模式,把 data_dir 加入白名单。
+    pub data_dir: Option<String>,
 }
 
 /// Result of sandbox application

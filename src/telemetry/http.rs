@@ -413,6 +413,20 @@ fn handle_query(request: tiny_http::Request, state: &HttpState) {
     let url = request.url().to_string();
     let params = parse_query_params(&url);
 
+    // rustnetec: W-修复容错 — 数据库缺失时返回 200 空结果 + note(与
+    // /processes 一致),而非裸 400。前端据此显示"暂无数据"而非"查询失败"。
+    // (SqliteSink 挂接后 daemon 启动即建库,此分支仅覆盖未捕获/异常场景。)
+    if !state.db_path.exists() {
+        let response = serde_json::json!({
+            "columns": [],
+            "rows": [],
+            "count": 0,
+            "note": "database file not found — no capture data yet"
+        });
+        let _ = respond_json(request, 200, &response);
+        return;
+    }
+
     let sql_param = params.get("sql").map(|s| s.as_str());
     let filter_param = params.get("filter").map(|s| s.as_str());
 

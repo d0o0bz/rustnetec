@@ -11,7 +11,7 @@ pub mod paths;
 pub mod query; // rustnetec: query subcommand with filter-to-SQL translation (R5, T1.3)
 pub mod upload; // rustnetec: UploadSink — client→server data upload (R3, T2.6)
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 /// Connection event data extracted from a Connection for sink consumption.
@@ -20,7 +20,9 @@ use std::sync::Arc;
 /// This struct decouples the event pipeline from the Connection type, allowing
 /// sinks (JsonLineSink, SqliteSink, UploadSink) to consume events without
 /// depending on the full Connection struct (which does not derive Serialize).
-#[derive(Debug, Clone, Serialize)]
+// rustnetec: W-修复 — 加 Deserialize。挂接 SqliteSink 时把 log_connection_event
+// 构造的 JSON 事件反序列化为 ConnectionEventData 再 accept(避免重写字段提取)。
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectionEventData {
     // Event metadata
     pub timestamp: String,

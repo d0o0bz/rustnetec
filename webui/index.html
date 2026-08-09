@@ -913,6 +913,13 @@
         renderDetailsHead();
         renderDetailsBody();
         renderDetailsPagination();
+        // rustnetec: W-修复容错 — 数据库缺失时后端返回 200 + note,
+        // 前端显示"暂无数据(原因)"而非"查询失败"。
+        var note = data.note;
+        if (note && rawRows.length === 0) {
+          var countEl2 = document.getElementById("details-count");
+          countEl2.textContent = "暂无数据(" + note + ")";
+        }
       })
       .catch(function (err) {
         var countEl = document.getElementById("details-count");
@@ -1193,6 +1200,13 @@
         // /processes 返回 {processes: [...], count}
         activityState.rows = data.processes || [];
         renderActivity();
+        // rustnetec: W-修复容错 — 数据库缺失时后端返回 note,
+        // 前端显示"暂无数据(原因)"而非"0 个进程"。
+        var note = data.note;
+        if (note && activityState.rows.length === 0) {
+          var countEl2 = document.getElementById("activity-count");
+          countEl2.textContent = "暂无数据(" + note + ")";
+        }
       })
       .catch(function (err) {
         var countEl = document.getElementById("activity-count");

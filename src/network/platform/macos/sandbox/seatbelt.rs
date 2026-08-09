@@ -67,6 +67,8 @@ const PARAM_PCAPNG_PATH: &str = "PCAPNG_PATH";
 const PARAM_GEOIP_PATH_1: &str = "GEOIP_PATH_1";
 const PARAM_GEOIP_PATH_2: &str = "GEOIP_PATH_2";
 const PARAM_GEOIP_PATH_3: &str = "GEOIP_PATH_3";
+/// rustnetec: W-修复 — SQLite 数据目录(放行读写,仿照 LOG_DIR 模式)。
+const PARAM_DATA_DIR: &str = "DATA_DIR";
 
 /// Base SBPL profile: allow-default with filesystem and process restrictions.
 ///
@@ -131,6 +133,17 @@ const SBPL_PROFILE_BASE: &str = r#"(version 1)
     (literal (param "PCAP_PATH"))
     (literal (param "PCAP_JSONL_PATH"))
     (literal (param "PCAPNG_PATH")))
+
+;; rustnetec: W-修复 — 放行 SQLite 数据目录读写。
+;; Seatbelt 默认 deny /Users 子路径读写,而 SqliteSink(/query、/processes)
+;; 在 sandbox 之后才打开 data.db(data_dir/data.db) → EPERM/CANTOPEN。
+;; 此规则仿照 LOG_DIR 模式,把 data_dir 加入白名单(读写均需)。
+(allow file-read-data
+    (literal (param "DATA_DIR"))
+    (subpath (param "DATA_DIR")))
+(allow file-write*
+    (literal (param "DATA_DIR"))
+    (subpath (param "DATA_DIR")))
 
 ;; Block execution of all binaries except lsof
 ;; Prevents shell escapes (/bin/sh, /usr/bin/curl, etc.) if code execution
@@ -356,6 +369,16 @@ fn build_parameters(config: &SandboxConfig) -> Result<Vec<CString>> {
         .context("pcapng_export_path contains null byte")?
         .unwrap_or_else(|| devnull.clone());
 
+    // rustnetec: W-修复 — SQLite 数据目录(放行读写)。None → /dev/null 兜底。
+    let data_dir = config
+        .data_dir
+        .as_deref()
+        .map(resolve)
+        .map(CString::new)
+        .transpose()
+        .context("data_dir contains null byte")?
+        .unwrap_or_else(|| devnull.clone());
+
     // GeoIP database paths (up to 3 user-specified or auto-discovered paths)
     let geoip_paths: Vec<CString> = config
         .geoip_paths
@@ -397,6 +420,8 @@ fn build_parameters(config: &SandboxConfig) -> Result<Vec<CString>> {
         geoip_2,
         CString::new(PARAM_GEOIP_PATH_3).unwrap(),
         geoip_3,
+        CString::new(PARAM_DATA_DIR).unwrap(),
+        data_dir,
     ])
 }
 

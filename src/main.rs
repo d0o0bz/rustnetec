@@ -671,6 +671,11 @@ fn main() -> Result<()> {
         // rustnetec: Read --sandbox-allow-network for data upload host (R3, T1.8)
         let allowed_network_host = matches.get_one::<String>("sandbox-allow-network").cloned();
 
+        // rustnetec: W-修复 — SQLite 数据目录需 sandbox 读写放行。
+        // Seatbelt 默认 deny /Users 子路径读写,而 SqliteSink(/query、/processes)
+        // 在 sandbox 之后打开 data.db → EPERM/CANTOPEN。传入 data_dir 加入白名单。
+        let data_dir = telemetry::paths::data_dir().ok().map(|p| p.to_string_lossy().into_owned());
+
         let sandbox_config = SandboxConfig {
             mode: sandbox_mode,
             block_network: true,  // RustNet is passive, doesn't need TCP
@@ -680,6 +685,7 @@ fn main() -> Result<()> {
             pcap_export_path: config.pcap_export_file,
             pcapng_export_path: config.pcapng_export_file,
             geoip_paths,
+            data_dir, // rustnetec: W-修复 — SQLite 数据目录白名单
         };
 
         match apply_sandbox(&sandbox_config) {
@@ -778,6 +784,30 @@ fn main() -> Result<()> {
         }
     }
 
+    // rustnetec: W-修复 — SqliteSink 必须在 start_workers 之前挂到 App。
+    // start_packet_processor / start_cleanup_thread 在 spawn 时克隆
+    // self.sqlite_sink;若在 start_workers 之后才 set_sqlite_sink,线程
+    // 持有的是 None → log_connection_event 永不落库 → 连接表(/query)与
+    // 进程活动(/processes)始终无数据。此处 daemon/tray 先建 sink 再启线程。
+    if daemon_mode || tray_mode {
+        let db_path =
+            telemetry::paths::db_path().unwrap_or_else(|_| std::path::PathBuf::from("data.db"));
+        let runtime_config = std::sync::Arc::new(std::sync::RwLock::new(
+            rustnet_monitor::config::RuntimeConfig::from_persistent(
+                &rustnet_monitor::config::PersistentConfig::load().unwrap_or_default(),
+            ),
+        ));
+        match telemetry::db::SqliteSink::new(Some(db_path), runtime_config) {
+            Ok(sink) => {
+                app.set_sqlite_sink(std::sync::Arc::new(sink));
+                info!("SqliteSink attached — connection events will be persisted to SQLite");
+            }
+            Err(e) => warn!(
+                "Failed to create SqliteSink: {e:#}; connection events will not be persisted to SQLite"
+            ),
+        }
+    }
+
     // Now that the sandbox has been applied on the main thread, start the worker
     // threads (DPI packet processors, enrichment, snapshot, cleanup, collectors).
     // On Linux these inherit the Landlock domain and the dropped capabilities, so
@@ -858,6 +888,11 @@ fn main() -> Result<()> {
             let runtime_config = std::sync::Arc::new(std::sync::RwLock::new(
                 rustnet_monitor::config::RuntimeConfig::from_persistent(&pc),
             ));
+
+            // rustnetec: W-修复 — SqliteSink 已在 start_workers 之前创建并挂到 App
+            // (见上方 start_workers 前的 sink 创建块);线程 spawn 时克隆的是
+            // Some(sink),落库随 log_connection_event 自动进行,此处不再重复创建。
+
             let server_url = runtime_config.read().unwrap().server_url.clone();
             if server_url.is_some() {
                 let identity = {

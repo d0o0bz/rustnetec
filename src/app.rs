@@ -19,6 +19,12 @@ use std::time::{Duration, Instant, SystemTime};
 
 use crate::filter::ConnectionFilter;
 
+// rustnetec: W-修复 — daemon 事件落库挂接。SqliteSink 实现
+// ConnectionEventSink::accept(&ConnectionEventData),由 daemon/tray 启动路径
+// 创建并 set 到 App,在事件出口(log_connection_event)与 JSONL 并行落库。
+use crate::telemetry::db::SqliteSink;
+use crate::telemetry::{ConnectionEventData, ConnectionEventSink};
+
 use crate::export::pcapng::{self, PcapngWriter};
 use crate::network::{
     capture::{CaptureConfig, CapturedPacket, PacketReader, setup_packet_capture},
@@ -300,12 +306,16 @@ fn system_time_to_timeval(timestamp: SystemTime) -> libc::timeval {
 }
 
 /// Helper function to log connection events as JSON
+// rustnetec: W-修复 — writer 改 Option:json_log_file 未配置(None)时也要
+// 进入本函数喂 SqliteSink(config.yml 默认 json_log_file: null,若沿用
+// `if let Some(writer) = json_log_file` 包裹则 SQLite 落库被连带跳过)。
 fn log_connection_event(
-    writer: &JsonLineWriter,
+    writer: Option<&JsonLineWriter>,
     event_type: &str,
     conn: &Connection,
     duration_secs: Option<u64>,
     dns_resolver: Option<&DnsResolver>,
+    sqlite_sink: Option<&Arc<SqliteSink>>,
 ) {
     // Build JSON object based on event type
     // rustnetec: Changed from Utc::now() to Local::now() for RFC 3339 local time with timezone offset
@@ -463,7 +473,19 @@ fn log_connection_event(
         }
     }
 
-    writer.write(&event);
+    if let Some(w) = writer {
+        w.write(&event);
+    }
+
+    // rustnetec: W-修复 — SQLite 并行落库。JSON 事件字段与 ConnectionEventData
+    // 字段名一致(均 snake_case),直接反序列化后 accept,避免重写字段提取。
+    if let Some(sink) = sqlite_sink {
+        if let Ok(data) = serde_json::from_value::<ConnectionEventData>(event) {
+            sink.accept(&data);
+        } else {
+            warn!("SqliteSink: failed to deserialize connection event to ConnectionEventData");
+        }
+    }
 }
 
 /// Helper function to log connection info to PCAP sidecar file (JSONL format)
@@ -876,6 +898,11 @@ pub struct App {
     json_log_file: Option<Arc<JsonLineWriter>>,
     pcap_sidecar_file: Option<Arc<JsonLineWriter>>,
 
+    // rustnetec: W-修复 — SQLite 事件落库 sink。daemon/tray 启动路径创建并
+    // set(见 main.rs),事件出口(log_connection_event)与 JSONL 并行落库。
+    // 为空时行为与修复前完全一致(仅 JSONL/无落库),不影响 TUI 模式。
+    sqlite_sink: Option<Arc<SqliteSink>>,
+
     /// Pre-created PCAPNG output file. Held until worker startup so the writer
     /// thread can use the exact file handle allowed by the sandbox.
     pcapng_export_file: Option<File>,
@@ -893,6 +920,12 @@ impl App {
     /// Create a new application instance
     pub fn new(config: Config) -> Result<Self> {
         Self::new_with_output_handles(config, AppOutputHandles::default())
+    }
+
+    // rustnetec: W-修复 — daemon/tray 启动路径把 SqliteSink 挂到 App,
+    // 事件出口(log_connection_event)与 JSONL 并行落库 SQLite。
+    pub fn set_sqlite_sink(&mut self, sink: Arc<SqliteSink>) {
+        self.sqlite_sink = Some(sink);
     }
 
     pub fn new_with_output_handles(
@@ -1030,6 +1063,7 @@ impl App {
             packet_rx: None,
             json_log_file,
             pcap_sidecar_file,
+            sqlite_sink: None,
             pcapng_export_file: output_handles.pcapng_export.take(),
             #[cfg(any(
                 target_os = "linux",
@@ -1463,6 +1497,9 @@ impl App {
         let capture_status = Arc::clone(&self.capture_status);
         let json_log_file = self.json_log_file.clone();
         let pcap_sidecar_file = self.pcap_sidecar_file.clone();
+        // rustnetec: W-修复 — 事件落库挂接:把 sqlite_sink 传进 update_connection,
+        // 与 JSONL 并行写 SQLite。
+        let sqlite_sink = self.sqlite_sink.clone();
         let dns_resolver = self.dns_resolver.clone();
         let oui_lookup = self.oui_lookup.clone();
         let parser_config = ParserConfig {
@@ -1555,8 +1592,11 @@ impl App {
                                     parsed,
                                     packet_timestamp,
                                     &stats,
-                                    &json_log_file,
-                                    &pcap_sidecar_file,
+                                    &EventOutputs {
+                                        json_log_file: json_log_file.as_ref(),
+                                        pcap_sidecar_file: pcap_sidecar_file.as_ref(),
+                                        sqlite_sink: sqlite_sink.as_ref(),
+                                    },
                                     dns_resolver.as_deref(),
                                 );
                                 parsed_count += 1;
@@ -2584,6 +2624,8 @@ impl App {
         let should_stop = Arc::clone(&self.should_stop);
         let json_log_file = self.json_log_file.clone();
         let pcap_sidecar_file = self.pcap_sidecar_file.clone();
+        // rustnetec: W-修复 — SQLite 事件落库挂接(cleanup 的 connection_closed 事件)。
+        let sqlite_sink = self.sqlite_sink.clone();
         let dns_resolver = self.dns_resolver.clone();
         let stats = Arc::clone(&self.stats);
 
@@ -2614,14 +2656,17 @@ impl App {
                         .map(|d| d.as_secs())
                         .ok();
 
-                    // Log connection_closed event if JSON logging is enabled
-                    if let Some(writer) = &json_log_file {
+                    // rustnetec: W-修复 — 无条件进入(JSONL 或 SQLite 任一启用)。
+                    // 之前 `if let Some(writer) = &json_log_file` 在 json_log_file
+                    // 为 null(config.yml 默认)时连 SQLite 落库也连带跳过。
+                    if json_log_file.is_some() || sqlite_sink.is_some() {
                         log_connection_event(
-                            writer,
+                            json_log_file.as_deref(),
                             "connection_closed",
                             conn,
                             duration_secs,
                             dns_resolver.as_deref(),
+                            sqlite_sink.as_ref(),
                         );
                     }
 
@@ -3200,6 +3245,15 @@ fn per_second_rate(delta: u64, elapsed_seconds: f64, unit_scale: f64) -> u64 {
     (delta as f64 * unit_scale / elapsed_seconds).round() as u64
 }
 
+/// rustnetec: W-修复 — 事件输出句柄集合(JSONL / PCAP 侧车 / SQLite)。
+/// 合并 `update_connection` 的三个 Option 输出参数,避免 clippy
+/// too_many_arguments(上游原 7 参数加 sqlite_sink 后超阈值)。
+struct EventOutputs<'a> {
+    json_log_file: Option<&'a Arc<JsonLineWriter>>,
+    pcap_sidecar_file: Option<&'a Arc<JsonLineWriter>>,
+    sqlite_sink: Option<&'a Arc<SqliteSink>>,
+}
+
 /// Update or create a connection from a parsed packet.
 ///
 /// The connection table, RTT tracking, QUIC coalescing, and the connection
@@ -3211,8 +3265,7 @@ fn update_connection(
     parsed: ParsedPacket,
     now: SystemTime,
     stats: &AppStats,
-    json_log_file: &Option<Arc<JsonLineWriter>>,
-    pcap_sidecar_file: &Option<Arc<JsonLineWriter>>,
+    outputs: &EventOutputs<'_>,
     dns_resolver: Option<&DnsResolver>,
 ) -> IngestOutcome {
     let outcome = tracker.ingest_at(&parsed, now);
@@ -3257,16 +3310,18 @@ fn update_connection(
             .duration_since(conn.created_at)
             .map(|duration| duration.as_secs())
             .ok();
-        if let Some(writer) = json_log_file {
+        // rustnetec: W-修复 — 无条件进入(JSONL 或 SQLite 任一启用)。
+        if outputs.json_log_file.is_some() || outputs.sqlite_sink.is_some() {
             log_connection_event(
-                writer,
+                outputs.json_log_file.map(|w| w.as_ref()),
                 "connection_closed",
                 conn,
                 duration_secs,
                 dns_resolver,
+                outputs.sqlite_sink,
             );
         }
-        if let Some(writer) = pcap_sidecar_file {
+        if let Some(writer) = outputs.pcap_sidecar_file {
             log_pcap_connection(writer, conn);
         }
         debug!(
@@ -3281,10 +3336,19 @@ fn update_connection(
             .total_connections_created
             .fetch_add(1, Ordering::Relaxed);
         debug!("New connection detected: {}", outcome.key);
-        if let Some(writer) = json_log_file
-            && let Some(conn) = tracker.connections().get(&outcome.key)
-        {
-            log_connection_event(writer, "new_connection", conn.value(), None, dns_resolver);
+        // rustnetec: W-修复 — JSONL 或 SQLite 任一启用即进入(避免 json_log_file
+        // 为 null 时 SQLite 落库被连带跳过)。let-chain 不支持 `||`,故嵌套。
+        if outputs.json_log_file.is_some() || outputs.sqlite_sink.is_some() {
+            if let Some(conn) = tracker.connections().get(&outcome.key) {
+                log_connection_event(
+                    outputs.json_log_file.map(|w| w.as_ref()),
+                    "new_connection",
+                    conn.value(),
+                    None,
+                    dns_resolver,
+                    outputs.sqlite_sink,
+                );
+            }
         }
     }
 
@@ -3714,8 +3778,11 @@ mod connection_lifecycle_tests {
             tcp_packet(flags(true, false)),
             started,
             &stats,
-            &no_log,
-            &no_log,
+            &EventOutputs {
+                json_log_file: no_log.as_ref(),
+                pcap_sidecar_file: no_log.as_ref(),
+                sqlite_sink: None,
+            },
             None,
         );
         update_connection(
@@ -3723,8 +3790,11 @@ mod connection_lifecycle_tests {
             tcp_packet(flags(false, true)),
             started + Duration::from_secs(1),
             &stats,
-            &no_log,
-            &no_log,
+            &EventOutputs {
+                json_log_file: no_log.as_ref(),
+                pcap_sidecar_file: no_log.as_ref(),
+                sqlite_sink: None,
+            },
             None,
         );
         update_connection(
@@ -3732,8 +3802,11 @@ mod connection_lifecycle_tests {
             tcp_packet(flags(true, false)),
             started + Duration::from_secs(2),
             &stats,
-            &no_log,
-            &no_log,
+            &EventOutputs {
+                json_log_file: no_log.as_ref(),
+                pcap_sidecar_file: no_log.as_ref(),
+                sqlite_sink: None,
+            },
             None,
         );
 
@@ -3757,8 +3830,11 @@ mod connection_lifecycle_tests {
             tcp_packet(flags(true, false)),
             started,
             &stats,
-            &events,
-            &sidecar,
+            &EventOutputs {
+                json_log_file: events.as_ref(),
+                pcap_sidecar_file: sidecar.as_ref(),
+                sqlite_sink: None,
+            },
             None,
         );
         update_connection(
@@ -3766,8 +3842,11 @@ mod connection_lifecycle_tests {
             tcp_packet(flags(false, true)),
             started + Duration::from_secs(1),
             &stats,
-            &events,
-            &sidecar,
+            &EventOutputs {
+                json_log_file: events.as_ref(),
+                pcap_sidecar_file: sidecar.as_ref(),
+                sqlite_sink: None,
+            },
             None,
         );
         update_connection(
@@ -3775,8 +3854,11 @@ mod connection_lifecycle_tests {
             tcp_packet(flags(true, false)),
             started + Duration::from_secs(2),
             &stats,
-            &events,
-            &sidecar,
+            &EventOutputs {
+                json_log_file: events.as_ref(),
+                pcap_sidecar_file: sidecar.as_ref(),
+                sqlite_sink: None,
+            },
             None,
         );
 
