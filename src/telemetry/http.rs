@@ -94,6 +94,8 @@ impl HttpState {
             .iter()
             .filter(|c| !c.is_historic)
             .count();
+        // rustnetec: 历史连接数独立于快照开关(tracker 恒保留有界历史表)。
+        let historic_connections = app.get_historic_connection_count();
         let uptime = app
             .get_connections()
             .iter()
@@ -109,6 +111,7 @@ impl HttpState {
             "rate_in_bps": rate_in_bps,
             "rate_out_bps": rate_out_bps,
             "connections": connections,
+            "historic_connections": historic_connections,
             "uptime_secs": uptime.as_secs(),
             "paused": app.is_stopping(),
         });
@@ -281,6 +284,13 @@ fn handle_request(request: tiny_http::Request, state: &HttpState) {
         // 按 process_name 聚合 top 50(按总字节降序),避免前端反复 /query 大结果。
         ("/processes", tiny_http::Method::Get) => {
             handle_processes(request, state);
+        }
+
+        // rustnetec: W3.4 — GET /uplot.js — uPlot 图表库静态资产。
+        // 浏览器加载 <script src="uplot.js"> 时携带会话 cookie,走同一鉴权;
+        // 与其它端点一致置于鉴权之后,保持"所有数据端点均需鉴权"的边界。
+        ("/uplot.js", tiny_http::Method::Get) => {
+            let _ = respond_text(request, 200, "application/javascript", UPLOT_JS);
         }
 
         _ => {
@@ -915,6 +925,11 @@ fn respond_json(request: tiny_http::Request, status: u16, value: &serde_json::Va
 // include_str! 在编译期把 webui/index.html 嵌入二进制,与原 INDEX_HTML 同法,
 // 但现在是完整的标签栏 + 仪表盘 + /live 1s 轮询页面。
 const INDEX_HTML: &str = include_str!("../../webui/index.html");
+
+// rustnetec: W3.4 — uPlot 图表库静态资产(uPlot.iife.min.js v1.6.31, MIT)。
+// 与 INDEX_HTML 同法用 include_str! 内嵌,离线可用;WebUI 以相对路径
+// `<script src="uplot.js">` 引用,daemon 与 rustnet-server 双端服务同源文件。
+const UPLOT_JS: &str = include_str!("../../webui/uPlot.iife.min.js");
 
 /// rustnetec: Login landing page shown when no session is active (T3.3, R6).
 ///

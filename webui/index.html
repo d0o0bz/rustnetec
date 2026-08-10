@@ -111,25 +111,21 @@
     margin-top: 2px;
   }
 
-  /* 速率图占位(W3 Canvas 实现) */
-  #rate-chart-placeholder {
+  /* rustnetec: W3.4 — 仪表盘速率图容器(uPlot sparkline) */
+  #rate-chart {
     background: var(--panel);
     border: 1px solid var(--border);
     border-radius: 6px;
-    padding: 24px;
-    text-align: center;
-    color: var(--muted);
+    padding: 0;
     margin-bottom: 16px;
   }
 
-  /* 协议分布占位(W3 横向条形) */
-  #protocol-dist-placeholder {
+  /* rustnetec: W3.4 — 仪表盘协议分布容器(uPlot bars) */
+  #protocol-dist {
     background: var(--panel);
     border: 1px solid var(--border);
     border-radius: 6px;
-    padding: 24px;
-    text-align: center;
-    color: var(--muted);
+    padding: 0;
   }
 
   /* 帮助页 */
@@ -273,28 +269,15 @@
     padding: 12px;
     overflow: auto;
   }
+  /* rustnetec: W3.4 — uPlot 容器(库生成的 canvas 撑满;高度自适应,
+     因为 uPlot 图例渲染在图表下方,固定 height 会把图例裁掉) */
   #graph-canvas {
-    display: block;
     width: 100%;
-    height: 300px;
-    max-width: 100%;
+    height: auto;
   }
-  #graph-legend {
-    display: flex;
-    gap: 16px;
-    margin-top: 8px;
-    font-size: 12px;
-    color: var(--muted);
-  }
-  .legend-item { display: inline-flex; align-items: center; gap: 6px; }
-  .legend-dot {
-    display: inline-block;
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-  }
-  .legend-dot.in { background: #58a6ff; }
-  .legend-dot.out { background: #3fb950; }
+
+  /* rustnetec: W3.4 — uPlot 基础样式(官方 uPlot.min.css 内联,零构建) */
+  .uplot, .uplot *, .uplot *::before, .uplot *::after {box-sizing: border-box;}.uplot {font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";line-height: 1.5;width: min-content;}.u-title {text-align: center;font-size: 18px;font-weight: bold;}.u-wrap {position: relative;user-select: none;}.u-over, .u-under {position: absolute;}.u-under {overflow: hidden;}.uplot canvas {display: block;position: relative;width: 100%;height: 100%;}.u-axis {position: absolute;}.u-legend {font-size: 14px;margin: auto;text-align: center;}.u-inline {display: block;}.u-inline * {display: inline-block;}.u-inline tr {margin-right: 16px;}.u-legend th {font-weight: 600;}.u-legend th > * {vertical-align: middle;display: inline-block;}.u-legend .u-marker {width: 1em;height: 1em;margin-right: 4px;background-clip: padding-box !important;}.u-inline.u-live th::after {content: ":";vertical-align: middle;}.u-inline:not(.u-live) .u-value {display: none;}.u-series > * {padding: 4px;}.u-series th {cursor: pointer;}.u-legend .u-off > * {opacity: 0.3;}.u-select {background: rgba(0,0,0,0.07);position: absolute;pointer-events: none;}.u-cursor-x, .u-cursor-y {position: absolute;left: 0;top: 0;pointer-events: none;will-change: transform;}.u-hz .u-cursor-x, .u-vt .u-cursor-y {height: 100%;border-right: 1px dashed #607D8B;}.u-hz .u-cursor-y, .u-vt .u-cursor-x {width: 100%;border-bottom: 1px dashed #607D8B;}.u-cursor-pt {position: absolute;top: 0;left: 0;border-radius: 50%;border: 0 solid;pointer-events: none;will-change: transform;background-clip: padding-box !important;}.u-axis.u-off, .u-select.u-off, .u-cursor-x.u-off, .u-cursor-y.u-off, .u-cursor-pt.u-off {display: none;}
 
   /* rustnetec: W3.4 进程活动表样式 */
   #activity-toolbar {
@@ -439,8 +422,8 @@
         <div class="metric-sub">daemon 启动至今</div>
       </div>
     </div>
-    <div id="rate-chart-placeholder">流量曲线(W3 阶段 Canvas 实现)</div>
-    <div id="protocol-dist-placeholder">协议分布(W3 阶段横向条形)</div>
+    <div id="rate-chart"></div>
+    <div id="protocol-dist"></div>
   </section>
 
   <section id="details-view" class="view">
@@ -511,11 +494,7 @@
       <span id="graph-info" class="muted"></span>
     </div>
     <div id="graph-canvas-wrap">
-      <canvas id="graph-canvas" width="800" height="300"></canvas>
-    </div>
-    <div id="graph-legend">
-      <span class="legend-item"><span class="legend-dot in"></span>入站(↓)</span>
-      <span class="legend-item"><span class="legend-dot out"></span>出站(↑)</span>
+      <div id="graph-canvas"></div>
     </div>
   </section>
 
@@ -589,6 +568,7 @@
   </section>
 </div>
 
+<script src="uplot.js"></script>
 <script>
 // rustnetec: W1 零构建前端 JS — 原生 ES2020,无框架无转译。
 // 设计原则:所有动态文本经 textContent 渲染,禁止 innerHTML 拼接外部数据(XSS 防护)。
@@ -644,33 +624,52 @@
   // rustnetec: W2.2 — 切到"连接表"标签时按需触发首次 fetchDetails。
   var detailsLoaded = false;
   var tabs = document.querySelectorAll("#tabs button");
+  // rustnetec: W6 — 抽取视图切换为可复用函数,供点击与 hash 路由共用。
+  function switchView(viewId) {
+    // 目标 tab 被隐藏(如 server 模式隐藏设置/流量图)时回退默认视图
+    var btn = document.querySelector('#tabs button[data-view="' + viewId + '"]');
+    if (!btn || btn.style.display === "none") {
+      viewId = IS_SERVER_MODE ? "details" : "overview";
+      btn = document.querySelector('#tabs button[data-view="' + viewId + '"]');
+    }
+    tabs.forEach(function (b) { b.classList.remove("active"); });
+    btn.classList.add("active");
+    document.querySelectorAll(".view").forEach(function (v) {
+      v.classList.toggle("active", v.id === viewId + "-view");
+    });
+    // 按需加载:首次切到连接表才启动实时轮询
+    if (viewId === "details" && !detailsLoaded) {
+      detailsLoaded = true;
+      startDetailsRealtime();
+    }
+    // 按需加载:首次切到流量图才初始化 uPlot 实例
+    if (viewId === "graph") {
+      initGraphView();
+    }
+    // 按需加载:切回仪表盘时初始化 sparkline + 协议分布(首次)并续起 /stats 轮询
+    if (viewId === "overview") {
+      ensureOverviewCharts();
+    }
+    // 按需加载:首次切到进程活动才启动 8s 轮询
+    if (viewId === "activity") {
+      initActivityView();
+    }
+    // 按需加载:首次切到设置才加载配置 + 绑定按钮
+    if (viewId === "settings") {
+      initSettingsView();
+    }
+  }
   tabs.forEach(function (btn) {
     btn.addEventListener("click", function () {
-      tabs.forEach(function (b) { b.classList.remove("active"); });
-      btn.classList.add("active");
-      var viewId = btn.getAttribute("data-view");
-      document.querySelectorAll(".view").forEach(function (v) {
-        v.classList.toggle("active", v.id === viewId + "-view");
-      });
-      // 按需加载:首次切到连接表才启动实时轮询
-      if (viewId === "details" && !detailsLoaded) {
-        detailsLoaded = true;
-        startDetailsRealtime();
-      }
-      // 按需加载:首次切到流量图才初始化 Canvas 重绘
-      if (viewId === "graph") {
-        initGraphView();
-      }
-      // 按需加载:首次切到进程活动才启动 8s 轮询
-      if (viewId === "activity") {
-        initActivityView();
-      }
-      // 按需加载:首次切到设置才加载配置 + 绑定按钮
-      if (viewId === "settings") {
-        initSettingsView();
-      }
+      switchView(btn.getAttribute("data-view"));
     });
   });
+  // rustnetec: W6 — hash 路由:托盘"设置"打开 /?code=<guid>#settings 直达设置页。
+  function applyHashView() {
+    var h = (location.hash || "").replace(/^#/, "");
+    if (h) switchView(h);
+  }
+  window.addEventListener("hashchange", applyHashView);
 
   // ---- 工具函数 ----
   // 格式化字节速率为人类可读单位(KB/s、MB/s)
@@ -1021,18 +1020,24 @@
   // 初始化连接表视图(标签切换时按需加载,这里先绑定控件)
   initDetailsView();
 
-  // rustnetec: W3.1/W3.2 流量图 — Canvas 双折线 in/out,前端累积 /live 速率。
-  // 设计文档 §3.4:双折线(时间轴,最近 5 分钟,可切换 1m/5m/15m/1h/8h/1d)。
-  // 实现:纯 Canvas 2D,无第三方图表库(零构建约束)。
+  // rustnetec: W3.4 — 流量图改用 uPlot(uPlot.iife.min.js v1.6.31, MIT,内嵌)。
+  // 设计文档 §3.4:双折线 in/out,时间轴窗口 1m/5m/15m/1h/8h/1d。
+  // 实现:uPlot 时间序列图,自带光标联动/图例/自动视口降采样,8h/1d 的 8.6 万点无压力。
   // 数据:前端累积 /live 采样(实时),每秒一次,按时间轴窗口裁剪。
   var graphState = {
-    canvas: document.getElementById("graph-canvas"),
-    ctx: null,
     rangeSecs: 300, // 默认 5m
     samples: [], // {t: Date.now(), in: bps, out: bps}
+    plot: null,
     rafId: null,
   };
-  graphState.ctx = graphState.canvas.getContext("2d");
+
+  // uPlot 主题色(对齐现有暗色面板)
+  var GRAPH_COLORS = {
+    grid: "#30363d",
+    axis: "#8b949e",
+    in: "#58a6ff",
+    out: "#3fb950",
+  };
 
   // 接收 /live 速率采样(由 pollLive 调用,避免独立轮询)
   function pushGraphSample(rateIn, rateOut) {
@@ -1048,107 +1053,44 @@
     }
   }
 
-  // 绘制双折线
-  function drawGraph() {
-    var ctx = graphState.ctx;
-    var canvas = graphState.canvas;
-    var w = canvas.width;
-    var h = canvas.height;
-    var padL = 48, padR = 8, padT = 8, padB = 24;
-    var plotW = w - padL - padR;
-    var plotH = h - padT - padB;
-
-    ctx.clearRect(0, 0, w, h);
-    ctx.fillStyle = "#0e1116";
-    ctx.fillRect(0, 0, w, h);
-
+  // 构建 uPlot 数据:[ts(秒), in, out],按 rangeSecs 窗口裁剪
+  function graphData() {
     var now = Date.now();
     var startT = now - graphState.rangeSecs * 1000;
-    var inSamples = [];
-    var outSamples = [];
-    var maxBps = 0;
-    graphState.samples.forEach(function (s) {
-      if (s.t >= startT && s.t <= now) {
-        inSamples.push(s);
-        outSamples.push(s);
-        if (s.in > maxBps) maxBps = s.in;
-        if (s.out > maxBps) maxBps = s.out;
-      }
-    });
-    maxBps = Math.max(maxBps, 1024); // 下限 1 KB/s 防压扁
-
-    // 网格 + Y 轴刻度(4 等分)
-    ctx.strokeStyle = "#30363d";
-    ctx.fillStyle = "#8b949e";
-    ctx.font = "11px sans-serif";
-    ctx.lineWidth = 1;
-    for (var i = 0; i <= 4; i++) {
-      var y = padT + (plotH * i) / 4;
-      ctx.beginPath();
-      ctx.moveTo(padL, y);
-      ctx.lineTo(w - padR, y);
-      ctx.stroke();
-      var labelBps = maxBps * (1 - i / 4);
-      ctx.fillText(formatRate(labelBps), 4, y + 4);
+    var ts = [], inArr = [], outArr = [], maxBps = 0;
+    for (var i = 0; i < graphState.samples.length; i++) {
+      var s = graphState.samples[i];
+      if (s.t < startT || s.t > now) continue;
+      ts.push(s.t / 1000); // uPlot 时间刻度用秒
+      inArr.push(s.in);
+      outArr.push(s.out);
+      if (s.in > maxBps) maxBps = s.in;
+      if (s.out > maxBps) maxBps = s.out;
     }
+    return { ts: ts, inArr: inArr, outArr: outArr, n: ts.length, maxBps: maxBps };
+  }
 
-    // X 轴刻度(时间标签,5 等分)
-    ctx.fillStyle = "#8b949e";
-    for (var j = 0; j <= 5; j++) {
-      var x = padL + (plotW * j) / 5;
-      var secsAgo = graphState.rangeSecs * (1 - j / 5);
-      ctx.fillText(formatXLabel(secsAgo), x - 12, h - 6);
-    }
-
-    if (inSamples.length < 2) {
-      ctx.fillStyle = "#8b949e";
-      ctx.fillText("采样中…(需 /live 轮询累积)", padL + 8, padT + 16);
-      return;
-    }
-
-    // 入站折线(蓝)
-    drawLineByField(ctx, inSamples, "in", startT, now, padL, padT, plotW, plotH, maxBps, "#58a6ff");
-    // 出站折线(绿)
-    drawLineByField(ctx, outSamples, "out", startT, now, padL, padT, plotW, plotH, maxBps, "#3fb950");
-
+  // 绘制双折线(增量 setData)
+  function drawGraph() {
+    if (!graphState.plot) return;
+    var d = graphData();
+    graphState.plot.setData([d.ts, d.inArr, d.outArr]);
     var info = document.getElementById("graph-info");
-    info.textContent = inSamples.length + " 个采样点,峰值 " + formatRate(maxBps);
+    info.textContent = d.n + " 个采样点,峰值 " + formatRate(d.maxBps);
   }
 
-  function drawLine(ctx, samples, startT, now, padL, padT, plotW, plotH, maxBps, color) {
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    samples.forEach(function (s, i) {
-      var x = padL + (plotW * (s.t - startT)) / (now - startT);
-      var y = padT + plotH * (1 - s.in / maxBps); // 注意:in/out 共用 maxBps
-      // 用 in 字段绘制(调用方传 inSamples 或 outSamples,但两者是同一引用;
-      // 这里实际应区分 in/out — 修正:drawLine 按 field 参数取值)
-      if (i === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
+  // 时间轴刻度:HH:MM:SS
+  function graphTimeValues(u, ticks) {
+    return ticks.map(function (t) {
+      var dt = new Date(t * 1000);
+      var p = function (n) { return (n < 10 ? "0" : "") + n; };
+      return p(dt.getHours()) + ":" + p(dt.getMinutes()) + ":" + p(dt.getSeconds());
     });
-    ctx.stroke();
   }
 
-  // 修正版:按 field 区分 in/out 绘制
-  function drawLineByField(ctx, samples, field, startT, now, padL, padT, plotW, plotH, maxBps, color) {
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    samples.forEach(function (s, i) {
-      var x = padL + (plotW * (s.t - startT)) / (now - startT);
-      var y = padT + plotH * (1 - s[field] / maxBps);
-      if (i === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    });
-    ctx.stroke();
-  }
-
-  // X 轴标签(秒 ago → 可读)
-  function formatXLabel(secsAgo) {
-    if (secsAgo < 60) return "-" + Math.round(secsAgo) + "s";
-    if (secsAgo < 3600) return "-" + Math.round(secsAgo / 60) + "m";
-    return "-" + Math.round(secsAgo / 3600) + "h";
+  // 速率轴刻度(复用 formatRate)
+  function graphRateValues(u, ticks) {
+    return ticks.map(function (v) { return formatRate(v); });
   }
 
   // rustnetec: W3.2 时间轴切换
@@ -1167,17 +1109,159 @@
     });
   }
 
-  // 初始化流量图视图:标签切换时按需启动重绘
+  // 初始化流量图视图:首次切到标签时创建 uPlot 实例
   var graphInitialized = false;
   function initGraphView() {
     if (graphInitialized) return;
     graphInitialized = true;
-    // 首次绘制(可能尚无采样)
+    var el = document.getElementById("graph-canvas");
+    var opts = {
+      width: el.clientWidth || 800,
+      height: 360,
+      legend: { show: true, live: true },
+      cursor: {
+        x: true,
+        y: true,
+        stroke: GRAPH_COLORS.axis,
+        points: { size: 6, stroke: "#0e1116", fill: GRAPH_COLORS.axis },
+      },
+      series: [
+        {},
+        { label: "入站 ↓", stroke: GRAPH_COLORS.in, fill: "rgba(88,166,255,0.08)", width: 1.5, points: { show: false } },
+        { label: "出站 ↑", stroke: GRAPH_COLORS.out, fill: "rgba(63,185,80,0.08)", width: 1.5, points: { show: false } },
+      ],
+      axes: [
+        { stroke: GRAPH_COLORS.axis, grid: { stroke: GRAPH_COLORS.grid }, ticks: { stroke: GRAPH_COLORS.axis }, size: 48, values: graphTimeValues },
+        { stroke: GRAPH_COLORS.axis, grid: { stroke: GRAPH_COLORS.grid }, ticks: { stroke: GRAPH_COLORS.axis }, size: 64, values: graphRateValues },
+      ],
+      scales: { x: { time: true }, y: { auto: true } },
+    };
+    graphState.plot = new uPlot(opts, [[], [], []], el);
     drawGraph();
+    // 窗口尺寸变化时自适应
+    window.addEventListener("resize", function () {
+      if (!graphState.plot) return;
+      var el2 = document.getElementById("graph-canvas");
+      graphState.plot.setSize({ width: el2.clientWidth || 800, height: 360 });
+    });
     // 1s 重绘节奏(由 pollLive 的采样驱动,这里设兜底定时)
     setInterval(function () {
       if (isPageVisible) scheduleGraphRedraw();
     }, 1000);
+  }
+
+  // rustnetec: W3.4 — 仪表盘 sparkline(速率图)与协议分布,均用 uPlot。
+  // 设计文档 §3.1:速率图 Sparkline(最近 60 个采样点 → 60s 窗口);
+  // 协议分布原设计为横向条形,1.6.31 的 uPlot.paths.bars 为竖向柱状,
+  // 用 category 轴(distr 指数轴 + values 映射协议名)实现,观感一致。
+  var dashSpark = null;
+  var protoPlot = null;
+  var protoLabels = [];
+  var statsTimer = null;
+  var dashResizeBound = false;
+
+  function initDashSpark() {
+    var el = document.getElementById("rate-chart");
+    if (!el || dashSpark || !el.clientWidth) return; // 视图未激活时跳过,等 switchView
+    var opts = {
+      width: el.clientWidth,
+      height: 90,
+      legend: { show: false },
+      cursor: { x: false, y: false },
+      series: [
+        {},
+        { label: "入站", stroke: GRAPH_COLORS.in, fill: "rgba(88,166,255,0.10)", width: 1.2, points: { show: false } },
+        { label: "出站", stroke: GRAPH_COLORS.out, fill: "rgba(63,185,80,0.10)", width: 1.2, points: { show: false } },
+      ],
+      axes: [
+        { show: false },
+        // rustnetec: 修复 — sparkline 显示速率轴(带单位 KB/s 等)。
+        // 轴宽 66px 需容纳 formatRate 最宽输出(如 "12345.67 MB/s" ≈ 11 字符),
+        // 之前 52px 偏小导致标签溢出到绘图区/画布外。
+        { stroke: GRAPH_COLORS.axis, grid: { show: false }, size: 66, font: "10px sans-serif",
+          values: function (u, ticks) { return ticks.map(function (v) { return formatRate(v); }); } },
+      ],
+      scales: { x: { time: true }, y: { auto: true } },
+    };
+    dashSpark = new uPlot(opts, [[], [], []], el);
+  }
+
+  function updateDashSpark() {
+    if (!dashSpark) return;
+    var now = Date.now();
+    var startT = now - 60000; // 60s 窗口
+    var ts = [], inArr = [], outArr = [];
+    for (var i = 0; i < graphState.samples.length; i++) {
+      var s = graphState.samples[i];
+      if (s.t < startT) continue;
+      ts.push(s.t / 1000);
+      inArr.push(s.in);
+      outArr.push(s.out);
+    }
+    dashSpark.setData([ts, inArr, outArr]);
+  }
+
+  function initProtoPlot() {
+    var el = document.getElementById("protocol-dist");
+    if (!el || protoPlot || !el.clientWidth) return;
+    var opts = {
+      width: el.clientWidth,
+      height: 180,
+      legend: { show: false },
+      cursor: { x: true, y: true },
+      series: [
+        {},
+        { label: "连接数", paths: uPlot.paths.bars({ size: 0.8 }), stroke: GRAPH_COLORS.in, fill: "rgba(88,166,255,0.75)", width: 1, points: { show: false } },
+      ],
+      axes: [
+        { stroke: GRAPH_COLORS.axis, grid: { show: false }, size: 64, font: "10px sans-serif", values: function (u, splits) { return splits.map(function (v) { return protoLabels[Math.round(v)] || ""; }); } },
+        { stroke: GRAPH_COLORS.axis, grid: { stroke: GRAPH_COLORS.grid }, size: 48, values: function (u, ticks) { return ticks.map(function (v) { return v >= 1000 ? (v / 1000).toFixed(1) + "k" : v; }); } },
+      ],
+      scales: {
+        x: { time: false, range: function (u, dataMin, dataMax) { return [dataMin - 0.5, dataMax + 0.5]; } },
+        y: { auto: true },
+      },
+    };
+    protoPlot = new uPlot(opts, [[], []], el);
+  }
+
+  function updateProtoDist(stats) {
+    if (!protoPlot || !stats) return;
+    var top = (stats.by_protocol || []).slice(0, 12);
+    if (top.length === 0) return;
+    protoLabels = top.map(function (r) { return String(r.protocol || "?"); });
+    var xs = [], ys = [];
+    for (var i = 0; i < top.length; i++) {
+      xs.push(i);
+      ys.push(Number(top[i].count) || 0);
+    }
+    protoPlot.setData([xs, ys]);
+  }
+
+  function pollStats() {
+    fetch("/stats", { credentials: "same-origin" })
+      .then(function (resp) { if (!resp.ok) throw new Error("HTTP " + resp.status); return resp.json(); })
+      .then(function (stats) { updateProtoDist(stats); })
+      .catch(function () { /* 静默:/stats 较重,失败不打扰 */ });
+  }
+
+  // 仪表盘首次可见时初始化图表 + 启动 /stats 5s 轮询(设计文档 §4.3)。
+  function ensureOverviewCharts() {
+    initDashSpark();
+    initProtoPlot();
+    if (statsTimer === null) {
+      pollStats();
+      statsTimer = setInterval(pollStats, 5000);
+    }
+    if (!dashResizeBound) {
+      dashResizeBound = true;
+      window.addEventListener("resize", function () {
+        var el = document.getElementById("rate-chart");
+        if (dashSpark && el) dashSpark.setSize({ width: el.clientWidth, height: 90 });
+        var el2 = document.getElementById("protocol-dist");
+        if (protoPlot && el2) protoPlot.setSize({ width: el2.clientWidth, height: 180 });
+      });
+    }
   }
 
   // rustnetec: W3.4 进程活动视图 — 渲染 /processes,按字节降序。
@@ -1484,6 +1568,8 @@
 
     // rustnetec: W3.1 — 喂采样给流量图,由 drawGraph 按 rangeSecs 窗口裁剪。
     pushGraphSample(snapshot.rate_in_bps, snapshot.rate_out_bps);
+    // 仪表盘 sparkline 实时刷新(60s 窗口)
+    if (dashSpark) updateDashSpark();
     // 若流量图已初始化(用户切过该标签),节流重绘
     if (graphInitialized) scheduleGraphRedraw();
   }
@@ -1531,9 +1617,17 @@
     }
   });
 
+  // 页面加载时应用 hash 路由(#settings 直达设置页等)。
+  // 必须放在所有 `var` 状态声明之后:applyHashView → switchView → initSettingsView
+  // 会读 settingsState/detailsState 等,若在其赋值前调用会抛 TypeError,导致
+  // 后续 startLivePolling() 不执行(右上角轮询指示卡在"初始化…")。
+  applyHashView();
+
   // 启动轮询
   // rustnetec: W5.2 — server 模式无 /live,跳过 1s 轮询(顶栏已隐藏,模式提示已就位)。
   if (!IS_SERVER_MODE) {
+    // rustnetec: W3.4 — 初始化仪表盘图表(/stats 5s 轮询),再启动 /live 1s 轮询。
+    ensureOverviewCharts();
     startLivePolling();
   }
 })();
