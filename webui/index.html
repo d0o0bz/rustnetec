@@ -157,7 +157,7 @@
     margin-bottom: 12px;
     flex-wrap: wrap;
   }
-  #details-filter {
+  #details-filter, #activity-filter {
     flex: 1;
     min-width: 280px;
     background: var(--panel);
@@ -167,7 +167,7 @@
     color: var(--text);
     font-size: 13px;
   }
-  #details-filter:focus { outline: none; border-color: var(--accent); }
+  #details-filter:focus, #activity-filter:focus { outline: none; border-color: var(--accent); }
   #details-toolbar button, #details-pagination button, #details-drawer-close {
     background: var(--panel);
     border: 1px solid var(--border);
@@ -321,7 +321,12 @@
     position: sticky;
     top: 0;
     z-index: 1;
+    cursor: pointer;
+    user-select: none;
   }
+  #activity-table th:hover { color: var(--accent); }
+  #activity-table th.sorted-asc::after { content: " ▲"; color: var(--accent); }
+  #activity-table th.sorted-desc::after { content: " ▼"; color: var(--accent); }
   #activity-table tbody tr:hover { background: rgba(88,166,255,0.06); }
 
   /* rustnetec: W4 设置页样式 */
@@ -460,20 +465,13 @@
 
   <section id="activity-view" class="view">
     <div id="activity-toolbar">
+      <input type="text" id="activity-filter" placeholder="过滤:process:curl /regex/ …" autocomplete="off">
       <button id="activity-refresh">刷新</button>
       <span id="activity-count" class="muted"></span>
     </div>
     <div id="activity-table-wrap">
       <table id="activity-table">
-        <thead>
-          <tr>
-            <th>进程名</th>
-            <th>连接数</th>
-            <th>发送字节</th>
-            <th>接收字节</th>
-            <th>总字节</th>
-          </tr>
-        </thead>
+        <thead id="activity-thead"></thead>
         <tbody id="activity-tbody"></tbody>
       </table>
       <div id="activity-empty" class="muted" style="display:none;">无进程数据(需进程归因启用且有捕获数据)</div>
@@ -1264,14 +1262,26 @@
     }
   }
 
-  // rustnetec: W3.4 进程活动视图 — 渲染 /processes,按字节降序。
-  // 设计文档 §3.3:表格列 = 进程名/PID/方向/连接数/字节 in/out;按字节降序。
-  // /processes 已按 bytes_total DESC 排序返回,前端直接渲染。
+  // rustnetec: W3.4 进程活动视图 — 渲染 /processes,前端过滤 + 列排序。
+  // 设计文档 §3.3:表格列 = 进程名/连接数/字节 sent/recv/total。
+  // /processes 已按 bytes_total DESC 聚合 top 50 返回;前端在此基础上
+  // 做条件过滤(process: 前缀 / 裸文本 / /regex/)与点击表头排序。
   // 历史聚合每 5-10s 轮询(查询较重),这里用 8s 折中。
+  var ACTIVITY_COLUMNS = [
+    { key: "process", label: "进程名", sortable: true },
+    { key: "connections", label: "连接数", sortable: true },
+    { key: "bytes_sent", label: "发送字节", sortable: true, format: formatBytes },
+    { key: "bytes_received", label: "接收字节", sortable: true, format: formatBytes },
+    { key: "bytes_total", label: "总字节", sortable: true, format: formatBytes },
+  ];
+
   var activityState = {
     initialized: false,
     timer: null,
     rows: [],
+    filter: "",
+    sortKey: "bytes_total",
+    sortDir: "DESC",
   };
 
   function fetchProcesses() {
@@ -1298,34 +1308,109 @@
       });
   }
 
+  // 渲染表头(带列排序指示),仿连接表 renderDetailsHead
+  function renderActivityHead() {
+    var thead = document.getElementById("activity-thead");
+    // 安全:表头是静态的 ACTIVITY_COLUMNS,无外部数据
+    thead.textContent = "";
+    var tr = document.createElement("tr");
+    ACTIVITY_COLUMNS.forEach(function (col) {
+      var th = document.createElement("th");
+      th.textContent = col.label;
+      th.setAttribute("data-key", col.key);
+      if (col.sortable) {
+        if (activityState.sortKey === col.key) {
+          th.className = activityState.sortDir === "ASC" ? "sorted-asc" : "sorted-desc";
+        }
+        th.addEventListener("click", function () {
+          // 切换排序:同列点击翻转方向,异列重置为 DESC(与连接表一致)
+          if (activityState.sortKey === col.key) {
+            activityState.sortDir = activityState.sortDir === "ASC" ? "DESC" : "ASC";
+          } else {
+            activityState.sortKey = col.key;
+            activityState.sortDir = "DESC";
+          }
+          renderActivity();
+        });
+      }
+      tr.appendChild(th);
+    });
+    thead.appendChild(tr);
+  }
+
+  // 前端条件过滤:支持 process:<text>(进程名包含)、裸文本(进程名包含)、
+  // /regex/(大小写不敏感),仿连接表过滤语法;数字字段暂不参与过滤。
+  function activityMatches(row, f) {
+    if (!f) return true;
+    var name = row.process != null ? String(row.process) : "";
+    var m = /^process:(.*)$/i.exec(f);
+    if (m) {
+      return name.toLowerCase().indexOf(m[1].trim().toLowerCase()) >= 0;
+    }
+    if (f.length > 1 && f.charAt(0) === "/" && f.charAt(f.length - 1) === "/") {
+      try {
+        return new RegExp(f.slice(1, -1), "i").test(name);
+      } catch (e) {
+        return false; // 非法正则视为不匹配
+      }
+    }
+    return name.toLowerCase().indexOf(f.toLowerCase()) >= 0;
+  }
+
+  // 按当前 sortKey/sortDir 排序:数字列数值比较,进程名按字符串比较
+  function sortActivityRows(rows) {
+    var key = activityState.sortKey;
+    var dir = activityState.sortDir === "ASC" ? 1 : -1;
+    rows.sort(function (a, b) {
+      if (key === "process") {
+        var na = a.process != null ? String(a.process) : "";
+        var nb = b.process != null ? String(b.process) : "";
+        return na < nb ? -dir : na > nb ? dir : 0;
+      }
+      var va = Number(a[key]) || 0;
+      var vb = Number(b[key]) || 0;
+      return (va - vb) * dir;
+    });
+  }
+
   function renderActivity() {
     var tbody = document.getElementById("activity-tbody");
     var empty = document.getElementById("activity-empty");
     var countEl = document.getElementById("activity-count");
 
     tbody.textContent = ""; // 清空(安全)
-    var rows = activityState.rows;
+    renderActivityHead();
+
+    var all = activityState.rows;
+    var f = activityState.filter.trim();
+    // 先过滤后排序:排序作用于过滤后的集合
+    var rows = all.filter(function (p) { return activityMatches(p, f); });
+    sortActivityRows(rows);
+
     if (rows.length === 0) {
       empty.style.display = "block";
-      countEl.textContent = "0 个进程";
+      countEl.textContent = f && all.length > 0
+        ? "0 / " + all.length + " 个进程(过滤无匹配)"
+        : all.length + " 个进程";
       return;
     }
     empty.style.display = "none";
-    countEl.textContent = rows.length + " 个进程";
+    countEl.textContent = f
+      ? rows.length + " / " + all.length + " 个进程"
+      : rows.length + " 个进程";
 
-    // /processes 已按 bytes_total DESC 排序,前端按原序渲染
     rows.forEach(function (p) {
       var tr = document.createElement("tr");
-      // 进程名
-      appendTd(tr, p.process != null ? String(p.process) : "—");
-      // 连接数
-      appendTd(tr, p.connections != null ? String(p.connections) : "—");
-      // 发送字节
-      appendTd(tr, formatBytes(p.bytes_sent));
-      // 接收字节
-      appendTd(tr, formatBytes(p.bytes_received));
-      // 总字节
-      appendTd(tr, formatBytes(p.bytes_total));
+      ACTIVITY_COLUMNS.forEach(function (col) {
+        var raw = p[col.key];
+        var formatted;
+        if (typeof col.format === "function") {
+          formatted = col.format(raw, p);
+        } else {
+          formatted = raw != null ? String(raw) : "—";
+        }
+        appendTd(tr, formatted != null ? formatted : "—");
+      });
       tbody.appendChild(tr);
     });
   }
@@ -1350,6 +1435,15 @@
 
   // 绑定刷新按钮
   document.getElementById("activity-refresh").addEventListener("click", fetchProcesses);
+
+  // rustnetec: W3.4 — 过滤框 300ms 防抖,仅重渲染不重新 fetch(数据已在本地)
+  var activityFilterEl = document.getElementById("activity-filter");
+  var activityFilterDebounce = null;
+  activityFilterEl.addEventListener("input", function () {
+    activityState.filter = activityFilterEl.value;
+    if (activityFilterDebounce) clearTimeout(activityFilterDebounce);
+    activityFilterDebounce = setTimeout(renderActivity, 300);
+  });
 
   // rustnetec: W4.1/W4.2/W4.3 设置页 — 复用 GET /config 填表单 + PUT /config 保存 + 重启捕获。
   // 设计文档 §3.6:表单字段 = PersistentConfig 字段;依赖 G2(W0.3)双轨制接线。
