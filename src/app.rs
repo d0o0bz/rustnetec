@@ -2709,6 +2709,14 @@ impl App {
         self.get_filtered_connections("")
     }
 
+    /// Number of historic (recently-closed) connections retained by the
+    /// tracker. Independent of the `show_historic` snapshot toggle — the
+    /// tracker always keeps a bounded historic table, this exposes its size
+    /// for e.g. the WebUI dashboard's history card.
+    pub fn get_historic_connection_count(&self) -> usize {
+        self.tracker.historic_len()
+    }
+
     /// Generation of the current snapshot; bumped on every snapshot rebuild.
     /// The UI loop compares this against the last generation it consumed to
     /// skip re-cloning and re-sorting unchanged data.

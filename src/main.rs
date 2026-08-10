@@ -1486,7 +1486,11 @@ fn run_tray_helper(matches: &clap::ArgMatches) -> Result<()> {
                         Ok(Cmd::OpenSettings) => {
                             // rustnetec: T3.6.9 — handshake first (session cookie),
                             // then the /config link in the index page is reachable.
-                            ui::open_browser(&bootstrap_guid_url(&daemon_base_cmd));
+                            // rustnetec: W6 — 追加 #settings 直达设置页(WebUI hash 路由)。
+                            ui::open_browser(&format!(
+                                "{}#settings",
+                                bootstrap_guid_url(&daemon_base_cmd)
+                            ));
                         }
                         Ok(Cmd::None) | Err(_) => {}
                     }
@@ -1626,8 +1630,11 @@ fn run_tray_helper(matches: &clap::ArgMatches) -> Result<()> {
                     }
                 }
                 Cmd::OpenSettings => {
-                    // rustnetec: T3.6.9 — handshake first, /config link reachable
-                    ui::open_browser(&bootstrap_guid_url(&daemon_base));
+                    // rustnetec: T3.6.9 — handshake first; W6 — #settings 直达设置页
+                    ui::open_browser(&format!(
+                        "{}#settings",
+                        bootstrap_guid_url(&daemon_base)
+                    ));
                 }
                 Cmd::None => {}
             }
@@ -1939,11 +1946,18 @@ fn run_daemon_loop(
                             }
                         }
                         Cmd::OpenSettings => {
-                            // rustnetec: launcher T3.3 — /config page; session cookie is already
-                            // established by the OpenLocalPanel handshake so the browser can reach it.
-                            // rustnetec: T3.5 — honour --http-port override via http_state.http_port.
+                            // rustnetec: W6 — 与 helper 分支一致:先 bootstrap 握手
+                            // 拿 session cookie,再带 #settings 直达设置页。裸打开
+                            // /config 返回 JSON 而非页面,且未握手时 401。
                             let port = http_state.as_ref().map(|s| s.http_port).unwrap_or(19811);
-                            ui::open_browser(&format!("http://127.0.0.1:{port}/config"));
+                            let url = match &http_state {
+                                Some(state) => format!(
+                                    "http://127.0.0.1:{port}/?code={}#settings",
+                                    state.issue_bootstrap_guid()
+                                ),
+                                None => format!("http://127.0.0.1:{port}/#settings"),
+                            };
+                            ui::open_browser(&url);
                         }
                         Cmd::None => {}
                     }
@@ -2108,6 +2122,14 @@ where
     let mut last_draw = std::time::Instant::now();
     let mut needs_redraw = true; // first frame
     let mut ui_state = ui::UIState::default();
+    // rustnetec: 修复 show_historic 复选框 — TUI 启动时读持久化配置
+    // (PersistentConfig.show_historic,设置页「显示 → 历史」)作为 t 键
+    // 切换的默认状态。之前该值写入 RuntimeConfig 后无人消费,复选框形同虚设。
+    let show_historic = rustnet_monitor::config::PersistentConfig::load()
+        .map(|pc| pc.show_historic)
+        .unwrap_or(false);
+    ui_state.show_historic = show_historic;
+    app.set_show_historic(show_historic);
     let (has_country_db, _, _) = app.get_geoip_status();
     ui_state.has_geoip = has_country_db;
     let mut click_regions = ui::ClickableRegions::default();
