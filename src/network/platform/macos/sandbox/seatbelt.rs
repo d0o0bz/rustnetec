@@ -441,6 +441,7 @@ mod tests {
             pcap_export_path: None,
             pcapng_export_path: None,
             geoip_paths: vec![],
+            data_dir: None,
         };
         let params = build_parameters(&config).unwrap();
         // Values at odd indices should all be /dev/null
@@ -466,6 +467,7 @@ mod tests {
             pcap_export_path: Some("/tmp/rustnet/capture.pcap".to_string()),
             pcapng_export_path: Some("/tmp/rustnet/capture.pcapng".to_string()),
             geoip_paths: vec![],
+            data_dir: None,
         };
         let params = build_parameters(&config).unwrap();
         // Keys
@@ -499,6 +501,7 @@ mod tests {
                 "/usr/share/GeoIP".to_string(),
                 "/opt/homebrew/share/GeoIP".to_string(),
             ],
+            data_dir: None,
         };
         let params = build_parameters(&config).unwrap();
         assert_eq!(params[10].to_str().unwrap(), PARAM_GEOIP_PATH_1);
