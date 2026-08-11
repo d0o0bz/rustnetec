@@ -270,6 +270,11 @@ fn handle_request(request: tiny_http::Request, state: &HttpState) {
             handle_stats_duration(request, state);
         }
 
+        // rustnetec: 外网可达率探测时间序列（reachability_probes 表）。
+        ("/stats/reachability", tiny_http::Method::Get) => {
+            handle_stats_reachability(request, state);
+        }
+
         // GET /config — read current config
         ("/config", tiny_http::Method::Get) => {
             handle_get_config(request, state);
@@ -804,15 +809,11 @@ fn handle_stats_range(request: tiny_http::Request, state: &HttpState) {
     let params = parse_query_params(url);
 
     // 解析时间窗（默认最近 1 小时）。
-    let end = params.get("end").cloned().unwrap_or_else(|| {
-        chrono::Local::now().to_rfc3339()
-    });
-    let start = params.get("start").cloned().unwrap_or_else(|| {
-        chrono::Local::now()
-            .checked_sub_signed(chrono::Duration::hours(1))
-            .unwrap_or_else(chrono::Local::now)
-            .to_rfc3339()
-    });
+    let end = parse_time_param(params.get("end").map(String::as_str), chrono::Duration::zero());
+    let start = parse_time_param(
+        params.get("start").map(String::as_str),
+        chrono::Duration::hours(1),
+    );
 
     // 解析 bucket 宽度。
     let bucket = params.get("bucket").map(String::as_str).unwrap_or("1min");
@@ -947,20 +948,22 @@ fn handle_stats_range(request: tiny_http::Request, state: &HttpState) {
     };
 
     let truncate_ts = |dt: chrono::DateTime<chrono::FixedOffset>| -> String {
+        // rustnetec: 桶 key 输出 UTC 墙钟时间（无偏移后缀），前端按 Z 解析。
+        // 直接 format 会保留本地时区墙钟但丢失偏移，导致 UTC+8 机器上时间轴整体偏移 8 小时。
+        let utc = dt.with_timezone(&chrono::Utc);
         match bucket {
             "5s" => {
-                let secs = dt.timestamp();
+                let secs = utc.timestamp();
                 let truncated = secs - (secs % 5);
                 chrono::DateTime::from_timestamp(truncated, 0)
                     .unwrap()
-                    .with_timezone(&chrono::FixedOffset::east_opt(0).unwrap())
                     .format("%Y-%m-%dT%H:%M:%S")
                     .to_string()
             }
-            "1min" => dt.format("%Y-%m-%dT%H:%M").to_string(),
-            "1hour" => dt.format("%Y-%m-%dT%H").to_string(),
-            "1day" => dt.format("%Y-%m-%d").to_string(),
-            _ => dt.format("%Y-%m-%dT%H:%M").to_string(),
+            "1min" => utc.format("%Y-%m-%dT%H:%M").to_string(),
+            "1hour" => utc.format("%Y-%m-%dT%H").to_string(),
+            "1day" => utc.format("%Y-%m-%d").to_string(),
+            _ => utc.format("%Y-%m-%dT%H:%M").to_string(),
         }
     };
 
@@ -1037,15 +1040,11 @@ fn handle_stats_rtt(request: tiny_http::Request, state: &HttpState) {
     let url = request.url();
     let params = parse_query_params(url);
 
-    let end = params.get("end").cloned().unwrap_or_else(|| {
-        chrono::Local::now().to_rfc3339()
-    });
-    let start = params.get("start").cloned().unwrap_or_else(|| {
-        chrono::Local::now()
-            .checked_sub_signed(chrono::Duration::hours(1))
-            .unwrap_or_else(chrono::Local::now)
-            .to_rfc3339()
-    });
+    let end = parse_time_param(params.get("end").map(String::as_str), chrono::Duration::zero());
+    let start = parse_time_param(
+        params.get("start").map(String::as_str),
+        chrono::Duration::hours(1),
+    );
 
     let bucket = params.get("bucket").map(String::as_str).unwrap_or("1min");
     let scope = params.get("scope").map(String::as_str).unwrap_or("external");
@@ -1110,18 +1109,20 @@ fn handle_stats_rtt(request: tiny_http::Request, state: &HttpState) {
     };
 
     let truncate_ts = |dt: chrono::DateTime<chrono::FixedOffset>| -> String {
+        // rustnetec: 桶 key 输出 UTC 墙钟时间（无偏移后缀），前端按 Z 解析。
+        let utc = dt.with_timezone(&chrono::Utc);
         match bucket {
             "5s" => {
-                let secs = dt.timestamp();
+                let secs = utc.timestamp();
                 chrono::DateTime::from_timestamp(secs - (secs % 5), 0)
                     .unwrap()
                     .format("%Y-%m-%dT%H:%M:%S")
                     .to_string()
             }
-            "1min" => dt.format("%Y-%m-%dT%H:%M").to_string(),
-            "1hour" => dt.format("%Y-%m-%dT%H").to_string(),
-            "1day" => dt.format("%Y-%m-%d").to_string(),
-            _ => dt.format("%Y-%m-%dT%H:%M").to_string(),
+            "1min" => utc.format("%Y-%m-%dT%H:%M").to_string(),
+            "1hour" => utc.format("%Y-%m-%dT%H").to_string(),
+            "1day" => utc.format("%Y-%m-%d").to_string(),
+            _ => utc.format("%Y-%m-%dT%H:%M").to_string(),
         }
     };
 
@@ -1211,15 +1212,11 @@ fn handle_stats_availability(request: tiny_http::Request, state: &HttpState) {
     let url = request.url();
     let params = parse_query_params(url);
 
-    let end = params.get("end").cloned().unwrap_or_else(|| {
-        chrono::Local::now().to_rfc3339()
-    });
-    let start = params.get("start").cloned().unwrap_or_else(|| {
-        chrono::Local::now()
-            .checked_sub_signed(chrono::Duration::minutes(15))
-            .unwrap_or_else(chrono::Local::now)
-            .to_rfc3339()
-    });
+    let end = parse_time_param(params.get("end").map(String::as_str), chrono::Duration::zero());
+    let start = parse_time_param(
+        params.get("start").map(String::as_str),
+        chrono::Duration::minutes(15),
+    );
 
     let bucket = params.get("bucket").map(String::as_str).unwrap_or("1min");
     let scope = params.get("scope").map(String::as_str).unwrap_or("external");
@@ -1242,7 +1239,7 @@ fn handle_stats_availability(request: tiny_http::Request, state: &HttpState) {
     }
 
     let sql = format!(
-        "SELECT ts, dest_ip FROM connection_events WHERE {} ORDER BY ts ASC",
+        "SELECT ts, dest_ip, bytes_received, bytes_sent FROM connection_events WHERE {} ORDER BY ts ASC",
         where_clauses.join(" AND ")
     );
 
@@ -1264,7 +1261,12 @@ fn handle_stats_availability(request: tiny_http::Request, state: &HttpState) {
 
     let bind_refs: Vec<&dyn rusqlite::ToSql> = bind_values.iter().map(|b| b.as_ref()).collect();
     let rows = stmt.query_map(bind_refs.as_slice(), |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, Option<i64>>(2)?,
+            row.get::<_, Option<i64>>(3)?,
+        ))
     });
 
     use crate::telemetry::netutil::{classify_dest, DestClass};
@@ -1274,6 +1276,8 @@ fn handle_stats_availability(request: tiny_http::Request, state: &HttpState) {
     struct AvailAcc {
         in_scope: i64,
         total: i64,
+        bytes_in_scope: i64,
+        bytes_total: i64,
     }
 
     let scope_match = |dest_ip: &Option<String>| -> bool {
@@ -1285,11 +1289,13 @@ fn handle_stats_availability(request: tiny_http::Request, state: &HttpState) {
     };
 
     let truncate_ts = |dt: chrono::DateTime<chrono::FixedOffset>| -> String {
+        // rustnetec: 桶 key 输出 UTC 墙钟时间（无偏移后缀），前端按 Z 解析。
+        let utc = dt.with_timezone(&chrono::Utc);
         match bucket {
-            "1min" => dt.format("%Y-%m-%dT%H:%M").to_string(),
-            "1hour" => dt.format("%Y-%m-%dT%H").to_string(),
-            "1day" => dt.format("%Y-%m-%d").to_string(),
-            _ => dt.format("%Y-%m-%dT%H:%M").to_string(),
+            "1min" => utc.format("%Y-%m-%dT%H:%M").to_string(),
+            "1hour" => utc.format("%Y-%m-%dT%H").to_string(),
+            "1day" => utc.format("%Y-%m-%d").to_string(),
+            _ => utc.format("%Y-%m-%dT%H:%M").to_string(),
         }
     };
 
@@ -1303,7 +1309,7 @@ fn handle_stats_availability(request: tiny_http::Request, state: &HttpState) {
     };
 
     for row in rows_iter {
-        let (ts, dest_ip) = match row {
+        let (ts, dest_ip, bytes_rx, bytes_tx) = match row {
             Ok(r) => r,
             Err(_) => continue,
         };
@@ -1314,8 +1320,12 @@ fn handle_stats_availability(request: tiny_http::Request, state: &HttpState) {
         let key = truncate_ts(dt);
         let entry = buckets.entry(key).or_default();
         entry.total += 1;
+        // bytes_received + bytes_sent 合计该连接的双向字节数。
+        let bytes = bytes_rx.unwrap_or(0) + bytes_tx.unwrap_or(0);
+        entry.bytes_total += bytes;
         if scope_match(&dest_ip) {
             entry.in_scope += 1;
+            entry.bytes_in_scope += bytes;
         }
     }
 
@@ -1328,12 +1338,21 @@ fn handle_stats_availability(request: tiny_http::Request, state: &HttpState) {
             } else {
                 0.0
             };
+            // rustnetec: 外网流量占比 = 外网字节 / 总字节（0.0–1.0），供热力图使用。
+            let bytes_ratio = if acc.bytes_total > 0 {
+                acc.bytes_in_scope as f64 / acc.bytes_total as f64
+            } else {
+                0.0
+            };
             serde_json::json!({
                 "ts": ts,
                 "available": available,
                 "ratio": (ratio * 1000.0).round() / 1000.0,
+                "bytes_ratio": (bytes_ratio * 1000.0).round() / 1000.0,
                 "in_scope": acc.in_scope,
                 "total": acc.total,
+                "bytes_in_scope": acc.bytes_in_scope,
+                "bytes_total": acc.bytes_total,
             })
         })
         .collect();
@@ -1374,15 +1393,11 @@ fn handle_stats_duration(request: tiny_http::Request, state: &HttpState) {
     let url = request.url();
     let params = parse_query_params(url);
 
-    let end = params.get("end").cloned().unwrap_or_else(|| {
-        chrono::Local::now().to_rfc3339()
-    });
-    let start = params.get("start").cloned().unwrap_or_else(|| {
-        chrono::Local::now()
-            .checked_sub_signed(chrono::Duration::hours(1))
-            .unwrap_or_else(chrono::Local::now)
-            .to_rfc3339()
-    });
+    let end = parse_time_param(params.get("end").map(String::as_str), chrono::Duration::zero());
+    let start = parse_time_param(
+        params.get("start").map(String::as_str),
+        chrono::Duration::hours(1),
+    );
 
     let bucket = params.get("bucket").map(String::as_str).unwrap_or("1min");
     let scope = params.get("scope").map(String::as_str).unwrap_or("external");
@@ -1460,11 +1475,13 @@ fn handle_stats_duration(request: tiny_http::Request, state: &HttpState) {
     };
 
     let truncate_ts = |dt: chrono::DateTime<chrono::FixedOffset>| -> String {
+        // rustnetec: 桶 key 输出 UTC 墙钟时间（无偏移后缀），前端按 Z 解析。
+        let utc = dt.with_timezone(&chrono::Utc);
         match bucket {
-            "1min" => dt.format("%Y-%m-%dT%H:%M").to_string(),
-            "1hour" => dt.format("%Y-%m-%dT%H").to_string(),
-            "1day" => dt.format("%Y-%m-%d").to_string(),
-            _ => dt.format("%Y-%m-%dT%H:%M").to_string(),
+            "1min" => utc.format("%Y-%m-%dT%H:%M").to_string(),
+            "1hour" => utc.format("%Y-%m-%dT%H").to_string(),
+            "1day" => utc.format("%Y-%m-%d").to_string(),
+            _ => utc.format("%Y-%m-%dT%H:%M").to_string(),
         }
     };
 
@@ -1524,6 +1541,143 @@ fn handle_stats_duration(request: tiny_http::Request, state: &HttpState) {
         "count": result.len(),
         "bucket": bucket,
         "scope": scope,
+    });
+    let _ = respond_json(request, 200, &response);
+}
+
+/// rustnetec: GET /stats/reachability 外网可达率探测时间序列。
+///
+/// 参数：
+/// - `start` / `end`：RFC 3339 或相对时间（`now-1h` 等）；缺省 end=now，start=now-1h。
+/// - `bucket`：`5s`/`1min`/`1hour`/`1day`，默认 `1min`。
+///
+/// 数据来源：`reachability_probes` 表（由后台探测线程每 30s 写入）。
+/// 每桶返回 `ts`、`reachable_ratio`（0–1，可达样本占比）、
+/// `avg_latency_ms`、`min_latency_ms`、`samples`。
+fn handle_stats_reachability(request: tiny_http::Request, state: &HttpState) {
+    use rusqlite::OpenFlags;
+
+    let path = &state.db_path;
+    if !path.exists() {
+        let response = serde_json::json!({
+            "buckets": [],
+            "note": "database file not found — no capture data yet"
+        });
+        let _ = respond_json(request, 200, &response);
+        return;
+    }
+
+    let url = request.url();
+    let params = parse_query_params(url);
+
+    let end = parse_time_param(params.get("end").map(String::as_str), chrono::Duration::zero());
+    let start = parse_time_param(
+        params.get("start").map(String::as_str),
+        chrono::Duration::hours(1),
+    );
+    let bucket = params.get("bucket").map(String::as_str).unwrap_or("1min");
+
+    let conn = match rusqlite::Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY) {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = respond_json(request, 500, &serde_json::json!({"error": format!("open: {}", e)}));
+            return;
+        }
+    };
+
+    let sql = "SELECT ts, reachable, latency_ms FROM reachability_probes \
+               WHERE ts >= ?1 AND ts <= ?2 ORDER BY ts ASC";
+    let mut stmt = match conn.prepare(sql) {
+        Ok(s) => s,
+        Err(_) => {
+            // 表可能尚未创建（探测线程未启动），按空结果返回而非 500。
+            let _ = respond_json(request, 200, &serde_json::json!({"buckets": [], "count": 0, "bucket": bucket}));
+            return;
+        }
+    };
+
+    let rows = match stmt.query_map(rusqlite::params![start, end], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, Option<f64>>(2)?,
+        ))
+    }) {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = respond_json(request, 500, &serde_json::json!({"error": format!("query: {}", e)}));
+            return;
+        }
+    };
+
+    let truncate_ts = |dt: chrono::DateTime<chrono::FixedOffset>| -> String {
+        let utc = dt.with_timezone(&chrono::Utc);
+        match bucket {
+            "5s" => {
+                let secs = utc.timestamp();
+                chrono::DateTime::from_timestamp(secs - (secs % 5), 0)
+                    .unwrap()
+                    .format("%Y-%m-%dT%H:%M:%S")
+                    .to_string()
+            }
+            "1hour" => utc.format("%Y-%m-%dT%H").to_string(),
+            "1day" => utc.format("%Y-%m-%d").to_string(),
+            _ => utc.format("%Y-%m-%dT%H:%M").to_string(),
+        }
+    };
+
+    use std::collections::BTreeMap;
+    #[derive(Default)]
+    struct Acc {
+        reachable: i64,
+        samples: i64,
+        lat_sum: f64,
+        lat_min: Option<f64>,
+    }
+    let mut buckets: BTreeMap<String, Acc> = BTreeMap::new();
+
+    for row in rows.flatten() {
+        let (ts, reachable, latency) = row;
+        let dt = match chrono::DateTime::parse_from_rfc3339(&ts) {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+        let key = truncate_ts(dt);
+        let entry = buckets.entry(key).or_default();
+        entry.samples += 1;
+        entry.reachable += reachable;
+        if let Some(ms) = latency {
+            entry.lat_sum += ms;
+            entry.lat_min = Some(match entry.lat_min {
+                Some(cur) => cur.min(ms),
+                None => ms,
+            });
+        }
+    }
+
+    let result: Vec<serde_json::Value> = buckets
+        .into_iter()
+        .map(|(ts, a)| {
+            let reachable_ratio = if a.samples > 0 {
+                a.reachable as f64 / a.samples as f64
+            } else {
+                0.0
+            };
+            let lat_n = a.lat_min.is_some() as i64;
+            serde_json::json!({
+                "ts": ts,
+                "reachable_ratio": (reachable_ratio * 1000.0).round() / 1000.0,
+                "avg_latency_ms": if lat_n > 0 { ((a.lat_sum / lat_n as f64) * 10.0).round() / 10.0 } else { 0.0 },
+                "min_latency_ms": a.lat_min.unwrap_or(0.0),
+                "samples": a.samples,
+            })
+        })
+        .collect();
+
+    let response = serde_json::json!({
+        "buckets": result,
+        "count": result.len(),
+        "bucket": bucket,
     });
     let _ = respond_json(request, 200, &response);
 }
@@ -1786,6 +1940,61 @@ fn urldecode(s: &str) -> String {
     result
 }
 
+/// rustnetec: 解析 `start`/`end` 查询参数为 RFC 3339 时间戳。
+///
+/// - `None`：返回 `(now - default_sub)` 的 RFC 3339 本地时间。
+/// - `Some("now")`：返回当前时间。
+/// - `Some("now-<n><unit>")`：相对时间，单位 s/m/h/d（如 `now-15m`、`now-7d`、`now-900s`）。
+/// - 其他值：假定已是 RFC 3339 时间戳，原样返回（兼容直接传绝对时间的调用方）。
+///
+/// 相对时间解析失败时回退到默认值，避免把 `"now-15m"` 这类字符串直接绑进
+/// SQL 导致字典序比较恒为 false（前端曾因此拿到空桶）。
+fn parse_time_param(value: Option<&str>, default_sub: chrono::Duration) -> String {
+    let now = chrono::Local::now();
+    let fallback = || {
+        now.checked_sub_signed(default_sub)
+            .unwrap_or(now)
+            .to_rfc3339()
+    };
+
+    let Some(v) = value.map(str::trim).filter(|s| !s.is_empty()) else {
+        return fallback();
+    };
+
+    if v == "now" {
+        return now.to_rfc3339();
+    }
+
+    if let Some(rest) = v.strip_prefix("now-") {
+        return match parse_relative_duration(rest) {
+            Some(dur) => now.checked_sub_signed(dur).unwrap_or(now).to_rfc3339(),
+            // 解析失败（如 "now-abc"）回退默认窗口，不把脏字符串传进 SQL。
+            None => fallback(),
+        };
+    }
+
+    // 绝对时间戳：原样返回（已含时区偏移）。
+    v.to_string()
+}
+
+/// 解析 `"<n><unit>"` 形式的相对时长，单位 s/m/h/d。
+fn parse_relative_duration(s: &str) -> Option<chrono::Duration> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let unit = s.chars().last()?;
+    let num_str = &s[..s.len() - unit.len_utf8()];
+    let n: i64 = num_str.parse().ok()?;
+    match unit {
+        's' => chrono::Duration::try_seconds(n),
+        'm' => chrono::Duration::try_minutes(n),
+        'h' => chrono::Duration::try_hours(n),
+        'd' => chrono::Duration::try_days(n),
+        _ => None,
+    }
+}
+
 /// Send a plain text response (consumes the request).
 fn respond_text(
     request: tiny_http::Request,
@@ -2003,6 +2212,81 @@ mod tests {
         assert_eq!(urldecode("hello+world"), "hello world");
         assert_eq!(urldecode("proto%3ATCP"), "proto:TCP");
         assert_eq!(urldecode("no%20encoding"), "no encoding");
+    }
+
+    #[test]
+    fn parse_relative_duration_units() {
+        assert_eq!(
+            parse_relative_duration("15m"),
+            Some(chrono::Duration::minutes(15))
+        );
+        assert_eq!(
+            parse_relative_duration("1h"),
+            Some(chrono::Duration::hours(1))
+        );
+        assert_eq!(
+            parse_relative_duration("7d"),
+            Some(chrono::Duration::days(7))
+        );
+        assert_eq!(
+            parse_relative_duration("900s"),
+            Some(chrono::Duration::seconds(900))
+        );
+    }
+
+    #[test]
+    fn parse_relative_duration_invalid() {
+        assert!(parse_relative_duration("").is_none());
+        assert!(parse_relative_duration("abc").is_none());
+        assert!(parse_relative_duration("5x").is_none());
+        assert!(parse_relative_duration("m").is_none());
+    }
+
+    #[test]
+    fn parse_time_param_relative_and_absolute() {
+        // now-15m 应解析为约 15 分钟前（允许 5s 误差）。
+        let out = parse_time_param(Some("now-15m"), chrono::Duration::hours(1));
+        let parsed = chrono::DateTime::parse_from_rfc3339(&out).expect("valid rfc3339");
+        let now = chrono::Local::now();
+        let diff = (now - parsed.with_timezone(&chrono::Local)).num_seconds().abs();
+        assert!(
+            (15 * 60 - 5..=15 * 60 + 5).contains(&diff),
+            "expected ~15min ago, got diff={diff}s"
+        );
+
+        // now-7d 应解析为约 7 天前。
+        let out = parse_time_param(Some("now-7d"), chrono::Duration::hours(1));
+        let parsed = chrono::DateTime::parse_from_rfc3339(&out).unwrap();
+        let diff = (now - parsed.with_timezone(&chrono::Local)).num_seconds().abs();
+        assert!(
+            (7 * 86400 - 10..=7 * 86400 + 10).contains(&diff),
+            "expected ~7d ago, got diff={diff}s"
+        );
+
+        // 绝对时间戳原样返回。
+        let abs = "2026-01-01T00:00:00+08:00";
+        assert_eq!(parse_time_param(Some(abs), chrono::Duration::hours(1)), abs);
+    }
+
+    #[test]
+    fn parse_time_param_none_uses_default() {
+        // None → 默认 1h 前。
+        let out = parse_time_param(None, chrono::Duration::hours(1));
+        let parsed = chrono::DateTime::parse_from_rfc3339(&out).unwrap();
+        let now = chrono::Local::now();
+        let diff = (now - parsed.with_timezone(&chrono::Local)).num_seconds().abs();
+        assert!(
+            (3600 - 5..=3600 + 5).contains(&diff),
+            "expected ~1h ago, got diff={diff}s"
+        );
+    }
+
+    #[test]
+    fn parse_time_param_invalid_relative_falls_back() {
+        // 非法相对时间回退默认窗口（1h），不把脏字符串透传。
+        let out = parse_time_param(Some("now-abc"), chrono::Duration::hours(1));
+        assert!(chrono::DateTime::parse_from_rfc3339(&out).is_ok());
+        assert!(!out.contains("now-abc"));
     }
 
     #[test]

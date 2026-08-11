@@ -116,8 +116,10 @@
     background: var(--panel);
     border: 1px solid var(--border);
     border-radius: 6px;
-    padding: 0;
-    margin-bottom: 16px;
+    padding: 8px;
+    margin-bottom: 8px;
+    width: 100%;
+    height: 140px;
   }
 
   /* rustnetec: T-F3e — 仪表盘协议分布容器（ECharts bar） */
@@ -125,7 +127,31 @@
     background: var(--panel);
     border: 1px solid var(--border);
     border-radius: 6px;
-    padding: 0;
+    padding: 8px;
+    margin-bottom: 16px;
+    width: 100%;
+    height: 240px;
+  }
+
+  /* 图表小标题条（与 caption 风格统一） */
+  .chart-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+    margin: 16px 0 6px 0;
+  }
+  /* 标题下的说明文字（紧跟标题，位于图表上方） */
+  .chart-caption {
+    font-size: 12px;
+    color: var(--muted);
+    margin: 0 0 8px 0;
+  }
+  /* 局域网子图小标题 */
+  .chart-sub-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--muted);
+    margin: 10px 0 4px 0;
   }
 
   /* 帮助页 */
@@ -274,9 +300,6 @@
     width: 100%;
     height: 360px;
   }
-  #rate-chart, #protocol-dist {
-    width: 100%;
-  }
 
   /* rustnetec: T-D1 — 仪表盘 SLA gauge 卡片（外网可用性占比） */
   #sla-gauge {
@@ -286,12 +309,6 @@
     border: 1px solid var(--border);
     border-radius: 6px;
     padding: 8px;
-    margin-bottom: 16px;
-  }
-  #sla-caption {
-    font-size: 12px;
-    color: var(--muted);
-    margin: 0 0 16px 0;
   }
 
   /* rustnetec: T-D2 — RTT 趋势折线容器 */
@@ -302,12 +319,6 @@
     border: 1px solid var(--border);
     border-radius: 6px;
     padding: 8px;
-    margin-bottom: 8px;
-  }
-  #rtt-caption {
-    font-size: 12px;
-    color: var(--muted);
-    margin: 0 0 16px 0;
   }
 
   /* rustnetec: T-D3 — 外网连接数堆叠面积图容器 */
@@ -318,12 +329,6 @@
     border: 1px solid var(--border);
     border-radius: 6px;
     padding: 8px;
-    margin-bottom: 8px;
-  }
-  #external-stack-caption {
-    font-size: 12px;
-    color: var(--muted);
-    margin: 0 0 16px 0;
   }
 
   /* rustnetec: T-D4 — 周×小时可用性热力图容器 */
@@ -334,29 +339,44 @@
     border: 1px solid var(--border);
     border-radius: 6px;
     padding: 8px;
-    margin-bottom: 8px;
-  }
-  #availability-heatmap-caption {
-    font-size: 12px;
-    color: var(--muted);
-    margin: 0 0 16px 0;
   }
 
   /* rustnetec: T-D5 — 局域网图表组容器 */
-  #lan-flow-chart, #lan-devices-chart, #lan-dual-chart {
+  #lan-flow-chart, #lan-dual-chart {
     width: 100%;
     height: 240px;
     background: var(--panel);
     border: 1px solid var(--border);
     border-radius: 6px;
     padding: 8px;
-    margin-bottom: 8px;
   }
-  #lan-caption {
-    font-size: 12px;
+
+  /* rustnetec: 外网可达率图表容器 */
+  #reachability-chart {
+    width: 100%;
+    height: 280px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px;
+  }
+  /* 时间窗切换按钮组 */
+  .window-btns {
+    display: inline-flex;
+    gap: 4px;
+    margin-left: 8px;
+  }
+  .window-btns button {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 4px;
     color: var(--muted);
-    margin: 0 0 16px 0;
+    padding: 2px 10px;
+    font-size: 12px;
+    cursor: pointer;
   }
+  .window-btns button:hover { color: var(--text); border-color: var(--accent); }
+  .window-btns button.active { color: var(--accent); border-color: var(--accent); }
 
   /* rustnetec: W3.4 进程活动表样式 */
   #activity-toolbar {
@@ -605,30 +625,51 @@
         <div class="metric-sub">daemon 启动至今</div>
       </div>
     </div>
+    <p class="chart-title">实时速率（最近 3 分钟）</p>
     <div id="rate-chart"></div>
+    <p class="chart-title">协议分布（按连接数 Top 12）</p>
     <div id="protocol-dist"></div>
 
     <!-- rustnetec: T-D1 — SLA gauge 卡片（最近 15min 外网可用性占比） -->
+    <p class="chart-title">外网可用性 SLA</p>
+    <p class="chart-caption">最近 15 分钟内有外网流量的分钟占比</p>
     <div id="sla-gauge"></div>
-    <p id="sla-caption">外网可用性 SLA — 最近 15 分钟内有外网流量的分钟占比</p>
+
+    <!-- rustnetec: 外网可达率（主动 TCP 探测，双轴：可达率% + 延迟ms） -->
+    <p class="chart-title">外网可达率
+      <span class="window-btns" id="reach-window-btns">
+        <button data-secs="3600" class="active">1h</button>
+        <button data-secs="10800">3h</button>
+        <button data-secs="21600">6h</button>
+        <button data-secs="86400">1d</button>
+        <button data-secs="604800">7d</button>
+      </span>
+    </p>
+    <p class="chart-caption">主动 TCP 探测（多目标，任一可达即视为通）；左轴可达率，右轴最小延迟</p>
+    <div id="reachability-chart"></div>
 
     <!-- rustnetec: T-D2 — RTT 趋势折线（p50/p95/p99 双轴，最近 1h） -->
+    <p class="chart-title">外网 RTT 趋势</p>
+    <p class="chart-caption">每分钟分位数（左轴 p50/p95，右轴 p99）</p>
     <div id="rtt-chart"></div>
-    <p id="rtt-caption">外网 RTT 趋势 — 每分钟分位数（左轴 p50/p95，右轴 p99）</p>
 
     <!-- rustnetec: T-D3 — 外网连接数堆叠面积图（按协议，最近 1h） -->
+    <p class="chart-title">外网连接数构成</p>
+    <p class="chart-caption">按协议堆叠（每分钟桶）</p>
     <div id="external-stack"></div>
-    <p id="external-stack-caption">外网连接数构成 — 按协议堆叠（每分钟桶）</p>
 
-    <!-- rustnetec: T-D4 — 周×小时可用性热力图（7×24，最近 7d） -->
+    <!-- rustnetec: T-D4 — 周×小时外网流量热力图（7×24，最近 7d） -->
+    <p class="chart-title">外网流量时段分布</p>
+    <p class="chart-caption">周×小时热力图（颜色深浅 = 该时段外网流量占总流量的比例，过去 7 天平均）</p>
     <div id="availability-heatmap"></div>
-    <p id="availability-heatmap-caption">外网可用性时段分析 — 周×小时热力图（颜色深浅 = 该时段有外网流量的分钟占比）</p>
 
-    <!-- rustnetec: T-D5 — 局域网图表组（流量折线 + 设备柱状 + 双轴折线） -->
+    <!-- rustnetec: T-D5 — 局域网图表组（流量折线 + 连接数折线 + 双轴折线） -->
+    <p class="chart-title">局域网图表组</p>
+    <p class="chart-caption">上：流量折线；下：连接数 + 流量双轴折线</p>
+    <p class="chart-sub-title">局域网流量</p>
     <div id="lan-flow-chart"></div>
-    <div id="lan-devices-chart"></div>
+    <p class="chart-sub-title">连接数 + 流量双轴</p>
     <div id="lan-dual-chart"></div>
-    <p id="lan-caption">局域网图表组 — 上：流量折线；中：设备连接数柱状（按 source_ip，top 20）；下：连接数 + 流量双轴折线</p>
   </section>
 
   <section id="details-view" class="view">
@@ -1351,7 +1392,10 @@
     var el = document.getElementById("graph-canvas");
     graphState.chart = echarts.init(el, null, { renderer: "canvas" });
     graphState.chart.setOption({
-      tooltip: { trigger: "axis", axisPointer: { type: "line" } },
+      tooltip: {
+        trigger: "axis", axisPointer: { type: "line" },
+        valueFormatter: function (v) { return formatRate(v); },
+      },
       legend: { data: ["入站 ↓", "出站 ↑"], textStyle: { color: GRAPH_COLORS.axis } },
       grid: { left: 64, right: 16, top: 32, bottom: 40 },
       xAxis: {
@@ -1361,7 +1405,7 @@
         splitLine: { show: true, lineStyle: { color: GRAPH_COLORS.grid } },
       },
       yAxis: {
-        type: "value",
+        type: "value", name: "速率", nameTextStyle: { color: GRAPH_COLORS.axis },
         axisLine: { lineStyle: { color: GRAPH_COLORS.axis } },
         axisLabel: { color: GRAPH_COLORS.axis, fontSize: 10, formatter: function (v) { return formatRate(v); } },
         splitLine: { lineStyle: { color: GRAPH_COLORS.grid } },
@@ -1391,7 +1435,6 @@
   // 协议分布用 ECharts bar（category 轴映射协议名）。
   var dashSpark = null;
   var protoPlot = null;
-  var protoLabels = [];
   var statsTimer = null;
   var dashResizeBound = false;
 
@@ -1400,13 +1443,18 @@
     if (!el || dashSpark || !el.clientWidth) return; // 视图未激活时跳过,等 switchView
     dashSpark = echarts.init(el, null, { renderer: "canvas" });
     dashSpark.setOption({
-      grid: { left: 66, right: 8, top: 8, bottom: 20 },
+      tooltip: {
+        trigger: "axis",
+        valueFormatter: function (v) { return formatRate(v); },
+      },
+      grid: { left: 66, right: 8, top: 8, bottom: 8 },
       xAxis: {
         type: "time",
         show: false,
       },
       yAxis: {
-        type: "value",
+        type: "value", name: "速率",
+        nameTextStyle: { color: GRAPH_COLORS.axis, fontSize: 10 },
         axisLine: { show: false },
         axisTick: { show: false },
         axisLabel: { color: GRAPH_COLORS.axis, fontSize: 10, formatter: function (v) { return formatRate(v); } },
@@ -1426,7 +1474,7 @@
   function updateDashSpark() {
     if (!dashSpark) return;
     var now = Date.now();
-    var startT = now - 60000; // 60s 窗口
+    var startT = now - 180000; // 3 分钟窗口
     var inData = [], outData = [];
     for (var i = 0; i < graphState.samples.length; i++) {
       var s = graphState.samples[i];
@@ -1447,15 +1495,19 @@
     if (!el || protoPlot || !el.clientWidth) return;
     protoPlot = echarts.init(el, null, { renderer: "canvas" });
     protoPlot.setOption({
-      tooltip: { trigger: "axis", axisPointer: { type: "shadow" } },
-      grid: { left: 48, right: 16, top: 16, bottom: 64 },
+      tooltip: {
+        trigger: "axis", axisPointer: { type: "shadow" },
+        valueFormatter: function (v) { return v + " 个"; },
+      },
+      grid: { left: 56, right: 16, top: 16, bottom: 64 },
       xAxis: {
         type: "category",
         axisLine: { lineStyle: { color: GRAPH_COLORS.axis } },
-        axisLabel: { color: GRAPH_COLORS.axis, fontSize: 10, rotate: 45, formatter: function (v) { return protoLabels[Number(v)] || ""; } },
+        axisLabel: { color: GRAPH_COLORS.axis, fontSize: 10, rotate: 45 },
       },
       yAxis: {
-        type: "value",
+        type: "value", name: "连接数（个）",
+        nameTextStyle: { color: GRAPH_COLORS.axis, fontSize: 10 },
         axisLine: { lineStyle: { color: GRAPH_COLORS.axis } },
         axisLabel: { color: GRAPH_COLORS.axis, fontSize: 10, formatter: function (v) { return v >= 1000 ? (v / 1000).toFixed(1) + "k" : v; } },
         splitLine: { lineStyle: { color: GRAPH_COLORS.grid } },
@@ -1471,7 +1523,6 @@
     if (!protoPlot || !stats) return;
     var top = (stats.by_protocol || []).slice(0, 12);
     if (top.length === 0) return;
-    protoLabels = top.map(function (r) { return String(r.protocol || "?"); });
     var xs = [], ys = [];
     for (var i = 0; i < top.length; i++) {
       xs.push(String(top[i].protocol || "?"));
@@ -1557,9 +1608,12 @@
     if (!el || rttChart || !el.clientWidth) return;
     rttChart = echarts.init(el, null, { renderer: "canvas" });
     rttChart.setOption({
-      tooltip: { trigger: "axis" },
+      tooltip: {
+        trigger: "axis",
+        valueFormatter: function (v) { return v + " ms"; },
+      },
       legend: { data: ["p50", "p95", "p99"], textStyle: { color: GRAPH_COLORS.axis } },
-      grid: { left: 56, right: 56, top: 32, bottom: 40 },
+      grid: { left: 64, right: 64, top: 32, bottom: 40 },
       xAxis: {
         type: "time",
         axisLine: { lineStyle: { color: GRAPH_COLORS.axis } },
@@ -1568,13 +1622,13 @@
       },
       yAxis: [
         {
-          type: "value", name: "p50/p95", nameTextStyle: { color: GRAPH_COLORS.axis },
+          type: "value", name: "RTT p50/p95 (ms)", nameTextStyle: { color: GRAPH_COLORS.axis },
           axisLine: { lineStyle: { color: GRAPH_COLORS.axis } },
           axisLabel: { color: GRAPH_COLORS.axis, fontSize: 10, formatter: "{value} ms" },
           splitLine: { lineStyle: { color: GRAPH_COLORS.grid } },
         },
         {
-          type: "value", name: "p99", nameTextStyle: { color: GRAPH_COLORS.axis },
+          type: "value", name: "RTT p99 (ms)", nameTextStyle: { color: RTT_COLORS.p99 },
           axisLine: { lineStyle: { color: RTT_COLORS.p99 } },
           axisLabel: { color: RTT_COLORS.p99, fontSize: 10, formatter: "{value} ms" },
           splitLine: { show: false },
@@ -1628,9 +1682,12 @@
     if (!el || externalStack || !el.clientWidth) return;
     externalStack = echarts.init(el, null, { renderer: "canvas" });
     externalStack.setOption({
-      tooltip: { trigger: "axis" },
+      tooltip: {
+        trigger: "axis",
+        valueFormatter: function (v) { return v + " 个"; },
+      },
       legend: { data: ["外网连接数"], textStyle: { color: GRAPH_COLORS.axis } },
-      grid: { left: 56, right: 16, top: 32, bottom: 40 },
+      grid: { left: 64, right: 16, top: 32, bottom: 40 },
       xAxis: {
         type: "time",
         axisLine: { lineStyle: { color: GRAPH_COLORS.axis } },
@@ -1638,7 +1695,7 @@
         splitLine: { show: true, lineStyle: { color: GRAPH_COLORS.grid } },
       },
       yAxis: {
-        type: "value", name: "连接数", nameTextStyle: { color: GRAPH_COLORS.axis },
+        type: "value", name: "连接数（个）", nameTextStyle: { color: GRAPH_COLORS.axis },
         axisLine: { lineStyle: { color: GRAPH_COLORS.axis } },
         axisLabel: { color: GRAPH_COLORS.axis, fontSize: 10 },
         splitLine: { lineStyle: { color: GRAPH_COLORS.grid } },
@@ -1689,7 +1746,7 @@
       tooltip: {
         position: "top",
         formatter: function (p) {
-          return weekLabels[p.value[1]] + " " + hourLabels[p.value[0]] + ":00<br/>可用性 " + (p.value[2] * 100).toFixed(0) + "%";
+          return weekLabels[p.value[1]] + " " + hourLabels[p.value[0]] + ":00<br/>外网流量占比 " + (p.value[2] * 100).toFixed(0) + "%";
         },
       },
       grid: { left: 56, right: 24, top: 24, bottom: 56 },
@@ -1711,7 +1768,7 @@
         inRange: { color: ["#21262d", "#1f6feb", "#58a6ff", "#3fb950"] },
       },
       series: [{
-        name: "可用性", type: "heatmap",
+        name: "外网流量占比", type: "heatmap",
         label: { show: false },
         emphasis: { itemStyle: { shadowBlur: 10, shadowColor: "rgba(0,0,0,0.5)" } },
         data: [],
@@ -1729,7 +1786,7 @@
       .then(function (data) {
         var buckets = data.buckets || [];
         // 聚合到 周×小时 矩阵：按桶 ts 的星期(0=周一..6=周日) 与小时(0-23)
-        // SQLite strftime('%w', ts) 返回 0=周日..6=周六，需归一化为 0=周一
+        // 用 bytes_ratio（外网字节/总字节）求各格 7 天平均值。
         var matrix = {}; // key = "week,hour" → {sum, count}
         for (var i = 0; i < buckets.length; i++) {
           var b = buckets[i];
@@ -1741,7 +1798,7 @@
           var hourIdx = dt.getHours();
           var key = weekIdx + "," + hourIdx;
           if (!matrix[key]) matrix[key] = { sum: 0, count: 0 };
-          matrix[key].sum += Number(b.ratio) || 0;
+          matrix[key].sum += Number(b.bytes_ratio) || 0;
           matrix[key].count += 1;
         }
         var pts = [];
@@ -1756,29 +1813,31 @@
       .catch(function () { /* 鉴权失败时静默置空 */ });
   }
 
-  // rustnetec: T-D5 — 局域网图表组（流量折线 + 连接数折线 + 双轴折线）。
-  // 数据：GET /stats/range?bucket=1min&scope=lan。后端不返回 source_ip 维度，
-  // 「设备柱状」改为「局域网连接数折线」；双轴折线 = 流量(左) + 连接数(右)。
-  var lanFlowChart = null, lanConnsChart = null, lanDualChart = null;
+  // rustnetec: T-D5 — 局域网图表组（流量折线 + 双轴折线）。
+  // 数据：GET /stats/range?bucket=1min&scope=lan。双轴折线 = 流量(左) + 连接数(右)。
+  var lanFlowChart = null, lanDualChart = null;
   var lanTimer = null;
   var LAN_COLORS = { flow: "#a371f7", conns: "#f0883e" };
 
   function initLanCharts() {
     var elFlow = document.getElementById("lan-flow-chart");
-    var elConns = document.getElementById("lan-devices-chart");
     var elDual = document.getElementById("lan-dual-chart");
-    if (!elFlow || !elConns || !elDual) return;
+    if (!elFlow || !elDual) return;
     if (lanFlowChart || !elFlow.clientWidth) return;
 
     lanFlowChart = echarts.init(elFlow, null, { renderer: "canvas" });
     lanFlowChart.setOption({
-      tooltip: { trigger: "axis" },
+      tooltip: {
+        trigger: "axis",
+        valueFormatter: function (v) { return formatRate(v); },
+      },
       legend: { data: ["入站 ↓", "出站 ↑"], textStyle: { color: GRAPH_COLORS.axis } },
       grid: { left: 64, right: 16, top: 32, bottom: 40 },
       xAxis: { type: "time", axisLine: { lineStyle: { color: GRAPH_COLORS.axis } },
         axisLabel: { color: GRAPH_COLORS.axis, fontSize: 10 },
         splitLine: { show: true, lineStyle: { color: GRAPH_COLORS.grid } } },
-      yAxis: { type: "value", axisLine: { lineStyle: { color: GRAPH_COLORS.axis } },
+      yAxis: { type: "value", name: "速率", nameTextStyle: { color: GRAPH_COLORS.axis },
+        axisLine: { lineStyle: { color: GRAPH_COLORS.axis } },
         axisLabel: { color: GRAPH_COLORS.axis, fontSize: 10, formatter: function (v) { return formatRate(v); } },
         splitLine: { lineStyle: { color: GRAPH_COLORS.grid } } },
       series: [
@@ -1789,44 +1848,42 @@
       ],
     });
 
-    lanConnsChart = echarts.init(elConns, null, { renderer: "canvas" });
-    lanConnsChart.setOption({
-      tooltip: { trigger: "axis" },
-      legend: { data: ["局域网连接数"], textStyle: { color: GRAPH_COLORS.axis } },
-      grid: { left: 56, right: 16, top: 32, bottom: 40 },
-      xAxis: { type: "time", axisLine: { lineStyle: { color: GRAPH_COLORS.axis } },
-        axisLabel: { color: GRAPH_COLORS.axis, fontSize: 10 },
-        splitLine: { show: true, lineStyle: { color: GRAPH_COLORS.grid } } },
-      yAxis: { type: "value", name: "连接数", nameTextStyle: { color: GRAPH_COLORS.axis },
-        axisLine: { lineStyle: { color: GRAPH_COLORS.axis } },
-        axisLabel: { color: GRAPH_COLORS.axis, fontSize: 10 },
-        splitLine: { lineStyle: { color: GRAPH_COLORS.grid } } },
-      series: [
-        { name: "局域网连接数", type: "line", showSymbol: false, smooth: true,
-          lineStyle: { color: LAN_COLORS.conns, width: 1.5 }, data: [] },
-      ],
-    });
-
     lanDualChart = echarts.init(elDual, null, { renderer: "canvas" });
     lanDualChart.setOption({
-      tooltip: { trigger: "axis" },
-      legend: { data: ["流量", "连接数"], textStyle: { color: GRAPH_COLORS.axis } },
-      grid: { left: 64, right: 56, top: 32, bottom: 40 },
+      tooltip: {
+        trigger: "axis",
+        formatter: function (params) {
+          if (!params || !params.length) return "";
+          var lines = [params[0].axisValueLabel];
+          for (var i = 0; i < params.length; i++) {
+            var p = params[i];
+            // time 轴数据点为 [timestamp, value]，数值取 [1]
+            var raw = Array.isArray(p.value) ? p.value[1] : p.value;
+            var val = p.seriesName === "总流量"
+              ? formatRate(raw)
+              : raw + " 个";
+            lines.push(p.marker + p.seriesName + "：" + val);
+          }
+          return lines.join("<br/>");
+        },
+      },
+      legend: { data: ["总流量", "连接数"], textStyle: { color: GRAPH_COLORS.axis } },
+      grid: { left: 64, right: 64, top: 32, bottom: 40 },
       xAxis: { type: "time", axisLine: { lineStyle: { color: GRAPH_COLORS.axis } },
         axisLabel: { color: GRAPH_COLORS.axis, fontSize: 10 },
         splitLine: { show: true, lineStyle: { color: GRAPH_COLORS.grid } } },
       yAxis: [
-        { type: "value", name: "流量", nameTextStyle: { color: GRAPH_COLORS.axis },
+        { type: "value", name: "速率", nameTextStyle: { color: GRAPH_COLORS.axis },
           axisLine: { lineStyle: { color: GRAPH_COLORS.axis } },
           axisLabel: { color: GRAPH_COLORS.axis, fontSize: 10, formatter: function (v) { return formatRate(v); } },
           splitLine: { lineStyle: { color: GRAPH_COLORS.grid } } },
-        { type: "value", name: "连接数", nameTextStyle: { color: GRAPH_COLORS.axis },
+        { type: "value", name: "连接数（个）", nameTextStyle: { color: LAN_COLORS.conns },
           axisLine: { lineStyle: { color: LAN_COLORS.conns } },
           axisLabel: { color: LAN_COLORS.conns, fontSize: 10 },
           splitLine: { show: false } },
       ],
       series: [
-        { name: "流量", type: "line", yAxisIndex: 0, showSymbol: false, smooth: true,
+        { name: "总流量", type: "line", yAxisIndex: 0, showSymbol: false, smooth: true,
           lineStyle: { color: LAN_COLORS.flow, width: 1.5 }, data: [] },
         { name: "连接数", type: "line", yAxisIndex: 1, showSymbol: false, smooth: true,
           lineStyle: { color: LAN_COLORS.conns, width: 1.5 }, data: [] },
@@ -1855,10 +1912,124 @@
           flowData.push([ts, rx + tx]);
         }
         lanFlowChart.setOption({ series: [{ data: inData }, { data: outData }] });
-        lanConnsChart.setOption({ series: [{ data: connsData }] });
         lanDualChart.setOption({ series: [{ data: flowData }, { data: connsData }] });
       })
       .catch(function () { /* 鉴权失败时静默置空 */ });
+  }
+
+  // rustnetec: 外网可达率图表（主动 TCP 探测，双轴：可达率% + 最小延迟ms）。
+  // 数据：GET /stats/reachability?start=now-<sec>s&bucket=<auto>。
+  var reachChart = null;
+  var reachTimer = null;
+  var reachSecs = 3600;
+  var REACH_COLORS = { ok: "#3fb950", rtt: "#f0883e" };
+
+  function reachBucketFor(secs) {
+    if (secs <= 86400) return "1min";
+    return "1hour";
+  }
+
+  function initReachabilityChart() {
+    var el = document.getElementById("reachability-chart");
+    if (!el || reachChart || !el.clientWidth) return;
+    reachChart = echarts.init(el, null, { renderer: "canvas" });
+    reachChart.setOption({
+      tooltip: {
+        trigger: "axis",
+        formatter: function (params) {
+          if (!params || !params.length) return "";
+          var lines = [params[0].axisValueLabel];
+          for (var i = 0; i < params.length; i++) {
+            var p = params[i];
+            var v = Array.isArray(p.value) ? p.value[1] : p.value;
+            var val = p.seriesName === "可达率"
+              ? (v * 100).toFixed(0) + "%"
+              : v.toFixed(0) + " ms";
+            lines.push(p.marker + p.seriesName + "：" + val);
+          }
+          return lines.join("<br/>");
+        },
+      },
+      legend: { data: ["可达率", "最小延迟"], textStyle: { color: GRAPH_COLORS.axis } },
+      grid: { left: 56, right: 56, top: 32, bottom: 40 },
+      xAxis: {
+        type: "time",
+        axisLine: { lineStyle: { color: GRAPH_COLORS.axis } },
+        axisLabel: { color: GRAPH_COLORS.axis, fontSize: 10 },
+        splitLine: { show: true, lineStyle: { color: GRAPH_COLORS.grid } },
+      },
+      yAxis: [
+        {
+          type: "value", name: "可达率", min: 0, max: 1,
+          nameTextStyle: { color: REACH_COLORS.ok },
+          axisLine: { lineStyle: { color: REACH_COLORS.ok } },
+          axisLabel: {
+            color: REACH_COLORS.ok, fontSize: 10,
+            formatter: function (v) { return Math.round(v * 100) + "%"; },
+          },
+          splitLine: { lineStyle: { color: GRAPH_COLORS.grid } },
+        },
+        {
+          type: "value", name: "延迟(ms)",
+          nameTextStyle: { color: REACH_COLORS.rtt },
+          axisLine: { lineStyle: { color: REACH_COLORS.rtt } },
+          axisLabel: { color: REACH_COLORS.rtt, fontSize: 10, formatter: "{value} ms" },
+          splitLine: { show: false },
+        },
+      ],
+      series: [
+        {
+          name: "可达率", type: "line", yAxisIndex: 0, showSymbol: false, smooth: true,
+          lineStyle: { color: REACH_COLORS.ok, width: 1.5 },
+          areaStyle: { color: "rgba(63,185,80,0.12)" },
+          data: [],
+        },
+        {
+          name: "最小延迟", type: "line", yAxisIndex: 1, showSymbol: false, smooth: true,
+          lineStyle: { color: REACH_COLORS.rtt, width: 1.5 }, data: [],
+        },
+      ],
+    });
+
+    // 时间窗按钮切换
+    var btns = document.querySelectorAll("#reach-window-btns button");
+    btns.forEach(function (b) {
+      b.addEventListener("click", function () {
+        btns.forEach(function (x) { x.classList.remove("active"); });
+        b.classList.add("active");
+        reachSecs = parseInt(b.getAttribute("data-secs"), 10) || 3600;
+        pollReachability();
+      });
+    });
+
+    pollReachability();
+    // 10s 轮询（探测每 30s 一轮，10s 足够跟进而不过密）
+    reachTimer = setInterval(function () { if (isPageVisible) pollReachability(); }, 10000);
+  }
+
+  function pollReachability() {
+    if (!reachChart) return;
+    var bucket = reachBucketFor(reachSecs);
+    var url = "/stats/reachability?start=now-" + reachSecs + "s&bucket=" + bucket;
+    fetch(url, { credentials: "same-origin" })
+      .then(function (resp) { if (!resp.ok) throw new Error("HTTP " + resp.status); return resp.json(); })
+      .then(function (data) {
+        var buckets = data.buckets || [];
+        var ratio = [], rtt = [];
+        for (var i = 0; i < buckets.length; i++) {
+          var b = buckets[i];
+          // ts 形如 "2026-08-11T14:05"（UTC，无偏移），补 Z 解析
+          var ts = Date.parse(b.ts + ":00Z") || Date.parse(b.ts + "Z") || b.ts;
+          if (!ts || isNaN(ts)) ts = b.ts;
+          ratio.push([ts, Number(b.reachable_ratio) || 0]);
+          // 无延迟样本（全失败）的桶跳过，避免折线掉到 0 误导
+          if (b.samples > 0 && Number(b.min_latency_ms) > 0) {
+            rtt.push([ts, Number(b.min_latency_ms)]);
+          }
+        }
+        reachChart.setOption({ series: [{ data: ratio }, { data: rtt }] });
+      })
+      .catch(function () { /* 静默置空 */ });
   }
 
   // rustnetec: T-E4 — 进程详情抽屉：时间窗 + 网口下拉 + 双轴折线 + 外网持续时长。
@@ -1879,16 +2050,16 @@
     processDrawerChart.setOption({
       tooltip: { trigger: "axis" },
       legend: { data: ["流量", "活跃连接数", "外网持续时长"], textStyle: { color: GRAPH_COLORS.axis } },
-      grid: { left: 64, right: 64, top: 32, bottom: 40 },
+      grid: { left: 64, right: 72, top: 32, bottom: 40 },
       xAxis: { type: "time", axisLine: { lineStyle: { color: GRAPH_COLORS.axis } },
         axisLabel: { color: GRAPH_COLORS.axis, fontSize: 10 },
         splitLine: { show: true, lineStyle: { color: GRAPH_COLORS.grid } } },
       yAxis: [
-        { type: "value", name: "流量", nameTextStyle: { color: GRAPH_COLORS.axis },
+        { type: "value", name: "速率", nameTextStyle: { color: GRAPH_COLORS.axis },
           axisLine: { lineStyle: { color: GRAPH_COLORS.axis } },
           axisLabel: { color: GRAPH_COLORS.axis, fontSize: 10, formatter: function (v) { return formatRate(v); } },
           splitLine: { lineStyle: { color: GRAPH_COLORS.grid } } },
-        { type: "value", name: "连接数/时长(s)", nameTextStyle: { color: GRAPH_COLORS.axis },
+        { type: "value", name: "连接数(个)/时长(s)", nameTextStyle: { color: RTT_COLORS.p99, fontSize: 10 },
           axisLine: { lineStyle: { color: RTT_COLORS.p99 } },
           axisLabel: { color: RTT_COLORS.p99, fontSize: 10 },
           splitLine: { show: false } },
@@ -1990,6 +2161,7 @@
     initExternalStack(); // rustnetec: T-D3 — 外网连接数堆叠面积图
     initAvailHeatmap(); // rustnetec: T-D4 — 周×小时可用性热力图
     initLanCharts(); // rustnetec: T-D5 — 局域网图表组
+    initReachabilityChart(); // rustnetec: 外网可达率（主动探测）
     if (statsTimer === null) {
       pollStats();
       statsTimer = setInterval(pollStats, 5000);
@@ -2001,6 +2173,8 @@
         if (dashSpark && el) dashSpark.resize();
         var el2 = document.getElementById("protocol-dist");
         if (protoPlot && el2) protoPlot.resize();
+        var elR = document.getElementById("reachability-chart");
+        if (reachChart && elR) reachChart.resize();
       });
     }
   }

@@ -182,6 +182,17 @@ impl SqliteSink {
                 last_upload_ts          TEXT
             );
 
+            -- rustnetec: reachability probe results (外网可达率探测)
+            -- 每轮探测一行；ts 为 RFC3339 探测时刻，主键去重。
+            CREATE TABLE IF NOT EXISTS reachability_probes (
+                ts              TEXT PRIMARY KEY,
+                reachable       INTEGER NOT NULL,
+                latency_ms      REAL,
+                targets_ok      INTEGER NOT NULL,
+                targets_total   INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_reach_ts ON reachability_probes (ts);
+
             CREATE TABLE IF NOT EXISTS schema_version (
                 id      INTEGER PRIMARY KEY CHECK (id = 1),
                 version INTEGER NOT NULL
@@ -633,13 +644,19 @@ impl SqliteSink {
             params![days_str],
         )?;
 
+        // rustnetec: delete expired reachability probes
+        let deleted_probes = conn.execute(
+            "DELETE FROM reachability_probes WHERE ts < datetime('now', ?1)",
+            params![days_str],
+        )?;
+
         // Incremental vacuum to reclaim space
         conn.execute_batch("PRAGMA incremental_vacuum;")?;
 
-        if deleted_events > 0 || deleted_aggs > 0 {
+        if deleted_events > 0 || deleted_aggs > 0 || deleted_probes > 0 {
             info!(
-                "Cleanup: deleted {} events, {} aggregates (retention: {} days)",
-                deleted_events, deleted_aggs, retention_days
+                "Cleanup: deleted {} events, {} aggregates, {} reachability probes (retention: {} days)",
+                deleted_events, deleted_aggs, deleted_probes, retention_days
             );
         }
 

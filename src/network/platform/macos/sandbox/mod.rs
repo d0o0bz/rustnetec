@@ -55,6 +55,9 @@ pub struct SandboxConfig {
     /// 在 sandbox 之后才打开 data.db → EPERM/CANTOPEN。此字段仿照
     /// geoip_paths/log_dir 的既有 allow 模式,把 data_dir 加入白名单。
     pub data_dir: Option<String>,
+    /// rustnetec: 外网可达率探测目标（`ip:port` 或 `host:port`），加入沙箱
+    /// 出站 TCP 白名单。为空则不放行任何探测连接（探测会全部超时）。
+    pub reachability_targets: Vec<String>,
 }
 
 /// Result of sandbox application

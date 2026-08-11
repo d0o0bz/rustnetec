@@ -192,16 +192,42 @@ fn build_network_allow_section(host: &str) -> String {
     )
 }
 
+/// rustnetec: Network allow SBPL section for reachability probe targets.
+/// 为每个 `host:port` 目标放行出站 UDP（NTP 探测），使可达率探测在沙箱内可用。
+fn build_reachability_allow_section(targets: &[String]) -> String {
+    let mut section = String::from("\n;; rustnetec: Allow outbound UDP to reachability probe targets (NTP)\n");
+    for t in targets {
+        // 解析 host:port；端口非法或缺失则跳过（不破坏整个 profile）。
+        let (host, port) = match t.rsplit_once(':') {
+            Some((h, p)) => (h.trim().to_string(), p.trim().to_string()),
+            None => continue,
+        };
+        if host.is_empty() || port.parse::<u16>().is_err() {
+            continue;
+        }
+        let host_esc = escape_sbpl_path(&host);
+        section.push_str(&format!(
+            "(allow network-outbound\n    (remote udp)\n    (remote host \"{host_esc}\")\n    (remote port {port}))\n"
+        ));
+    }
+    section
+}
+
 /// Build the complete SBPL profile string based on configuration.
-fn build_sbpl_profile(block_network: bool, allowed_network_host: Option<&str>) -> String {
+fn build_sbpl_profile(
+    block_network: bool,
+    allowed_network_host: Option<&str>,
+    reachability_targets: &[String],
+) -> String {
     if block_network {
         let allow_section = allowed_network_host
             // rustnetec: 消除 clippy redundant_closure,直接传函数引用替代单参闭包
             .map(build_network_allow_section)
             .unwrap_or_default();
+        let reach_section = build_reachability_allow_section(reachability_targets);
         format!(
-            "{}{}{}",
-            SBPL_PROFILE_BASE, allow_section, SBPL_NETWORK_DENY
+            "{}{}{}{}",
+            SBPL_PROFILE_BASE, allow_section, reach_section, SBPL_NETWORK_DENY
         )
     } else {
         SBPL_PROFILE_BASE.to_string()
@@ -213,7 +239,11 @@ fn build_sbpl_profile(block_network: bool, allowed_network_host: Option<&str>) -
 /// The caller (`apply_sandbox` in mod.rs) handles the `Disabled` mode check,
 /// so this function assumes sandboxing is requested.
 pub fn apply_seatbelt(config: &SandboxConfig) -> Result<SeatbeltResult> {
-    let profile = build_sbpl_profile(config.block_network, config.allowed_network_host.as_deref());
+    let profile = build_sbpl_profile(
+        config.block_network,
+        config.allowed_network_host.as_deref(),
+        &config.reachability_targets,
+    );
     let profile_cstr = CString::new(profile).context("Profile contains null byte")?;
     let params = build_parameters(config).context("Failed to build sandbox parameters")?;
 
@@ -442,6 +472,7 @@ mod tests {
             pcapng_export_path: None,
             geoip_paths: vec![],
             data_dir: None,
+            reachability_targets: vec![],
         };
         let params = build_parameters(&config).unwrap();
         // Values at odd indices should all be /dev/null
@@ -468,6 +499,7 @@ mod tests {
             pcapng_export_path: Some("/tmp/rustnet/capture.pcapng".to_string()),
             geoip_paths: vec![],
             data_dir: None,
+            reachability_targets: vec![],
         };
         let params = build_parameters(&config).unwrap();
         // Keys
@@ -502,6 +534,7 @@ mod tests {
                 "/opt/homebrew/share/GeoIP".to_string(),
             ],
             data_dir: None,
+            reachability_targets: vec![],
         };
         let params = build_parameters(&config).unwrap();
         assert_eq!(params[10].to_str().unwrap(), PARAM_GEOIP_PATH_1);
@@ -559,11 +592,11 @@ mod tests {
     #[test]
     fn test_profile_variants_are_valid_cstrings() {
         CString::new(SBPL_PROFILE_BASE).expect("SBPL_PROFILE_BASE must not contain null bytes");
-        CString::new(build_sbpl_profile(true, None))
+        CString::new(build_sbpl_profile(true, None, &[]))
             .expect("full profile must not contain null bytes");
-        CString::new(build_sbpl_profile(false, None))
+        CString::new(build_sbpl_profile(false, None, &[]))
             .expect("base-only profile must not contain null bytes");
-        CString::new(build_sbpl_profile(true, Some("upload.example.com")))
+        CString::new(build_sbpl_profile(true, Some("upload.example.com"), &[]))
             .expect("profile with network allow must not contain null bytes");
     }
 
@@ -572,7 +605,7 @@ mod tests {
         // Both with and without network blocking, the base profile must deny
         // reads of the system credential stores rustnet never needs.
         for block_network in [true, false] {
-            let profile = build_sbpl_profile(block_network, None);
+            let profile = build_sbpl_profile(block_network, None, &[]);
             for store in ["/Library/Keychains", "/private/var/db/dslocal", "/etc/ssh"] {
                 assert!(
                     profile.contains(store),
@@ -584,7 +617,7 @@ mod tests {
 
     #[test]
     fn test_profile_includes_network_deny_when_block_network_true() {
-        let profile = build_sbpl_profile(true, None);
+        let profile = build_sbpl_profile(true, None, &[]);
         assert!(
             profile.contains("deny network-outbound"),
             "Expected network deny in profile when block_network=true"
@@ -593,7 +626,7 @@ mod tests {
 
     #[test]
     fn test_profile_excludes_network_deny_when_block_network_false() {
-        let profile = build_sbpl_profile(false, None);
+        let profile = build_sbpl_profile(false, None, &[]);
         assert!(
             !profile.contains("deny network-outbound"),
             "Expected no network deny in profile when block_network=false"
@@ -602,7 +635,7 @@ mod tests {
 
     #[test]
     fn test_profile_includes_file_read_deny() {
-        let profile = build_sbpl_profile(false, None);
+        let profile = build_sbpl_profile(false, None, &[]);
         assert!(
             profile.contains("deny file-read-data"),
             "Expected file-read-data deny in profile"
@@ -619,7 +652,7 @@ mod tests {
 
     #[test]
     fn test_profile_includes_process_exec_deny() {
-        let profile = build_sbpl_profile(false, None);
+        let profile = build_sbpl_profile(false, None, &[]);
         assert!(
             profile.contains("(deny process-exec)"),
             "Expected process-exec deny in profile"
@@ -636,7 +669,7 @@ mod tests {
 
     #[test]
     fn test_profile_includes_geoip_read_allow() {
-        let profile = build_sbpl_profile(false, None);
+        let profile = build_sbpl_profile(false, None, &[]);
         assert!(
             profile.contains(r#"(param "GEOIP_PATH_1")"#),
             "Expected GEOIP_PATH_1 parameter in profile"
@@ -654,7 +687,7 @@ mod tests {
     // rustnetec: Test network allow section (R3, T1.8)
     #[test]
     fn test_profile_includes_network_allow_for_specified_host() {
-        let profile = build_sbpl_profile(true, Some("upload.example.com"));
+        let profile = build_sbpl_profile(true, Some("upload.example.com"), &[]);
         assert!(
             profile.contains(r#"remote host "upload.example.com""#),
             "Expected network allow for specified host"
@@ -672,10 +705,43 @@ mod tests {
 
     #[test]
     fn test_profile_excludes_network_allow_when_no_host() {
-        let profile = build_sbpl_profile(true, None);
+        let profile = build_sbpl_profile(true, None, &[]);
         assert!(
             !profile.contains("remote host"),
             "Expected no network allow when no host specified"
         );
+    }
+
+    #[test]
+    fn test_profile_allows_reachability_targets() {
+        let targets = vec![
+            "223.5.5.5:53".to_string(),
+            "114.114.115.115:53".to_string(),
+            "badtarget".to_string(),     // 无端口 → 跳过
+            "8.8.8.8:abc".to_string(),  // 非法端口 → 跳过
+        ];
+        let profile = build_sbpl_profile(true, None, &targets);
+        assert!(
+            profile.contains(r#"remote host "223.5.5.5""#),
+            "Expected allow rule for 223.5.5.5"
+        );
+        assert!(
+            profile.contains(r#"remote host "114.114.115.115""#),
+            "Expected allow rule for 114.114.115.115"
+        );
+        assert!(
+            profile.contains("remote udp"),
+            "Expected UDP allow rule for DNS probes"
+        );
+        assert!(
+            profile.contains("remote port 53"),
+            "Expected port 53 in allow rule"
+        );
+        assert!(
+            !profile.contains("badtarget"),
+            "Invalid target should be skipped"
+        );
+        // 拒绝规则仍应存在（白名单在 deny 之前）
+        assert!(profile.contains("deny network-outbound"));
     }
 }

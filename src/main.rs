@@ -688,6 +688,12 @@ fn main() -> Result<()> {
         // 在 sandbox 之后打开 data.db → EPERM/CANTOPEN。传入 data_dir 加入白名单。
         let data_dir = telemetry::paths::data_dir().ok().map(|p| p.to_string_lossy().into_owned());
 
+        // rustnetec: 外网可达率探测目标，加入 Seatbelt 出站 TCP 白名单。
+        // 从持久化配置读取（与探测线程同源），沙箱在初始化前一次性生成。
+        let reachability_targets = rustnet_monitor::config::PersistentConfig::load()
+            .unwrap_or_default()
+            .reachability_targets;
+
         let sandbox_config = SandboxConfig {
             mode: sandbox_mode,
             block_network: true,  // RustNet is passive, doesn't need TCP
@@ -698,6 +704,7 @@ fn main() -> Result<()> {
             pcapng_export_path: config.pcapng_export_file,
             geoip_paths,
             data_dir, // rustnetec: W-修复 — SQLite 数据目录白名单
+            reachability_targets, // rustnetec: 可达率探测目标白名单
         };
 
         match apply_sandbox(&sandbox_config) {
@@ -915,7 +922,7 @@ fn main() -> Result<()> {
                     id
                 };
                 let upload_sink =
-                    telemetry::upload::UploadSink::new(db_path, runtime_config, identity);
+                    telemetry::upload::UploadSink::new(db_path.clone(), runtime_config, identity);
                 match upload_sink.spawn(app.should_stop_handle()) {
                     Ok(handle) => {
                         info!("Upload thread spawned");
@@ -927,6 +934,17 @@ fn main() -> Result<()> {
                 }
             } else {
                 info!("Upload thread skipped (server_url not configured)");
+            }
+
+            // rustnetec: 外网可达率探测线程（TCP connect 多目标，每 30s）。
+            // 失败只 warn，不影响 daemon 主流程。
+            if let Err(e) = telemetry::reachability::start_reachability_probe(
+                db_path,
+                app.should_stop_handle(),
+            ) {
+                warn!("Failed to start reachability probe thread: {e}");
+            } else {
+                info!("Reachability probe thread started");
             }
         }
 

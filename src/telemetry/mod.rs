@@ -11,6 +11,8 @@ pub mod paths;
 pub mod query; // rustnetec: query subcommand with filter-to-SQL translation (R5, T1.3)
 // rustnetec: T-C3 — 外网/局域网/本机回路识别辅助函数。
 pub mod netutil;
+// rustnetec: 外网可达率探测线程（TCP connect_timeout 多目标）
+pub mod reachability;
 pub mod upload; // rustnetec: UploadSink — client→server data upload (R3, T2.6)
 
 use serde::{Deserialize, Serialize};

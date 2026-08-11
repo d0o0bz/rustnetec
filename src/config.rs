@@ -328,6 +328,18 @@ pub struct PersistentConfig {
     #[serde(default = "default_retention_days")]
     pub retention_days: u32,
 
+    // --- Reachability probe (rustnetec) ---
+    // 定期 TCP 连接探测外网连通性与延迟，写入 reachability_probes 表，
+    // 供仪表盘「外网可达率」图表使用。
+    #[serde(default = "default_reachability_enabled")]
+    pub reachability_enabled: bool,
+    /// 探测目标，格式 `ip:port` 或 `host:port`；任一成功即视为可达。
+    #[serde(default = "default_reachability_targets")]
+    pub reachability_targets: Vec<String>,
+    /// 探测间隔（秒），默认 30s。
+    #[serde(default = "default_reachability_interval_secs")]
+    pub reachability_interval_secs: u32,
+
     // --- Local HTTP ---
     #[serde(default = "default_http_port")]
     pub http_port: u16,
@@ -372,6 +384,24 @@ fn default_upload_interval_secs() -> u32 {
 fn default_retention_days() -> u32 {
     90
 }
+
+// rustnetec: reachability probe defaults
+fn default_reachability_enabled() -> bool {
+    true
+}
+fn default_reachability_targets() -> Vec<String> {
+    vec![
+        "202.96.128.86:53".to_string(), // 中国电信 DNS
+        "119.29.29.29:53".to_string(), // 腾讯 DNSPod
+        "223.5.5.5:53".to_string(),    // 阿里 DNS
+        "8.8.8.8:53".to_string(),      // Google DNS
+        "114.114.115.115:53".to_string(), // 114DNS 备用
+    ]
+}
+fn default_reachability_interval_secs() -> u32 {
+    20
+}
+
 fn default_http_port() -> u16 {
     19811
 }
@@ -431,6 +461,10 @@ impl Default for PersistentConfig {
             upload_interval_secs: 60,
 
             retention_days: 90,
+
+            reachability_enabled: default_reachability_enabled(),
+            reachability_targets: default_reachability_targets(),
+            reachability_interval_secs: default_reachability_interval_secs(),
 
             http_port: 19811,
             http_token: None,
