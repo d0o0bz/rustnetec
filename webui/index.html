@@ -146,6 +146,22 @@
     color: var(--muted);
     margin: 0 0 8px 0;
   }
+  /* 副标题内的详情展开/收起链接（可达率图表） */
+  #reach-detail-toggle {
+    color: var(--accent);
+    cursor: pointer;
+    font-size: 12px;
+    margin-left: 4px;
+    text-decoration: none;
+    user-select: none;
+  }
+  #reach-detail-toggle:hover { text-decoration: underline; }
+  /* 可达率详细说明（点击展开，可收起） */
+  .chart-caption-detail {
+    border-left: 2px solid var(--border);
+    padding-left: 8px;
+    margin-top: -2px;
+  }
   /* 局域网子图小标题 */
   .chart-sub-title {
     font-size: 12px;
@@ -635,7 +651,7 @@
     <p class="chart-caption">最近 15 分钟内有外网流量的分钟占比</p>
     <div id="sla-gauge"></div>
 
-    <!-- rustnetec: 外网可达率（主动 TCP 探测，双轴：可达率% + 延迟ms） -->
+    <!-- rustnetec: 外网可达率（DNS/UDP 探测 5 个公共 DNS，20s 轮询，双轴：可达率% + 延迟ms） -->
     <p class="chart-title">外网可达率
       <span class="window-btns" id="reach-window-btns">
         <button data-secs="3600" class="active">1h</button>
@@ -645,7 +661,10 @@
         <button data-secs="604800">7d</button>
       </span>
     </p>
-    <p class="chart-caption">主动 TCP 探测（多目标，任一可达即视为通）；左轴可达率，右轴最小延迟</p>
+    <p class="chart-caption">每 20 秒对 5 个公共 DNS 发起 UDP 查询，任一成功即可达
+      <a href="javascript:void(0)" id="reach-detail-toggle">详情 ›</a>
+    </p>
+    <p class="chart-caption chart-caption-detail" id="reach-detail" style="display:none;">每 20 秒对 5 个公共 DNS 服务器发起 UDP 查询（ntp.ntsc.ac.cn / ntp.sjtu.edu.cn），任一服务器成功响应即视为该轮可达；左轴可达率 = 每个统计桶（1h~1d 视图按分钟、7d 视图按小时）内成功轮次占比，右轴 = 延时（毫秒）</p>
     <div id="reachability-chart"></div>
 
     <!-- rustnetec: T-D2 — RTT 趋势折线（p50/p95/p99 双轴，最近 1h） -->
@@ -665,7 +684,7 @@
 
     <!-- rustnetec: T-D5 — 局域网图表组（流量折线 + 连接数折线 + 双轴折线） -->
     <p class="chart-title">局域网图表组</p>
-    <p class="chart-caption">上：流量折线；下：连接数 + 流量双轴折线</p>
+    <!--<p class="chart-caption">上：流量折线；下：连接数 + 流量双轴折线</p>-->
     <p class="chart-sub-title">局域网流量</p>
     <div id="lan-flow-chart"></div>
     <p class="chart-sub-title">连接数 + 流量双轴</p>
@@ -1917,7 +1936,7 @@
       .catch(function () { /* 鉴权失败时静默置空 */ });
   }
 
-  // rustnetec: 外网可达率图表（主动 TCP 探测，双轴：可达率% + 最小延迟ms）。
+  // rustnetec: 外网可达率图表（DNS/UDP 探测，双轴：可达率% + 延时ms）。
   // 数据：GET /stats/reachability?start=now-<sec>s&bucket=<auto>。
   var reachChart = null;
   var reachTimer = null;
@@ -1950,7 +1969,7 @@
           return lines.join("<br/>");
         },
       },
-      legend: { data: ["可达率", "最小延迟"], textStyle: { color: GRAPH_COLORS.axis } },
+      legend: { data: ["可达率", "延时"], textStyle: { color: GRAPH_COLORS.axis } },
       grid: { left: 56, right: 56, top: 32, bottom: 40 },
       xAxis: {
         type: "time",
@@ -1985,7 +2004,7 @@
           data: [],
         },
         {
-          name: "最小延迟", type: "line", yAxisIndex: 1, showSymbol: false, smooth: true,
+          name: "延时", type: "line", yAxisIndex: 1, showSymbol: false, smooth: true,
           lineStyle: { color: REACH_COLORS.rtt, width: 1.5 }, data: [],
         },
       ],
@@ -2002,8 +2021,19 @@
       });
     });
 
+    // 详情展开/收起切换（简短副标题 ↔ 完整说明）
+    var reachToggle = document.getElementById("reach-detail-toggle");
+    var reachDetail = document.getElementById("reach-detail");
+    if (reachToggle && reachDetail) {
+      reachToggle.addEventListener("click", function () {
+        var hidden = reachDetail.style.display === "none";
+        reachDetail.style.display = hidden ? "block" : "none";
+        reachToggle.textContent = hidden ? "收起 ‹" : "详情 ›";
+      });
+    }
+
     pollReachability();
-    // 10s 轮询（探测每 30s 一轮，10s 足够跟进而不过密）
+    // 10s 轮询（探测每 20s 一轮，10s 足够跟进而不过密）
     reachTimer = setInterval(function () { if (isPageVisible) pollReachability(); }, 10000);
   }
 
