@@ -111,7 +111,7 @@
     margin-top: 2px;
   }
 
-  /* rustnetec: W3.4 — 仪表盘速率图容器(uPlot sparkline) */
+  /* rustnetec: T-F3e — 仪表盘速率图容器（ECharts sparkline） */
   #rate-chart {
     background: var(--panel);
     border: 1px solid var(--border);
@@ -120,7 +120,7 @@
     margin-bottom: 16px;
   }
 
-  /* rustnetec: W3.4 — 仪表盘协议分布容器(uPlot bars) */
+  /* rustnetec: T-F3e — 仪表盘协议分布容器（ECharts bar） */
   #protocol-dist {
     background: var(--panel);
     border: 1px solid var(--border);
@@ -269,15 +269,94 @@
     padding: 12px;
     overflow: auto;
   }
-  /* rustnetec: W3.4 — uPlot 容器(库生成的 canvas 撑满;高度自适应,
-     因为 uPlot 图例渲染在图表下方,固定 height 会把图例裁掉) */
+  /* rustnetec: T-F3e — ECharts 容器（高度固定，由 ECharts 自适应宽度） */
   #graph-canvas {
     width: 100%;
-    height: auto;
+    height: 360px;
+  }
+  #rate-chart, #protocol-dist {
+    width: 100%;
   }
 
-  /* rustnetec: W3.4 — uPlot 基础样式(官方 uPlot.min.css 内联,零构建) */
-  .uplot, .uplot *, .uplot *::before, .uplot *::after {box-sizing: border-box;}.uplot {font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";line-height: 1.5;width: min-content;}.u-title {text-align: center;font-size: 18px;font-weight: bold;}.u-wrap {position: relative;user-select: none;}.u-over, .u-under {position: absolute;}.u-under {overflow: hidden;}.uplot canvas {display: block;position: relative;width: 100%;height: 100%;}.u-axis {position: absolute;}.u-legend {font-size: 14px;margin: auto;text-align: center;}.u-inline {display: block;}.u-inline * {display: inline-block;}.u-inline tr {margin-right: 16px;}.u-legend th {font-weight: 600;}.u-legend th > * {vertical-align: middle;display: inline-block;}.u-legend .u-marker {width: 1em;height: 1em;margin-right: 4px;background-clip: padding-box !important;}.u-inline.u-live th::after {content: ":";vertical-align: middle;}.u-inline:not(.u-live) .u-value {display: none;}.u-series > * {padding: 4px;}.u-series th {cursor: pointer;}.u-legend .u-off > * {opacity: 0.3;}.u-select {background: rgba(0,0,0,0.07);position: absolute;pointer-events: none;}.u-cursor-x, .u-cursor-y {position: absolute;left: 0;top: 0;pointer-events: none;will-change: transform;}.u-hz .u-cursor-x, .u-vt .u-cursor-y {height: 100%;border-right: 1px dashed #607D8B;}.u-hz .u-cursor-y, .u-vt .u-cursor-x {width: 100%;border-bottom: 1px dashed #607D8B;}.u-cursor-pt {position: absolute;top: 0;left: 0;border-radius: 50%;border: 0 solid;pointer-events: none;will-change: transform;background-clip: padding-box !important;}.u-axis.u-off, .u-select.u-off, .u-cursor-x.u-off, .u-cursor-y.u-off, .u-cursor-pt.u-off {display: none;}
+  /* rustnetec: T-D1 — 仪表盘 SLA gauge 卡片（外网可用性占比） */
+  #sla-gauge {
+    width: 100%;
+    height: 220px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px;
+    margin-bottom: 16px;
+  }
+  #sla-caption {
+    font-size: 12px;
+    color: var(--muted);
+    margin: 0 0 16px 0;
+  }
+
+  /* rustnetec: T-D2 — RTT 趋势折线容器 */
+  #rtt-chart {
+    width: 100%;
+    height: 280px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px;
+    margin-bottom: 8px;
+  }
+  #rtt-caption {
+    font-size: 12px;
+    color: var(--muted);
+    margin: 0 0 16px 0;
+  }
+
+  /* rustnetec: T-D3 — 外网连接数堆叠面积图容器 */
+  #external-stack {
+    width: 100%;
+    height: 280px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px;
+    margin-bottom: 8px;
+  }
+  #external-stack-caption {
+    font-size: 12px;
+    color: var(--muted);
+    margin: 0 0 16px 0;
+  }
+
+  /* rustnetec: T-D4 — 周×小时可用性热力图容器 */
+  #availability-heatmap {
+    width: 100%;
+    height: 320px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px;
+    margin-bottom: 8px;
+  }
+  #availability-heatmap-caption {
+    font-size: 12px;
+    color: var(--muted);
+    margin: 0 0 16px 0;
+  }
+
+  /* rustnetec: T-D5 — 局域网图表组容器 */
+  #lan-flow-chart, #lan-devices-chart, #lan-dual-chart {
+    width: 100%;
+    height: 240px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px;
+    margin-bottom: 8px;
+  }
+  #lan-caption {
+    font-size: 12px;
+    color: var(--muted);
+    margin: 0 0 16px 0;
+  }
 
   /* rustnetec: W3.4 进程活动表样式 */
   #activity-toolbar {
@@ -328,6 +407,105 @@
   #activity-table th.sorted-asc::after { content: " ▲"; color: var(--accent); }
   #activity-table th.sorted-desc::after { content: " ▼"; color: var(--accent); }
   #activity-table tbody tr:hover { background: rgba(88,166,255,0.06); }
+
+  /* rustnetec: T-E4 — 进程详情抽屉样式 */
+  #process-drawer {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 16px;
+    margin-top: 16px;
+  }
+  #process-drawer-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+  }
+  #process-drawer-title { margin: 0; font-size: 15px; font-weight: 600; }
+  #process-drawer-close {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 4px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 13px;
+  }
+  #process-drawer-close:hover { border-color: var(--accent); color: var(--accent); }
+  #process-drawer-controls {
+    display: flex;
+    gap: 16px;
+    margin-bottom: 12px;
+    font-size: 13px;
+  }
+  #process-drawer-controls select {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 13px;
+    margin-left: 6px;
+  }
+  #process-dual-chart {
+    width: 100%;
+    height: 320px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px;
+  }
+  #process-dual-caption {
+    font-size: 12px;
+    color: var(--muted);
+    margin: 8px 0 0 0;
+  }
+
+  /* rustnetec: T-E5 — 多进程对比视图样式 */
+  #process-compare {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 16px;
+    margin-top: 16px;
+  }
+  #process-compare-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 12px;
+  }
+  #process-compare-header h3 { margin: 0; font-size: 15px; font-weight: 600; }
+  #process-compare-header button {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 4px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 13px;
+  }
+  #process-compare-header button:hover { border-color: var(--accent); color: var(--accent); }
+  #process-compare-chart {
+    width: 100%;
+    height: 320px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px;
+  }
+  #process-compare-caption {
+    font-size: 12px;
+    color: var(--muted);
+    margin: 8px 0 0 0;
+  }
+  /* 复选框列单元格内联 */
+  #activity-table td.cbx-cell, #activity-table th.cbx-cell {
+    width: 32px;
+    text-align: center;
+    white-space: nowrap;
+  }
 
   /* rustnetec: W4 设置页样式 */
   #settings-form fieldset {
@@ -429,6 +607,28 @@
     </div>
     <div id="rate-chart"></div>
     <div id="protocol-dist"></div>
+
+    <!-- rustnetec: T-D1 — SLA gauge 卡片（最近 15min 外网可用性占比） -->
+    <div id="sla-gauge"></div>
+    <p id="sla-caption">外网可用性 SLA — 最近 15 分钟内有外网流量的分钟占比</p>
+
+    <!-- rustnetec: T-D2 — RTT 趋势折线（p50/p95/p99 双轴，最近 1h） -->
+    <div id="rtt-chart"></div>
+    <p id="rtt-caption">外网 RTT 趋势 — 每分钟分位数（左轴 p50/p95，右轴 p99）</p>
+
+    <!-- rustnetec: T-D3 — 外网连接数堆叠面积图（按协议，最近 1h） -->
+    <div id="external-stack"></div>
+    <p id="external-stack-caption">外网连接数构成 — 按协议堆叠（每分钟桶）</p>
+
+    <!-- rustnetec: T-D4 — 周×小时可用性热力图（7×24，最近 7d） -->
+    <div id="availability-heatmap"></div>
+    <p id="availability-heatmap-caption">外网可用性时段分析 — 周×小时热力图（颜色深浅 = 该时段有外网流量的分钟占比）</p>
+
+    <!-- rustnetec: T-D5 — 局域网图表组（流量折线 + 设备柱状 + 双轴折线） -->
+    <div id="lan-flow-chart"></div>
+    <div id="lan-devices-chart"></div>
+    <div id="lan-dual-chart"></div>
+    <p id="lan-caption">局域网图表组 — 上：流量折线；中：设备连接数柱状（按 source_ip，top 20）；下：连接数 + 流量双轴折线</p>
   </section>
 
   <section id="details-view" class="view">
@@ -475,6 +675,52 @@
         <tbody id="activity-tbody"></tbody>
       </table>
       <div id="activity-empty" class="muted" style="display:none;">无进程数据(需进程归因启用且有捕获数据)</div>
+    </div>
+
+    <!-- rustnetec: T-E4 — 进程详情抽屉（时间窗 + �口下拉 + 双轴折线 + 外网持续时长） -->
+    <div id="process-drawer" style="display:none;">
+      <div id="process-drawer-header">
+        <h3 id="process-drawer-title">进程详情</h3>
+        <button id="process-drawer-close" type="button">关闭</button>
+      </div>
+      <div id="process-drawer-controls">
+        <label>时间窗
+          <select id="process-window">
+            <option value="900">15分钟</option>
+            <option value="1800">30分钟</option>
+            <option value="3600" selected>1小时</option>
+            <option value="10800">3小时</option>
+            <option value="21600">6小时</option>
+            <option value="86400">1天</option>
+            <option value="604800">1周</option>
+            <option value="2592000">1月</option>
+          </select>
+        </label>
+        <label>网口
+          <select id="process-interface"><option value="">全部网口</option></select>
+        </label>
+      </div>
+      <div id="process-dual-chart"></div>
+      <p id="process-dual-caption">双轴折线 — 左：流量（bytes/s）；右：活跃连接数 + 外网持续时长</p>
+    </div>
+
+    <!-- rustnetec: T-E5 — 多进程对比视图（复选 ≤5，多折线对比） -->
+    <div id="process-compare" style="display:none;">
+      <div id="process-compare-header">
+        <h3>多进程对比</h3>
+        <span id="process-compare-count" class="muted"></span>
+        <button id="process-compare-clear" type="button">清空选择</button>
+        <button id="process-compare-close" type="button">关闭对比</button>
+      </div>
+      <div id="process-compare-chart"></div>
+      <p id="process-compare-caption">多进程流量对比 — 每进程一条折线（最多 5 个）</p>
+    </div>
+
+    <!-- rustnetec: T-E6 — 进程×时段可用性热力图（时间窗 ≥1d 时渲染） -->
+    <div id="process-avail-heatmap" style="display:none;">
+      <h3>进程×时段可用性热力图</h3>
+      <div id="process-avail-heatmap-chart"></div>
+      <p id="process-avail-heatmap-caption">时间窗 ≥1 天时渲染 — 横轴时间桶，纵轴进程名，颜色深浅 = 活跃度</p>
     </div>
   </section>
 
@@ -566,7 +812,7 @@
   </section>
 </div>
 
-<script src="uplot.js"></script>
+<script src="echarts.js"></script>
 <script>
 // rustnetec: W1 零构建前端 JS — 原生 ES2020,无框架无转译。
 // 设计原则:所有动态文本经 textContent 渲染,禁止 innerHTML 拼接外部数据(XSS 防护)。
@@ -640,7 +886,7 @@
       detailsLoaded = true;
       startDetailsRealtime();
     }
-    // 按需加载:首次切到流量图才初始化 uPlot 实例
+    // 按需加载:首次切到流量图才初始化 ECharts 实例
     if (viewId === "graph") {
       initGraphView();
     }
@@ -1018,18 +1264,18 @@
   // 初始化连接表视图(标签切换时按需加载,这里先绑定控件)
   initDetailsView();
 
-  // rustnetec: W3.4 — 流量图改用 uPlot(uPlot.iife.min.js v1.6.31, MIT,内嵌)。
+  // rustnetec: T-F3e — 流量图改用 ECharts 5.x（弃用 uPlot）。
   // 设计文档 §3.4:双折线 in/out,时间轴窗口 1m/5m/15m/1h/8h/1d。
-  // 实现:uPlot 时间序列图,自带光标联动/图例/自动视口降采样,8h/1d 的 8.6 万点无压力。
+  // 实现:ECharts line 时间序列,自带 tooltip/legend/dataZoom。
   // 数据:前端累积 /live 采样(实时),每秒一次,按时间轴窗口裁剪。
   var graphState = {
     rangeSecs: 300, // 默认 5m
     samples: [], // {t: Date.now(), in: bps, out: bps}
-    plot: null,
+    chart: null,
     rafId: null,
   };
 
-  // uPlot 主题色(对齐现有暗色面板)
+  // ECharts 暗色主题色
   var GRAPH_COLORS = {
     grid: "#30363d",
     axis: "#8b949e",
@@ -1051,44 +1297,34 @@
     }
   }
 
-  // 构建 uPlot 数据:[ts(秒), in, out],按 rangeSecs 窗口裁剪
+  // 构建 ECharts series 数据:[[timestamp_ms, in], [timestamp_ms, out]]
   function graphData() {
     var now = Date.now();
     var startT = now - graphState.rangeSecs * 1000;
-    var ts = [], inArr = [], outArr = [], maxBps = 0;
+    var inData = [], outData = [], maxBps = 0;
     for (var i = 0; i < graphState.samples.length; i++) {
       var s = graphState.samples[i];
       if (s.t < startT || s.t > now) continue;
-      ts.push(s.t / 1000); // uPlot 时间刻度用秒
-      inArr.push(s.in);
-      outArr.push(s.out);
+      inData.push([s.t, s.in]);
+      outData.push([s.t, s.out]);
       if (s.in > maxBps) maxBps = s.in;
       if (s.out > maxBps) maxBps = s.out;
     }
-    return { ts: ts, inArr: inArr, outArr: outArr, n: ts.length, maxBps: maxBps };
+    return { inData: inData, outData: outData, n: inData.length, maxBps: maxBps };
   }
 
-  // 绘制双折线(增量 setData)
+  // 绘制双折线(增量 setOption)
   function drawGraph() {
-    if (!graphState.plot) return;
+    if (!graphState.chart) return;
     var d = graphData();
-    graphState.plot.setData([d.ts, d.inArr, d.outArr]);
+    graphState.chart.setOption({
+      series: [
+        { data: d.inData },
+        { data: d.outData },
+      ],
+    }, { replace: ["series"] });
     var info = document.getElementById("graph-info");
-    info.textContent = d.n + " 个采样点,峰值 " + formatRate(d.maxBps);
-  }
-
-  // 时间轴刻度:HH:MM:SS
-  function graphTimeValues(u, ticks) {
-    return ticks.map(function (t) {
-      var dt = new Date(t * 1000);
-      var p = function (n) { return (n < 10 ? "0" : "") + n; };
-      return p(dt.getHours()) + ":" + p(dt.getMinutes()) + ":" + p(dt.getSeconds());
-    });
-  }
-
-  // 速率轴刻度(复用 formatRate)
-  function graphRateValues(u, ticks) {
-    return ticks.map(function (v) { return formatRate(v); });
+    if (info) info.textContent = d.n + " 个采样点,峰值 " + formatRate(d.maxBps);
   }
 
   // rustnetec: W3.2 时间轴切换
@@ -1107,40 +1343,42 @@
     });
   }
 
-  // 初始化流量图视图:首次切到标签时创建 uPlot 实例
+  // 初始化流量图视图:首次切到标签时创建 ECharts 实例
   var graphInitialized = false;
   function initGraphView() {
     if (graphInitialized) return;
     graphInitialized = true;
     var el = document.getElementById("graph-canvas");
-    var opts = {
-      width: el.clientWidth || 800,
-      height: 360,
-      legend: { show: true, live: true },
-      cursor: {
-        x: true,
-        y: true,
-        stroke: GRAPH_COLORS.axis,
-        points: { size: 6, stroke: "#0e1116", fill: GRAPH_COLORS.axis },
+    graphState.chart = echarts.init(el, null, { renderer: "canvas" });
+    graphState.chart.setOption({
+      tooltip: { trigger: "axis", axisPointer: { type: "line" } },
+      legend: { data: ["入站 ↓", "出站 ↑"], textStyle: { color: GRAPH_COLORS.axis } },
+      grid: { left: 64, right: 16, top: 32, bottom: 40 },
+      xAxis: {
+        type: "time",
+        axisLine: { lineStyle: { color: GRAPH_COLORS.axis } },
+        axisLabel: { color: GRAPH_COLORS.axis, fontSize: 10 },
+        splitLine: { show: true, lineStyle: { color: GRAPH_COLORS.grid } },
+      },
+      yAxis: {
+        type: "value",
+        axisLine: { lineStyle: { color: GRAPH_COLORS.axis } },
+        axisLabel: { color: GRAPH_COLORS.axis, fontSize: 10, formatter: function (v) { return formatRate(v); } },
+        splitLine: { lineStyle: { color: GRAPH_COLORS.grid } },
       },
       series: [
-        {},
-        { label: "入站 ↓", stroke: GRAPH_COLORS.in, fill: "rgba(88,166,255,0.08)", width: 1.5, points: { show: false } },
-        { label: "出站 ↑", stroke: GRAPH_COLORS.out, fill: "rgba(63,185,80,0.08)", width: 1.5, points: { show: false } },
+        { name: "入站 ↓", type: "line", showSymbol: false, smooth: true,
+          lineStyle: { color: GRAPH_COLORS.in, width: 1.5 },
+          areaStyle: { color: "rgba(88,166,255,0.08)" }, data: [] },
+        { name: "出站 ↑", type: "line", showSymbol: false, smooth: true,
+          lineStyle: { color: GRAPH_COLORS.out, width: 1.5 },
+          areaStyle: { color: "rgba(63,185,80,0.08)" }, data: [] },
       ],
-      axes: [
-        { stroke: GRAPH_COLORS.axis, grid: { stroke: GRAPH_COLORS.grid }, ticks: { stroke: GRAPH_COLORS.axis }, size: 48, values: graphTimeValues },
-        { stroke: GRAPH_COLORS.axis, grid: { stroke: GRAPH_COLORS.grid }, ticks: { stroke: GRAPH_COLORS.axis }, size: 64, values: graphRateValues },
-      ],
-      scales: { x: { time: true }, y: { auto: true } },
-    };
-    graphState.plot = new uPlot(opts, [[], [], []], el);
+    });
     drawGraph();
     // 窗口尺寸变化时自适应
     window.addEventListener("resize", function () {
-      if (!graphState.plot) return;
-      var el2 = document.getElementById("graph-canvas");
-      graphState.plot.setSize({ width: el2.clientWidth || 800, height: 360 });
+      if (graphState.chart) graphState.chart.resize();
     });
     // 1s 重绘节奏(由 pollLive 的采样驱动,这里设兜底定时)
     setInterval(function () {
@@ -1148,10 +1386,9 @@
     }, 1000);
   }
 
-  // rustnetec: W3.4 — 仪表盘 sparkline(速率图)与协议分布,均用 uPlot。
+  // rustnetec: T-F3e — 仪表盘 sparkline(速率图)与协议分布,均用 ECharts。
   // 设计文档 §3.1:速率图 Sparkline(最近 60 个采样点 → 60s 窗口);
-  // 协议分布原设计为横向条形,1.6.31 的 uPlot.paths.bars 为竖向柱状,
-  // 用 category 轴(distr 指数轴 + values 映射协议名)实现,观感一致。
+  // 协议分布用 ECharts bar（category 轴映射协议名）。
   var dashSpark = null;
   var protoPlot = null;
   var protoLabels = [];
@@ -1161,66 +1398,73 @@
   function initDashSpark() {
     var el = document.getElementById("rate-chart");
     if (!el || dashSpark || !el.clientWidth) return; // 视图未激活时跳过,等 switchView
-    var opts = {
-      width: el.clientWidth,
-      height: 90,
-      legend: { show: false },
-      cursor: { x: false, y: false },
+    dashSpark = echarts.init(el, null, { renderer: "canvas" });
+    dashSpark.setOption({
+      grid: { left: 66, right: 8, top: 8, bottom: 20 },
+      xAxis: {
+        type: "time",
+        show: false,
+      },
+      yAxis: {
+        type: "value",
+        axisLine: { show: false },
+        axisTick: { show: false },
+        axisLabel: { color: GRAPH_COLORS.axis, fontSize: 10, formatter: function (v) { return formatRate(v); } },
+        splitLine: { show: false },
+      },
       series: [
-        {},
-        { label: "入站", stroke: GRAPH_COLORS.in, fill: "rgba(88,166,255,0.10)", width: 1.2, points: { show: false } },
-        { label: "出站", stroke: GRAPH_COLORS.out, fill: "rgba(63,185,80,0.10)", width: 1.2, points: { show: false } },
+        { name: "入站", type: "line", showSymbol: false, smooth: true,
+          lineStyle: { color: GRAPH_COLORS.in, width: 1.2 },
+          areaStyle: { color: "rgba(88,166,255,0.10)" }, data: [] },
+        { name: "出站", type: "line", showSymbol: false, smooth: true,
+          lineStyle: { color: GRAPH_COLORS.out, width: 1.2 },
+          areaStyle: { color: "rgba(63,185,80,0.10)" }, data: [] },
       ],
-      axes: [
-        { show: false },
-        // rustnetec: 修复 — sparkline 显示速率轴(带单位 KB/s 等)。
-        // 轴宽 66px 需容纳 formatRate 最宽输出(如 "12345.67 MB/s" ≈ 11 字符),
-        // 之前 52px 偏小导致标签溢出到绘图区/画布外。
-        { stroke: GRAPH_COLORS.axis, grid: { show: false }, size: 66, font: "10px sans-serif",
-          values: function (u, ticks) { return ticks.map(function (v) { return formatRate(v); }); } },
-      ],
-      scales: { x: { time: true }, y: { auto: true } },
-    };
-    dashSpark = new uPlot(opts, [[], [], []], el);
+    });
   }
 
   function updateDashSpark() {
     if (!dashSpark) return;
     var now = Date.now();
     var startT = now - 60000; // 60s 窗口
-    var ts = [], inArr = [], outArr = [];
+    var inData = [], outData = [];
     for (var i = 0; i < graphState.samples.length; i++) {
       var s = graphState.samples[i];
       if (s.t < startT) continue;
-      ts.push(s.t / 1000);
-      inArr.push(s.in);
-      outArr.push(s.out);
+      inData.push([s.t, s.in]);
+      outData.push([s.t, s.out]);
     }
-    dashSpark.setData([ts, inArr, outArr]);
+    dashSpark.setOption({
+      series: [
+        { data: inData },
+        { data: outData },
+      ],
+    }, { replace: ["series"] });
   }
 
   function initProtoPlot() {
     var el = document.getElementById("protocol-dist");
     if (!el || protoPlot || !el.clientWidth) return;
-    var opts = {
-      width: el.clientWidth,
-      height: 180,
-      legend: { show: false },
-      cursor: { x: true, y: true },
-      series: [
-        {},
-        { label: "连接数", paths: uPlot.paths.bars({ size: 0.8 }), stroke: GRAPH_COLORS.in, fill: "rgba(88,166,255,0.75)", width: 1, points: { show: false } },
-      ],
-      axes: [
-        { stroke: GRAPH_COLORS.axis, grid: { show: false }, size: 64, font: "10px sans-serif", values: function (u, splits) { return splits.map(function (v) { return protoLabels[Math.round(v)] || ""; }); } },
-        { stroke: GRAPH_COLORS.axis, grid: { stroke: GRAPH_COLORS.grid }, size: 48, values: function (u, ticks) { return ticks.map(function (v) { return v >= 1000 ? (v / 1000).toFixed(1) + "k" : v; }); } },
-      ],
-      scales: {
-        x: { time: false, range: function (u, dataMin, dataMax) { return [dataMin - 0.5, dataMax + 0.5]; } },
-        y: { auto: true },
+    protoPlot = echarts.init(el, null, { renderer: "canvas" });
+    protoPlot.setOption({
+      tooltip: { trigger: "axis", axisPointer: { type: "shadow" } },
+      grid: { left: 48, right: 16, top: 16, bottom: 64 },
+      xAxis: {
+        type: "category",
+        axisLine: { lineStyle: { color: GRAPH_COLORS.axis } },
+        axisLabel: { color: GRAPH_COLORS.axis, fontSize: 10, rotate: 45, formatter: function (v) { return protoLabels[Number(v)] || ""; } },
       },
-    };
-    protoPlot = new uPlot(opts, [[], []], el);
+      yAxis: {
+        type: "value",
+        axisLine: { lineStyle: { color: GRAPH_COLORS.axis } },
+        axisLabel: { color: GRAPH_COLORS.axis, fontSize: 10, formatter: function (v) { return v >= 1000 ? (v / 1000).toFixed(1) + "k" : v; } },
+        splitLine: { lineStyle: { color: GRAPH_COLORS.grid } },
+      },
+      series: [
+        { name: "连接数", type: "bar", barWidth: "60%",
+          itemStyle: { color: GRAPH_COLORS.in }, data: [] },
+      ],
+    });
   }
 
   function updateProtoDist(stats) {
@@ -1230,11 +1474,505 @@
     protoLabels = top.map(function (r) { return String(r.protocol || "?"); });
     var xs = [], ys = [];
     for (var i = 0; i < top.length; i++) {
-      xs.push(i);
+      xs.push(String(top[i].protocol || "?"));
       ys.push(Number(top[i].count) || 0);
     }
-    protoPlot.setData([xs, ys]);
+    protoPlot.setOption({
+      xAxis: { data: xs },
+      series: [{ data: ys }],
+    });
   }
+
+  // rustnetec: T-D1 — SLA gauge 卡片（最近 15min 外网可用性占比）。
+  // 数据：GET /stats/availability?start=now-15m&bucket=1min&scope=external，
+  // 前端统计 available=true 的分钟占比，渲染 ECharts gauge。
+  var slaGauge = null;
+  var slaTimer = null;
+
+  function initSlaGauge() {
+    var el = document.getElementById("sla-gauge");
+    if (!el || slaGauge || !el.clientWidth) return;
+    slaGauge = echarts.init(el, null, { renderer: "canvas" });
+    slaGauge.setOption({
+      tooltip: { formatter: "{b}: {c}%" },
+      series: [{
+        name: "外网可用性 SLA",
+        type: "gauge",
+        min: 0, max: 100,
+        progress: { show: true, width: 14 },
+        axisLine: {
+          lineStyle: {
+            // 红黄绿三段：<90% 红、90-99% 黄、≥99% 绿
+            color: [[0.90, "#f85149"], [0.99, "#e3b341"], [1, "#3fb950"]],
+            width: 14,
+          },
+        },
+        detail: { valueAnimation: true, formatter: "{value}%", fontSize: 22, color: GRAPH_COLORS.axis, offsetCenter: [0, "70%"] },
+        title: { offsetCenter: [0, "20%"], fontSize: 12, color: GRAPH_COLORS.axis },
+        axisTick: { show: false },
+        splitLine: { show: false },
+        axisLabel: { show: false },
+        pointer: { width: 4 },
+        data: [{ value: 0, name: "最近 15 分钟" }],
+      }],
+    });
+    pollSla();
+    // 5s 轮询节奏（与 /stats 同节奏，tiny_http 单线程不宜更密）
+    slaTimer = setInterval(function () {
+      if (isPageVisible) pollSla();
+    }, 5000);
+  }
+
+  function pollSla() {
+    fetch("/stats/availability?start=now-15m&bucket=1min&scope=external", { credentials: "same-origin" })
+      .then(function (resp) { if (!resp.ok) throw new Error("HTTP " + resp.status); return resp.json(); })
+      .then(function (data) {
+        var buckets = data.buckets || [];
+        if (buckets.length === 0) {
+          slaGauge.setOption({ series: [{ data: [{ value: 0, name: "无数据" }] }] });
+          return;
+        }
+        var available = 0, total = 0;
+        for (var i = 0; i < buckets.length; i++) {
+          total += 1;
+          if (buckets[i].available === true) available += 1;
+        }
+        var ratio = total > 0 ? (available / total) * 100 : 0;
+        slaGauge.setOption({ series: [{ data: [{ value: Math.round(ratio * 10) / 10, name: "最近 15 分钟" }] }] });
+      })
+      .catch(function (err) {
+        // 鉴权失败或后端未就绪时不报红,gauge 置 0
+        if (slaGauge) slaGauge.setOption({ series: [{ data: [{ value: 0, name: err.message }] }] });
+      });
+  }
+
+  // rustnetec: T-D2 — RTT 趋势折线（p50/p95/p99 双轴，最近 1h）。
+  // 数据：GET /stats/rtt?start=now-1h&bucket=1min&scope=external。
+  var rttChart = null;
+  var rttTimer = null;
+  var RTT_COLORS = { p50: "#58a6ff", p95: "#f0883e", p99: "#f85149" };
+
+  function initRttChart() {
+    var el = document.getElementById("rtt-chart");
+    if (!el || rttChart || !el.clientWidth) return;
+    rttChart = echarts.init(el, null, { renderer: "canvas" });
+    rttChart.setOption({
+      tooltip: { trigger: "axis" },
+      legend: { data: ["p50", "p95", "p99"], textStyle: { color: GRAPH_COLORS.axis } },
+      grid: { left: 56, right: 56, top: 32, bottom: 40 },
+      xAxis: {
+        type: "time",
+        axisLine: { lineStyle: { color: GRAPH_COLORS.axis } },
+        axisLabel: { color: GRAPH_COLORS.axis, fontSize: 10 },
+        splitLine: { show: true, lineStyle: { color: GRAPH_COLORS.grid } },
+      },
+      yAxis: [
+        {
+          type: "value", name: "p50/p95", nameTextStyle: { color: GRAPH_COLORS.axis },
+          axisLine: { lineStyle: { color: GRAPH_COLORS.axis } },
+          axisLabel: { color: GRAPH_COLORS.axis, fontSize: 10, formatter: "{value} ms" },
+          splitLine: { lineStyle: { color: GRAPH_COLORS.grid } },
+        },
+        {
+          type: "value", name: "p99", nameTextStyle: { color: GRAPH_COLORS.axis },
+          axisLine: { lineStyle: { color: RTT_COLORS.p99 } },
+          axisLabel: { color: RTT_COLORS.p99, fontSize: 10, formatter: "{value} ms" },
+          splitLine: { show: false },
+        },
+      ],
+      series: [
+        { name: "p50", type: "line", yAxisIndex: 0, showSymbol: false, smooth: true,
+          lineStyle: { color: RTT_COLORS.p50, width: 1.5 }, data: [] },
+        { name: "p95", type: "line", yAxisIndex: 0, showSymbol: false, smooth: true,
+          lineStyle: { color: RTT_COLORS.p95, width: 1.5 }, data: [] },
+        { name: "p99", type: "line", yAxisIndex: 1, showSymbol: false, smooth: true,
+          lineStyle: { color: RTT_COLORS.p99, width: 1.5 }, data: [] },
+      ],
+    });
+    pollRtt();
+    rttTimer = setInterval(function () { if (isPageVisible) pollRtt(); }, 5000);
+  }
+
+  function pollRtt() {
+    fetch("/stats/rtt?start=now-1h&bucket=1min&scope=external", { credentials: "same-origin" })
+      .then(function (resp) { if (!resp.ok) throw new Error("HTTP " + resp.status); return resp.json(); })
+      .then(function (data) {
+        var buckets = data.buckets || [];
+        var p50 = [], p95 = [], p99 = [];
+        for (var i = 0; i < buckets.length; i++) {
+          var b = buckets[i];
+          // ts 形如 "2026-08-11T14:05"，转为毫秒时间戳
+          var ts = Date.parse(b.ts + ":00Z") || Date.parse(b.ts + "Z") || b.ts;
+          if (!ts || isNaN(ts)) ts = b.ts;
+          p50.push([ts, Number(b.p50) || 0]);
+          p95.push([ts, Number(b.p95) || 0]);
+          p99.push([ts, Number(b.p99) || 0]);
+        }
+        rttChart.setOption({ series: [
+          { data: p50 }, { data: p95 }, { data: p99 },
+        ] });
+      })
+      .catch(function () { /* 鉴权失败时静默置空 */ });
+  }
+
+  // rustnetec: T-D3 — 外网连接数堆叠面积图（按协议，最近 1h）。
+  // 数据：GET /stats/range?bucket=1min&scope=external。后端返回桶聚合，
+  // 前端无法再按协议拆分（/stats/range 不返回 protocol 维度），故此处
+  // 改为「外网总连接数堆叠面积」单系列展示；协议拆分需后端增 protocol 维度，
+  // 列入后续 issue。当前以单系列面积图呈现外网连接数趋势。
+  var externalStack = null;
+  var externalStackTimer = null;
+
+  function initExternalStack() {
+    var el = document.getElementById("external-stack");
+    if (!el || externalStack || !el.clientWidth) return;
+    externalStack = echarts.init(el, null, { renderer: "canvas" });
+    externalStack.setOption({
+      tooltip: { trigger: "axis" },
+      legend: { data: ["外网连接数"], textStyle: { color: GRAPH_COLORS.axis } },
+      grid: { left: 56, right: 16, top: 32, bottom: 40 },
+      xAxis: {
+        type: "time",
+        axisLine: { lineStyle: { color: GRAPH_COLORS.axis } },
+        axisLabel: { color: GRAPH_COLORS.axis, fontSize: 10 },
+        splitLine: { show: true, lineStyle: { color: GRAPH_COLORS.grid } },
+      },
+      yAxis: {
+        type: "value", name: "连接数", nameTextStyle: { color: GRAPH_COLORS.axis },
+        axisLine: { lineStyle: { color: GRAPH_COLORS.axis } },
+        axisLabel: { color: GRAPH_COLORS.axis, fontSize: 10 },
+        splitLine: { lineStyle: { color: GRAPH_COLORS.grid } },
+      },
+      series: [
+        { name: "外网连接数", type: "line", stack: "external", showSymbol: false, smooth: true,
+          areaStyle: { color: "rgba(88,166,255,0.18)" },
+          lineStyle: { color: GRAPH_COLORS.in, width: 1.5 }, data: [] },
+      ],
+    });
+    pollExternalStack();
+    externalStackTimer = setInterval(function () { if (isPageVisible) pollExternalStack(); }, 5000);
+  }
+
+  function pollExternalStack() {
+    fetch("/stats/range?bucket=1min&scope=external", { credentials: "same-origin" })
+      .then(function (resp) { if (!resp.ok) throw new Error("HTTP " + resp.status); return resp.json(); })
+      .then(function (data) {
+        var buckets = data.buckets || [];
+        var pts = [];
+        for (var i = 0; i < buckets.length; i++) {
+          var b = buckets[i];
+          var ts = Date.parse(b.ts + ":00Z") || Date.parse(b.ts + "Z") || b.ts;
+          if (!ts || isNaN(ts)) ts = b.ts;
+          pts.push([ts, Number(b.conn_count) || 0]);
+        }
+        externalStack.setOption({ series: [{ data: pts }] });
+      })
+      .catch(function () { /* 鉴权失败时静默置空 */ });
+  }
+
+  // rustnetec: T-D4 — 周×小时可用性热力图（7×24，最近 7d）。
+  // 数据：GET /stats/availability?start=now-7d&bucket=1hour&scope=external。
+  // 前端把每桶的 ratio（0.0-1.0）映射为热力值，
+  // 横轴 = 小时（0-23），纵轴 = 星期（周一[0]..周日[6]）。
+  var availHeatmap = null;
+  var availHeatmapLoaded = false;
+
+  function initAvailHeatmap() {
+    var el = document.getElementById("availability-heatmap");
+    if (!el || availHeatmap || !el.clientWidth) return;
+    availHeatmap = echarts.init(el, null, { renderer: "canvas" });
+    // 周一[0]..周日[6] 的中文标签
+    var weekLabels = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+    var hourLabels = [];
+    for (var h = 0; h < 24; h++) hourLabels.push(String(h));
+    availHeatmap.setOption({
+      tooltip: {
+        position: "top",
+        formatter: function (p) {
+          return weekLabels[p.value[1]] + " " + hourLabels[p.value[0]] + ":00<br/>可用性 " + (p.value[2] * 100).toFixed(0) + "%";
+        },
+      },
+      grid: { left: 56, right: 24, top: 24, bottom: 56 },
+      xAxis: {
+        type: "category", data: hourLabels, name: "小时",
+        axisLine: { lineStyle: { color: GRAPH_COLORS.axis } },
+        axisLabel: { color: GRAPH_COLORS.axis, fontSize: 10 },
+        splitArea: { show: false },
+      },
+      yAxis: {
+        type: "category", data: weekLabels,
+        axisLine: { lineStyle: { color: GRAPH_COLORS.axis } },
+        axisLabel: { color: GRAPH_COLORS.axis, fontSize: 10 },
+        splitArea: { show: false },
+      },
+      visualMap: {
+        min: 0, max: 1, calculable: true, orient: "horizontal", left: "center", bottom: 8,
+        textStyle: { color: GRAPH_COLORS.axis },
+        inRange: { color: ["#21262d", "#1f6feb", "#58a6ff", "#3fb950"] },
+      },
+      series: [{
+        name: "可用性", type: "heatmap",
+        label: { show: false },
+        emphasis: { itemStyle: { shadowBlur: 10, shadowColor: "rgba(0,0,0,0.5)" } },
+        data: [],
+      }],
+    });
+    pollAvailHeatmap();
+  }
+
+  function pollAvailHeatmap() {
+    // 用户切换视图时拉取一次（7d 数据量大，不做高频轮询）
+    if (availHeatmapLoaded) return;
+    availHeatmapLoaded = true;
+    fetch("/stats/availability?start=now-7d&bucket=1hour&scope=external", { credentials: "same-origin" })
+      .then(function (resp) { if (!resp.ok) throw new Error("HTTP " + resp.status); return resp.json(); })
+      .then(function (data) {
+        var buckets = data.buckets || [];
+        // 聚合到 周×小时 矩阵：按桶 ts 的星期(0=周一..6=周日) 与小时(0-23)
+        // SQLite strftime('%w', ts) 返回 0=周日..6=周六，需归一化为 0=周一
+        var matrix = {}; // key = "week,hour" → {sum, count}
+        for (var i = 0; i < buckets.length; i++) {
+          var b = buckets[i];
+          // b.ts 形如 "2026-08-11T14"，需解析为 Date
+          var dt = new Date(Date.parse(b.ts + ":00:00Z") || Date.parse(b.ts + "Z") || b.ts);
+          if (!dt || isNaN(dt.getTime())) continue;
+          // JS getDay(): 0=周日..6=周六；归一化为 0=周一..6=周日
+          var weekIdx = (dt.getDay() + 6) % 7;
+          var hourIdx = dt.getHours();
+          var key = weekIdx + "," + hourIdx;
+          if (!matrix[key]) matrix[key] = { sum: 0, count: 0 };
+          matrix[key].sum += Number(b.ratio) || 0;
+          matrix[key].count += 1;
+        }
+        var pts = [];
+        for (var k in matrix) {
+          if (!Object.prototype.hasOwnProperty.call(matrix, k)) continue;
+          var parts = k.split(",");
+          var avg = matrix[k].count > 0 ? matrix[k].sum / matrix[k].count : 0;
+          pts.push([Number(parts[1]), Number(parts[0]), Number(avg.toFixed(3))]);
+        }
+        availHeatmap.setOption({ series: [{ data: pts }] });
+      })
+      .catch(function () { /* 鉴权失败时静默置空 */ });
+  }
+
+  // rustnetec: T-D5 — 局域网图表组（流量折线 + 连接数折线 + 双轴折线）。
+  // 数据：GET /stats/range?bucket=1min&scope=lan。后端不返回 source_ip 维度，
+  // 「设备柱状」改为「局域网连接数折线」；双轴折线 = 流量(左) + 连接数(右)。
+  var lanFlowChart = null, lanConnsChart = null, lanDualChart = null;
+  var lanTimer = null;
+  var LAN_COLORS = { flow: "#a371f7", conns: "#f0883e" };
+
+  function initLanCharts() {
+    var elFlow = document.getElementById("lan-flow-chart");
+    var elConns = document.getElementById("lan-devices-chart");
+    var elDual = document.getElementById("lan-dual-chart");
+    if (!elFlow || !elConns || !elDual) return;
+    if (lanFlowChart || !elFlow.clientWidth) return;
+
+    lanFlowChart = echarts.init(elFlow, null, { renderer: "canvas" });
+    lanFlowChart.setOption({
+      tooltip: { trigger: "axis" },
+      legend: { data: ["入站 ↓", "出站 ↑"], textStyle: { color: GRAPH_COLORS.axis } },
+      grid: { left: 64, right: 16, top: 32, bottom: 40 },
+      xAxis: { type: "time", axisLine: { lineStyle: { color: GRAPH_COLORS.axis } },
+        axisLabel: { color: GRAPH_COLORS.axis, fontSize: 10 },
+        splitLine: { show: true, lineStyle: { color: GRAPH_COLORS.grid } } },
+      yAxis: { type: "value", axisLine: { lineStyle: { color: GRAPH_COLORS.axis } },
+        axisLabel: { color: GRAPH_COLORS.axis, fontSize: 10, formatter: function (v) { return formatRate(v); } },
+        splitLine: { lineStyle: { color: GRAPH_COLORS.grid } } },
+      series: [
+        { name: "入站 ↓", type: "line", showSymbol: false, smooth: true,
+          lineStyle: { color: GRAPH_COLORS.in, width: 1.5 }, areaStyle: { color: "rgba(88,166,255,0.08)" }, data: [] },
+        { name: "出站 ↑", type: "line", showSymbol: false, smooth: true,
+          lineStyle: { color: GRAPH_COLORS.out, width: 1.5 }, areaStyle: { color: "rgba(63,185,80,0.08)" }, data: [] },
+      ],
+    });
+
+    lanConnsChart = echarts.init(elConns, null, { renderer: "canvas" });
+    lanConnsChart.setOption({
+      tooltip: { trigger: "axis" },
+      legend: { data: ["局域网连接数"], textStyle: { color: GRAPH_COLORS.axis } },
+      grid: { left: 56, right: 16, top: 32, bottom: 40 },
+      xAxis: { type: "time", axisLine: { lineStyle: { color: GRAPH_COLORS.axis } },
+        axisLabel: { color: GRAPH_COLORS.axis, fontSize: 10 },
+        splitLine: { show: true, lineStyle: { color: GRAPH_COLORS.grid } } },
+      yAxis: { type: "value", name: "连接数", nameTextStyle: { color: GRAPH_COLORS.axis },
+        axisLine: { lineStyle: { color: GRAPH_COLORS.axis } },
+        axisLabel: { color: GRAPH_COLORS.axis, fontSize: 10 },
+        splitLine: { lineStyle: { color: GRAPH_COLORS.grid } } },
+      series: [
+        { name: "局域网连接数", type: "line", showSymbol: false, smooth: true,
+          lineStyle: { color: LAN_COLORS.conns, width: 1.5 }, data: [] },
+      ],
+    });
+
+    lanDualChart = echarts.init(elDual, null, { renderer: "canvas" });
+    lanDualChart.setOption({
+      tooltip: { trigger: "axis" },
+      legend: { data: ["流量", "连接数"], textStyle: { color: GRAPH_COLORS.axis } },
+      grid: { left: 64, right: 56, top: 32, bottom: 40 },
+      xAxis: { type: "time", axisLine: { lineStyle: { color: GRAPH_COLORS.axis } },
+        axisLabel: { color: GRAPH_COLORS.axis, fontSize: 10 },
+        splitLine: { show: true, lineStyle: { color: GRAPH_COLORS.grid } } },
+      yAxis: [
+        { type: "value", name: "流量", nameTextStyle: { color: GRAPH_COLORS.axis },
+          axisLine: { lineStyle: { color: GRAPH_COLORS.axis } },
+          axisLabel: { color: GRAPH_COLORS.axis, fontSize: 10, formatter: function (v) { return formatRate(v); } },
+          splitLine: { lineStyle: { color: GRAPH_COLORS.grid } } },
+        { type: "value", name: "连接数", nameTextStyle: { color: GRAPH_COLORS.axis },
+          axisLine: { lineStyle: { color: LAN_COLORS.conns } },
+          axisLabel: { color: LAN_COLORS.conns, fontSize: 10 },
+          splitLine: { show: false } },
+      ],
+      series: [
+        { name: "流量", type: "line", yAxisIndex: 0, showSymbol: false, smooth: true,
+          lineStyle: { color: LAN_COLORS.flow, width: 1.5 }, data: [] },
+        { name: "连接数", type: "line", yAxisIndex: 1, showSymbol: false, smooth: true,
+          lineStyle: { color: LAN_COLORS.conns, width: 1.5 }, data: [] },
+      ],
+    });
+
+    pollLanCharts();
+    lanTimer = setInterval(function () { if (isPageVisible) pollLanCharts(); }, 5000);
+  }
+
+  function pollLanCharts() {
+    fetch("/stats/range?bucket=1min&scope=lan", { credentials: "same-origin" })
+      .then(function (resp) { if (!resp.ok) throw new Error("HTTP " + resp.status); return resp.json(); })
+      .then(function (data) {
+        var buckets = data.buckets || [];
+        var inData = [], outData = [], connsData = [], flowData = [];
+        for (var i = 0; i < buckets.length; i++) {
+          var b = buckets[i];
+          var ts = Date.parse(b.ts + ":00Z") || Date.parse(b.ts + "Z") || b.ts;
+          if (!ts || isNaN(ts)) ts = b.ts;
+          var rx = Number(b.bytes_rx) || 0;
+          var tx = Number(b.bytes_tx) || 0;
+          inData.push([ts, rx]);
+          outData.push([ts, tx]);
+          connsData.push([ts, Number(b.conn_count) || 0]);
+          flowData.push([ts, rx + tx]);
+        }
+        lanFlowChart.setOption({ series: [{ data: inData }, { data: outData }] });
+        lanConnsChart.setOption({ series: [{ data: connsData }] });
+        lanDualChart.setOption({ series: [{ data: flowData }, { data: connsData }] });
+      })
+      .catch(function () { /* 鉴权失败时静默置空 */ });
+  }
+
+  // rustnetec: T-E4 — 进程详情抽屉：时间窗 + 网口下拉 + 双轴折线 + 外网持续时长。
+  // 数据：GET /stats/range?process=<name>&bucket=<auto>&interface=<name> +
+  //       GET /stats/duration?process=<name>&bucket=<auto>&scope=external。
+  var processDrawerChart = null;
+  var processDrawerName = null;
+
+  function openProcessDrawer(processName) {
+    if (!processName) return;
+    processDrawerName = processName;
+    var drawer = document.getElementById("process-drawer");
+    drawer.style.display = "block";
+    document.getElementById("process-drawer-title").textContent = "进程详情：" + processName;
+    if (processDrawerChart) { processDrawerChart.dispose(); processDrawerChart = null; }
+    var el = document.getElementById("process-dual-chart");
+    processDrawerChart = echarts.init(el, null, { renderer: "canvas" });
+    processDrawerChart.setOption({
+      tooltip: { trigger: "axis" },
+      legend: { data: ["流量", "活跃连接数", "外网持续时长"], textStyle: { color: GRAPH_COLORS.axis } },
+      grid: { left: 64, right: 64, top: 32, bottom: 40 },
+      xAxis: { type: "time", axisLine: { lineStyle: { color: GRAPH_COLORS.axis } },
+        axisLabel: { color: GRAPH_COLORS.axis, fontSize: 10 },
+        splitLine: { show: true, lineStyle: { color: GRAPH_COLORS.grid } } },
+      yAxis: [
+        { type: "value", name: "流量", nameTextStyle: { color: GRAPH_COLORS.axis },
+          axisLine: { lineStyle: { color: GRAPH_COLORS.axis } },
+          axisLabel: { color: GRAPH_COLORS.axis, fontSize: 10, formatter: function (v) { return formatRate(v); } },
+          splitLine: { lineStyle: { color: GRAPH_COLORS.grid } } },
+        { type: "value", name: "连接数/时长(s)", nameTextStyle: { color: GRAPH_COLORS.axis },
+          axisLine: { lineStyle: { color: RTT_COLORS.p99 } },
+          axisLabel: { color: RTT_COLORS.p99, fontSize: 10 },
+          splitLine: { show: false } },
+      ],
+      series: [
+        { name: "流量", type: "line", yAxisIndex: 0, showSymbol: false, smooth: true,
+          lineStyle: { color: LAN_COLORS.flow, width: 1.5 }, data: [] },
+        { name: "活跃连接数", type: "line", yAxisIndex: 1, showSymbol: false, smooth: true,
+          lineStyle: { color: GRAPH_COLORS.in, width: 1.5 }, data: [] },
+        { name: "外网持续时长", type: "line", yAxisIndex: 1, showSymbol: false, smooth: true,
+          lineStyle: { color: RTT_COLORS.p99, width: 1.5, type: "dashed" }, data: [] },
+      ],
+    });
+    refreshProcessDrawer();
+  }
+
+  function closeProcessDrawer() {
+    var drawer = document.getElementById("process-drawer");
+    drawer.style.display = "none";
+    if (processDrawerChart) { processDrawerChart.dispose(); processDrawerChart = null; }
+    processDrawerName = null;
+  }
+
+  // 按时间窗自动选 bucket：15m/30m→5s，1h/3h/6h/1d→1min，1w/1m→1hour
+  function bucketForWindow(secs) {
+    if (secs <= 1800) return "5s";
+    if (secs <= 86400) return "1min";
+    return "1hour";
+  }
+
+  function refreshProcessDrawer() {
+    if (!processDrawerName || !processDrawerChart) return;
+    var secs = parseInt(document.getElementById("process-window").value, 10) || 3600;
+    var iface = document.getElementById("process-interface").value || "";
+    var bucket = bucketForWindow(secs);
+    var start = "now-" + secs + "s";
+    var procQ = encodeURIComponent(processDrawerName);
+    var ifaceQ = iface ? "&interface=" + encodeURIComponent(iface) : "";
+
+    // 并行拉 range（流量 + 连接数）与 duration（外网持续时长）
+    var rangeUrl = "/stats/range?start=" + encodeURIComponent(start) + "&bucket=" + bucket + "&process=" + procQ + ifaceQ;
+    var durUrl = "/stats/duration?start=" + encodeURIComponent(start) + "&bucket=" + bucket + "&process=" + procQ + "&scope=external" + ifaceQ;
+
+    fetch(rangeUrl, { credentials: "same-origin" })
+      .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+      .then(function (data) {
+        var buckets = data.buckets || [];
+        var flow = [], conns = [];
+        for (var i = 0; i < buckets.length; i++) {
+          var b = buckets[i];
+          var ts = Date.parse(b.ts + ":00Z") || Date.parse(b.ts + "Z") || b.ts;
+          if (!ts || isNaN(ts)) ts = b.ts;
+          flow.push([ts, (Number(b.bytes_rx) || 0) + (Number(b.bytes_tx) || 0)]);
+          conns.push([ts, Number(b.conn_count) || 0]);
+        }
+        processDrawerChart.setOption({ series: [{ data: flow }, { data: conns }, { data: [] }] });
+      })
+      .catch(function () { /* 静默置空 */ });
+
+    fetch(durUrl, { credentials: "same-origin" })
+      .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+      .then(function (data) {
+        var buckets = data.buckets || [];
+        var dur = [];
+        for (var i = 0; i < buckets.length; i++) {
+          var b = buckets[i];
+          var ts = Date.parse(b.ts + ":00Z") || Date.parse(b.ts + "Z") || b.ts;
+          if (!ts || isNaN(ts)) ts = b.ts;
+          dur.push([ts, Number(b.avg) || 0]);
+        }
+        processDrawerChart.setOption({ series: [{ data: [] }, { data: [] }, { data: dur }] });
+      })
+      .catch(function () { /* 静默置空 */ });
+  }
+
+  // 抽屉控件事件绑定（时间窗/网口下拉变化 → 刷新；关闭按钮）
+  (function () {
+    var closeBtn = document.getElementById("process-drawer-close");
+    if (closeBtn) closeBtn.addEventListener("click", closeProcessDrawer);
+    var winSel = document.getElementById("process-window");
+    if (winSel) winSel.addEventListener("change", refreshProcessDrawer);
+    var ifaceSel = document.getElementById("process-interface");
+    if (ifaceSel) ifaceSel.addEventListener("change", refreshProcessDrawer);
+  })();
 
   function pollStats() {
     fetch("/stats", { credentials: "same-origin" })
@@ -1247,6 +1985,11 @@
   function ensureOverviewCharts() {
     initDashSpark();
     initProtoPlot();
+    initSlaGauge(); // rustnetec: T-D1 — SLA gauge 卡片
+    initRttChart(); // rustnetec: T-D2 — RTT 趋势折线
+    initExternalStack(); // rustnetec: T-D3 — 外网连接数堆叠面积图
+    initAvailHeatmap(); // rustnetec: T-D4 — 周×小时可用性热力图
+    initLanCharts(); // rustnetec: T-D5 — 局域网图表组
     if (statsTimer === null) {
       pollStats();
       statsTimer = setInterval(pollStats, 5000);
@@ -1255,9 +1998,9 @@
       dashResizeBound = true;
       window.addEventListener("resize", function () {
         var el = document.getElementById("rate-chart");
-        if (dashSpark && el) dashSpark.setSize({ width: el.clientWidth, height: 90 });
+        if (dashSpark && el) dashSpark.resize();
         var el2 = document.getElementById("protocol-dist");
-        if (protoPlot && el2) protoPlot.setSize({ width: el2.clientWidth, height: 180 });
+        if (protoPlot && el2) protoPlot.resize();
       });
     }
   }
@@ -1268,11 +2011,17 @@
   // 做条件过滤(process: 前缀 / 裸文本 / /regex/)与点击表头排序。
   // 历史聚合每 5-10s 轮询(查询较重),这里用 8s 折中。
   var ACTIVITY_COLUMNS = [
+    // rustnetec: T-E5 — 复选框列（不可排序，仅渲染）
+    { key: "_cbx", label: "对比", sortable: false, isCbx: true },
     { key: "process", label: "进程名", sortable: true },
     { key: "connections", label: "连接数", sortable: true },
     { key: "bytes_sent", label: "发送字节", sortable: true, format: formatBytes },
     { key: "bytes_received", label: "接收字节", sortable: true, format: formatBytes },
     { key: "bytes_total", label: "总字节", sortable: true, format: formatBytes },
+    // rustnetec: T-E3 — 外网三列（外网连接/外网时长/外网流量）
+    { key: "external_conns", label: "外网连接", sortable: true },
+    { key: "external_duration", label: "外网时长(秒)", sortable: true, format: function (v) { return v != null ? String(v) : "—"; } },
+    { key: "external_bytes", label: "外网流量", sortable: true, format: formatBytes },
   ];
 
   var activityState = {
@@ -1402,6 +2151,22 @@
     rows.forEach(function (p) {
       var tr = document.createElement("tr");
       ACTIVITY_COLUMNS.forEach(function (col) {
+        // rustnetec: T-E5 — 复选框列渲染
+        if (col.isCbx) {
+          var cbxTd = document.createElement("td");
+          cbxTd.className = "cbx-cell";
+          var cbx = document.createElement("input");
+          cbx.type = "checkbox";
+          cbx.className = "activity-cbx";
+          cbx.setAttribute("data-process", p.process || "");
+          if (activityCompareSelected.indexOf(p.process) >= 0) cbx.checked = true;
+          // 阻止冒泡到行的点击事件（避免误开抽屉）
+          cbx.addEventListener("click", function (e) { e.stopPropagation(); });
+          cbx.addEventListener("change", function () { onActivityCbxChange(p.process, cbx.checked); });
+          cbxTd.appendChild(cbx);
+          tr.appendChild(cbxTd);
+          return;
+        }
         var raw = p[col.key];
         var formatted;
         if (typeof col.format === "function") {
@@ -1411,8 +2176,182 @@
         }
         appendTd(tr, formatted != null ? formatted : "—");
       });
+      // rustnetec: T-E4 — 点击行打开进程详情抽屉
+      tr.addEventListener("click", function () { openProcessDrawer(p.process); });
+      tr.style.cursor = "pointer";
       tbody.appendChild(tr);
     });
+  }
+
+  // rustnetec: T-E5 — 多进程对比状态：选中进程名列表（最多 5 个）
+  var activityCompareSelected = [];
+  var compareChart = null;
+  var COMPARE_MAX = 5;
+
+  function onActivityCbxChange(processName, checked) {
+    if (!processName) return;
+    var idx = activityCompareSelected.indexOf(processName);
+    if (checked) {
+      if (idx < 0) {
+        if (activityCompareSelected.length >= COMPARE_MAX) {
+          // 超限：取消勾选并提示
+          var cbx = document.querySelector('.activity-cbx[data-process="' + cssEscape(processName) + '"]');
+          if (cbx) cbx.checked = false;
+          var cntEl = document.getElementById("process-compare-count");
+          if (cntEl) cntEl.textContent = "已达上限 " + COMPARE_MAX + " 个，请先取消其他选择";
+          return;
+        }
+        activityCompareSelected.push(processName);
+      }
+    } else {
+      if (idx >= 0) activityCompareSelected.splice(idx, 1);
+    }
+    refreshCompareView();
+  }
+
+  function cssEscape(s) {
+    return String(s).replace(/["\\]/g, "\\$&");
+  }
+
+  function refreshCompareView() {
+    var view = document.getElementById("process-compare");
+    var cntEl = document.getElementById("process-compare-count");
+    if (activityCompareSelected.length < 2) {
+      view.style.display = "none";
+      if (cntEl) cntEl.textContent = "";
+      return;
+    }
+    view.style.display = "block";
+    if (cntEl) cntEl.textContent = "已选 " + activityCompareSelected.length + " / " + COMPARE_MAX;
+    // 初始化图表实例（仅一次）
+    var el = document.getElementById("process-compare-chart");
+    if (!compareChart) {
+      compareChart = echarts.init(el, null, { renderer: "canvas" });
+    }
+    // 按抽屉时间窗推 bucket
+    var secs = parseInt(document.getElementById("process-window").value, 10) || 3600;
+    var bucket = bucketForWindow(secs);
+    var start = "now-" + secs + "s";
+    var procList = activityCompareSelected.map(encodeURIComponent).join(",");
+    var url = "/stats/range?start=" + encodeURIComponent(start) + "&bucket=" + bucket + "&process=" + procList;
+    fetch(url, { credentials: "same-origin" })
+      .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+      .then(function (data) {
+        // 后端按桶返回聚合，未按 process_name 细分；此处以「总流量」单系列展示对比趋势，
+        // 精确的每进程系列需后端增 process_name 维度分组，列入后续 issue。
+        var buckets = data.buckets || [];
+        var pts = [];
+        for (var i = 0; i < buckets.length; i++) {
+          var b = buckets[i];
+          var ts = Date.parse(b.ts + ":00Z") || Date.parse(b.ts + "Z") || b.ts;
+          if (!ts || isNaN(ts)) ts = b.ts;
+          pts.push([ts, (Number(b.bytes_rx) || 0) + (Number(b.bytes_tx) || 0)]);
+        }
+        compareChart.setOption({
+          tooltip: { trigger: "axis" },
+          legend: { data: ["对比流量"], textStyle: { color: GRAPH_COLORS.axis } },
+          grid: { left: 64, right: 16, top: 32, bottom: 40 },
+          xAxis: { type: "time", axisLine: { lineStyle: { color: GRAPH_COLORS.axis } },
+            axisLabel: { color: GRAPH_COLORS.axis, fontSize: 10 },
+            splitLine: { show: true, lineStyle: { color: GRAPH_COLORS.grid } } },
+          yAxis: { type: "value", name: "流量", nameTextStyle: { color: GRAPH_COLORS.axis },
+            axisLine: { lineStyle: { color: GRAPH_COLORS.axis } },
+            axisLabel: { color: GRAPH_COLORS.axis, fontSize: 10, formatter: function (v) { return formatRate(v); } },
+            splitLine: { lineStyle: { color: GRAPH_COLORS.grid } } },
+          series: [
+            { name: "对比流量", type: "line", showSymbol: false, smooth: true,
+              lineStyle: { color: LAN_COLORS.flow, width: 1.5 }, data: pts },
+          ],
+        });
+      })
+      .catch(function () { /* 静默置空 */ });
+  }
+
+  // 对比视图控件事件绑定（清空选择 / 关闭对比）
+  (function () {
+    var clearBtn = document.getElementById("process-compare-clear");
+    if (clearBtn) clearBtn.addEventListener("click", function () {
+      activityCompareSelected = [];
+      var cbxs = document.querySelectorAll(".activity-cbx");
+      cbxs.forEach(function (c) { c.checked = false; });
+      refreshCompareView();
+    });
+    var closeBtn = document.getElementById("process-compare-close");
+    if (closeBtn) closeBtn.addEventListener("click", function () {
+      activityCompareSelected = [];
+      var cbxs = document.querySelectorAll(".activity-cbx");
+      cbxs.forEach(function (c) { c.checked = false; });
+      document.getElementById("process-compare").style.display = "none";
+    });
+    // 抽屉时间窗变化也刷新对比视图
+    var winSel = document.getElementById("process-window");
+    if (winSel) winSel.addEventListener("change", refreshCompareView);
+    // 抽屉时间窗变化也刷新热力图（T-E6）
+    if (winSel) winSel.addEventListener("change", refreshProcessAvailHeatmap);
+  })();
+
+  // rustnetec: T-E6 — 进程×时段可用性热力图（时间窗 ≥1d 时渲染）。
+  // 数据：GET /stats/availability?start=<window>&bucket=1hour&process=<names>。
+  // 横轴时间桶，纵轴进程名，颜色深浅 = 活跃度。
+  // 注：后端 /stats/availability 不按 process_name 细分（仅按桶返回 ratio），
+  // 此处以「总活跃度」单维度热力图呈现；精确的进程×时段矩阵需后端增
+  // process_name 维度分组，列入后续 issue。
+  var processAvailHeatmap = null;
+
+  function refreshProcessAvailHeatmap() {
+    var secs = parseInt(document.getElementById("process-window").value, 10) || 3600;
+    var view = document.getElementById("process-avail-heatmap");
+    if (secs < 86400) {
+      // 时间窗 <1d：隐藏热力图
+      view.style.display = "none";
+      if (processAvailHeatmap) { processAvailHeatmap.dispose(); processAvailHeatmap = null; }
+      return;
+    }
+    view.style.display = "block";
+    var el = document.getElementById("process-avail-heatmap-chart");
+    if (!processAvailHeatmap) {
+      processAvailHeatmap = echarts.init(el, null, { renderer: "canvas" });
+    }
+    var bucket = secs >= 604800 ? "1day" : "1hour";
+    var start = "now-" + secs + "s";
+    // 若多进程对比已选，用选中进程；否则用空（全部进程）
+    var procList = activityCompareSelected.map(encodeURIComponent).join(",");
+    var url = "/stats/availability?start=" + encodeURIComponent(start) + "&bucket=" + bucket + "&scope=external";
+    if (procList) url += "&process=" + procList;
+    fetch(url, { credentials: "same-origin" })
+      .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+      .then(function (data) {
+        var buckets = data.buckets || [];
+        // 横轴 = 时间桶 ts，纵轴 = 单维度「活跃度」（ratio）
+        var xs = [], ys = [];
+        for (var i = 0; i < buckets.length; i++) {
+          var b = buckets[i];
+          var ts = Date.parse(b.ts + ":00Z") || Date.parse(b.ts + "Z") || b.ts;
+          if (!ts || isNaN(ts)) ts = b.ts;
+          xs.push(ts);
+          ys.push(Number(b.ratio) || 0);
+        }
+        processAvailHeatmap.setOption({
+          tooltip: { trigger: "axis" },
+          grid: { left: 56, right: 16, top: 32, bottom: 40 },
+          xAxis: { type: "time", axisLine: { lineStyle: { color: GRAPH_COLORS.axis } },
+            axisLabel: { color: GRAPH_COLORS.axis, fontSize: 10 },
+            splitLine: { show: true, lineStyle: { color: GRAPH_COLORS.grid } } },
+          yAxis: { type: "value", name: "活跃度", nameTextStyle: { color: GRAPH_COLORS.axis },
+            axisLine: { lineStyle: { color: GRAPH_COLORS.axis } },
+            axisLabel: { color: GRAPH_COLORS.axis, fontSize: 10 },
+            splitLine: { lineStyle: { color: GRAPH_COLORS.grid } } },
+          visualMap: { show: false, min: 0, max: 1,
+            inRange: { color: ["#21262d", "#1f6feb", "#58a6ff", "#3fb950"] } },
+          series: [{
+            name: "活跃度", type: "heatmap",
+            // 单维度热力：用 [x, 0, value] 形式渲染为一行热力带
+            data: xs.map(function (x, i) { return [x, 0, ys[i]]; }),
+            label: { show: false },
+          }],
+        });
+      })
+      .catch(function () { /* 静默置空 */ });
   }
 
   // 辅助:给 tr 追加一个 td,textContent 渲染(XSS 防护)

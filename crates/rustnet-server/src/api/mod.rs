@@ -45,10 +45,10 @@ use crate::db::{Error as DbError, ServerDb};
 /// 隐藏仪表盘的实时轮询与设置页,只暴露历史查询/统计/进程活动。
 const WEBUI_HTML: &str = include_str!("../../../../webui/index.html");
 
-/// rustnetec: W3.4 — uPlot 图表库静态资产(与 WEBUI_HTML 同源内嵌,
-/// `webui/uPlot.iife.min.js` v1.6.31, MIT)。免鉴权,与 HTML 同级:
-/// 纯静态、不含敏感数据;前端以相对路径 `uplot.js` 引用。
-const UPLOT_JS: &str = include_str!("../../../../webui/uPlot.iife.min.js");
+/// rustnetec: T-F3b — ECharts 图表库静态资产（与 WEBUI_HTML 同源内嵌，
+/// `webui/echarts.min.js` v5.5.1, Apache 2.0）。免鉴权，与 HTML 同级：
+/// 纯静态、不含敏感数据；前端以相对路径 `echarts.js` 引用。
+const ECHARTS_JS: &str = include_str!("../../../../webui/echarts.min.js");
 
 /// Shared application state injected into the router.
 pub type AppState = Arc<ServerDb>;
@@ -69,8 +69,8 @@ pub fn build_router(db: AppState) -> Router {
         // 远程浏览器经 Bearer token 访问 /query、/stats 等 API 端点;
         // HTML 本身是静态资产,不含敏感数据,免鉴权降低部署门槛。
         .route("/", get(webui))
-        // rustnetec: W3.4 — uPlot 图表库静态资产(免鉴权,与 / 同级)。
-        .route("/uplot.js", get(uplot_js))
+        // rustnetec: T-F3b — ECharts 图表库静态资产（免鉴权，与 / 同级）。
+        .route("/echarts.js", get(echarts_js))
         // Authed routes — each is gated by the role it requires.
         .route(
             "/ingest",
@@ -114,9 +114,9 @@ async fn webui() -> axum::response::Html<&'static str> {
     axum::response::Html(WEBUI_HTML)
 }
 
-/// rustnetec: W3.4 — 返回 uPlot 图表库静态 JS。
-async fn uplot_js() -> impl IntoResponse {
-    ([("Content-Type", "application/javascript")], UPLOT_JS)
+/// rustnetec: T-F3b — 返回 ECharts 图表库静态 JS。
+async fn echarts_js() -> impl IntoResponse {
+    ([("Content-Type", "application/javascript")], ECHARTS_JS)
 }
 
 /// Accept a client batch and persist it through the single writer.

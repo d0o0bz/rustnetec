@@ -284,6 +284,7 @@ fn field_mapping_preserves_identity() {
         bytes_sent: Some(1024),
         bytes_received: Some(2048),
         duration_secs: Some(5),
+        interface: Some("en0".to_string()),
     };
 
     // 通过反射 upload 模块的 map_event_to_client_event 不可行 (私有),

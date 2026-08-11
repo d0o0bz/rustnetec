@@ -239,7 +239,8 @@ fn map_event_to_client_event(local_event_id: i64, ev: &ConnectionEventData) -> C
     ClientEvent {
         local_event_id,
         timestamp: parse_ts_to_millis(&ev.timestamp).unwrap_or(0),
-        interface: String::new(), // 本地 schema 未存 interface 列, 留空
+        // rustnetec: T-A5 — 从 ConnectionEventData.interface 取捕获网口名。
+        interface: ev.interface.clone().unwrap_or_default(),
         protocol: ev.protocol.clone(),
         local_ip: ev.source_ip.clone(),
         local_port: ev.source_port,

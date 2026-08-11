@@ -79,6 +79,7 @@ fn sqlite_sink_persists_and_query_reads_back() {
             bytes_sent: None,
             bytes_received: None,
             duration_secs: None,
+            interface: Some("en0".to_string()),
         };
         sink.accept(&event);
 
@@ -400,6 +401,7 @@ fn w05_run_query_paged_returns_rows_and_respects_pagination() {
                 bytes_sent: Some(100 * i as u64),
                 bytes_received: Some(200 * i as u64),
                 duration_secs: None,
+                interface: Some("en0".to_string()),
             };
             sink.accept(&event);
         }
@@ -515,6 +517,7 @@ fn w02_run_query_paged_default_returns_recent_events() {
             bytes_sent: Some(64),
             bytes_received: Some(128),
             duration_secs: None,
+            interface: Some("en0".to_string()),
         };
         sink.accept(&event);
         drop(sink);
@@ -586,6 +589,7 @@ fn w04_stats_new_dimensions_present_in_schema() {
             bytes_sent: Some(500),
             bytes_received: Some(1500),
             duration_secs: None,
+            interface: Some("en0".to_string()),
         };
         sink.accept(&event);
         drop(sink);

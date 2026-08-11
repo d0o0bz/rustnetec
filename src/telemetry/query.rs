@@ -648,6 +648,7 @@ mod tests {
             bytes_sent: None,
             bytes_received: None,
             duration_secs: None,
+            interface: None,
         };
 
         let tx = conn.unchecked_transaction().unwrap();

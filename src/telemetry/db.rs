@@ -156,7 +156,9 @@ impl SqliteSink {
                 geoip_postal_code   TEXT,
                 bytes_sent          INTEGER,
                 bytes_received      INTEGER,
-                duration_secs       INTEGER
+                duration_secs       INTEGER,
+                -- rustnetec: T-A1 捕获网口名如 en0，供按网口历史查询
+                interface           TEXT
             );
 
             CREATE TABLE IF NOT EXISTS aggregates (
@@ -167,6 +169,8 @@ impl SqliteSink {
                 process_name    TEXT,
                 country_code    TEXT,
                 asn             INTEGER,
+                -- rustnetec: T-A3 — 网口维度，与 connection_events.interface 对齐。
+                interface       TEXT,
                 bytes_rx        INTEGER NOT NULL DEFAULT 0,
                 bytes_tx        INTEGER NOT NULL DEFAULT 0,
                 conn_count      INTEGER NOT NULL DEFAULT 0
@@ -205,12 +209,55 @@ impl SqliteSink {
             CREATE INDEX IF NOT EXISTS idx_events_direction ON connection_events (direction);
             CREATE INDEX IF NOT EXISTS idx_events_ts_id ON connection_events (ts, id);
             CREATE INDEX IF NOT EXISTS idx_events_id_ts ON connection_events (id, ts);
+            -- rustnetec: T-A1 — 按网口历史查询的索引。
+            CREATE INDEX IF NOT EXISTS idx_events_interface ON connection_events (interface);
             CREATE INDEX IF NOT EXISTS idx_aggs_bucket ON aggregates (bucket_ts, bucket_width);
             CREATE INDEX IF NOT EXISTS idx_aggs_protocol ON aggregates (bucket_ts, protocol);
             CREATE INDEX IF NOT EXISTS idx_aggs_process ON aggregates (bucket_ts, process_name);
             CREATE INDEX IF NOT EXISTS idx_aggs_country ON aggregates (bucket_ts, country_code);
+            -- rustnetec: T-A3 — 网口维度聚合查询的索引。
+            CREATE INDEX IF NOT EXISTS idx_aggs_interface ON aggregates (bucket_ts, interface);
             ",
         )?;
+
+        // rustnetec: T-fix1 — 幂等迁移：为旧库追加新增列。
+        // 旧库在 T-A1/T-A3 前已建，`CREATE TABLE IF NOT EXISTS` 不会补列，
+        // 导致引用 `interface` 列的 SQL（/processes、/stats/*）prepare 失败 → HTTP 500。
+        // SQLite 的 `ALTER TABLE ADD COLUMN` 无 `IF NOT EXISTS`，列已存在时报错，
+        // 故用 Rust 侧检测 `PRAGMA table_info` 后跳过。
+        Self::migrate_add_column_if_missing(conn, "connection_events", "interface", "TEXT")?;
+        Self::migrate_add_column_if_missing(conn, "aggregates", "interface", "TEXT")?;
+
+        Ok(())
+    }
+
+    /// rustnetec: T-fix1 — 幂等迁移：为旧库追加新增列。
+    /// `ALTER TABLE ADD COLUMN` 无 `IF NOT EXISTS`，列已存在时报错，
+    /// 故先查 `PRAGMA table_info` 检测列是否已存在，存在则跳过。
+    fn migrate_add_column_if_missing(
+        conn: &Connection,
+        table: &str,
+        column: &str,
+        col_type: &str,
+    ) -> Result<()> {
+        let exists: i64 = conn.query_row(
+            &format!(
+                "SELECT COUNT(*) FROM pragma_table_info('{}') WHERE name = ?",
+                table.replace('\'', "''")
+            ),
+            [column],
+            |row| row.get(0),
+        )?;
+        if exists > 0 {
+            return Ok(());
+        }
+        let sql = format!(
+            "ALTER TABLE {} ADD COLUMN {} {}",
+            table,
+            column,
+            col_type
+        );
+        conn.execute_batch(&sql)?;
         Ok(())
     }
 
@@ -503,10 +550,28 @@ impl SqliteSink {
     }
 
     /// Run aggregation: compute per-minute and per-hour summaries.
+    ///
+    /// rustnetec: T-A4 — 补实现预聚合逻辑：
+    /// 1. 每分钟桶：聚合最近 2 分钟的 `connection_closed` 事件，按
+    ///    (minute, protocol, process_name, country_code, asn, interface) 写入
+    ///    `aggregates`，`INSERT OR REPLACE` 幂等（同一桶+维度组合重写覆盖）。
+    /// 2. 每小时桶：把分钟桶合并为小时桶，写入 `aggregates` 的 `bucket_width='hour'` 行。
+    ///    合并窗口为最近 2 小时，幂等同上。
+    ///
+    /// 设计权衡：
+    /// - 2 分钟窗口兼顾「事件延迟写入漏数据」与「重复聚合开销」。
+    /// - `INSERT OR REPLACE` 而非 `ON CONFLICT DO UPDATE`：本表 `id AUTOINCREMENT`
+    ///   不适合做冲突键，改用 `OR REPLACE` 在主键冲突时先删后插，简单可靠。
+    ///   若后续加唯一索引 `(bucket_ts, bucket_width, protocol, ...)`，
+    ///   `OR REPLACE` 可精确触发该约束。
     fn run_aggregation(conn: &Connection) -> Result<()> {
-        // Per-minute aggregation
+        // Per-minute aggregation: 聚合最近 2 分钟的 closed 事件。
         conn.execute_batch(
-            "INSERT OR REPLACE INTO aggregates (bucket_ts, bucket_width, protocol, process_name, country_code, asn, bytes_rx, bytes_tx, conn_count)
+            "INSERT OR REPLACE INTO aggregates (
+                bucket_ts, bucket_width,
+                protocol, process_name, country_code, asn, interface,
+                bytes_rx, bytes_tx, conn_count
+             )
              SELECT
                 strftime('%Y-%m-%dT%H:%M:00', ts) AS bucket_ts,
                 'minute' AS bucket_width,
@@ -514,18 +579,38 @@ impl SqliteSink {
                 process_name,
                 geoip_country_code,
                 geoip_asn,
+                interface,
                 COALESCE(SUM(bytes_received), 0),
                 COALESCE(SUM(bytes_sent), 0),
                 COUNT(*)
              FROM connection_events
              WHERE event_type = 'connection_closed'
                AND ts >= datetime('now', '-2 minutes')
-             GROUP BY bucket_ts, protocol, process_name, geoip_country_code, geoip_asn
-             ON CONFLICT(id) DO UPDATE SET
-                bytes_rx = bytes_rx + excluded.bytes_rx,
-                bytes_tx = bytes_tx + excluded.bytes_tx,
-                conn_count = conn_count + excluded.conn_count;
-            ",
+             GROUP BY bucket_ts, protocol, process_name, geoip_country_code, geoip_asn, interface;",
+        )?;
+
+        // Per-hour aggregation: 合并分钟桶为小时桶，窗口最近 2 小时。
+        conn.execute_batch(
+            "INSERT OR REPLACE INTO aggregates (
+                bucket_ts, bucket_width,
+                protocol, process_name, country_code, asn, interface,
+                bytes_rx, bytes_tx, conn_count
+             )
+             SELECT
+                strftime('%Y-%m-%dT%H:00:00', bucket_ts) AS hour_ts,
+                'hour' AS bucket_width,
+                protocol,
+                process_name,
+                country_code,
+                asn,
+                interface,
+                SUM(bytes_rx),
+                SUM(bytes_tx),
+                SUM(conn_count)
+             FROM aggregates
+             WHERE bucket_width = 'minute'
+               AND bucket_ts >= datetime('now', '-2 hours')
+             GROUP BY hour_ts, protocol, process_name, country_code, asn, interface;",
         )?;
         Ok(())
     }
@@ -658,6 +743,8 @@ impl SqliteSink {
                     bytes_sent: r.get::<_, Option<u64>>("bytes_sent")?,
                     bytes_received: r.get::<_, Option<u64>>("bytes_received")?,
                     duration_secs: r.get::<_, Option<u64>>("duration_secs")?,
+                    // rustnetec: T-A2 — 从 connection_events.interface 列读取。
+                    interface: r.get::<_, Option<String>>("interface")?,
                 },
             ))
         })?;
@@ -783,6 +870,7 @@ mod tests {
             bytes_sent: None,
             bytes_received: None,
             duration_secs: None,
+            interface: Some("en0".to_string()),
         };
 
         let tx = conn.unchecked_transaction().unwrap();
@@ -854,6 +942,7 @@ mod tests {
             bytes_sent: None,
             bytes_received: None,
             duration_secs: None,
+            interface: None,
         };
 
         let tx = conn.unchecked_transaction().unwrap();

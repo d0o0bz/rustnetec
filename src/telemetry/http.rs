@@ -250,6 +250,26 @@ fn handle_request(request: tiny_http::Request, state: &HttpState) {
             handle_stats(request, state);
         }
 
+        // rustnetec: T-B1 — GET /stats/range 时间桶流量/连接查询。
+        ("/stats/range", tiny_http::Method::Get) => {
+            handle_stats_range(request, state);
+        }
+
+        // rustnetec: T-B2 — GET /stats/rtt RTT 分位数时间序列。
+        ("/stats/rtt", tiny_http::Method::Get) => {
+            handle_stats_rtt(request, state);
+        }
+
+        // rustnetec: T-B3 — GET /stats/availability 可用性时间序列。
+        ("/stats/availability", tiny_http::Method::Get) => {
+            handle_stats_availability(request, state);
+        }
+
+        // rustnetec: T-B4 — GET /stats/duration 连接持续时长聚合。
+        ("/stats/duration", tiny_http::Method::Get) => {
+            handle_stats_duration(request, state);
+        }
+
         // GET /config — read current config
         ("/config", tiny_http::Method::Get) => {
             handle_get_config(request, state);
@@ -286,11 +306,11 @@ fn handle_request(request: tiny_http::Request, state: &HttpState) {
             handle_processes(request, state);
         }
 
-        // rustnetec: W3.4 — GET /uplot.js — uPlot 图表库静态资产。
-        // 浏览器加载 <script src="uplot.js"> 时携带会话 cookie,走同一鉴权;
+        // rustnetec: T-F3b — GET /echarts.js — ECharts 图表库静态资产。
+        // 浏览器加载 <script src="echarts.js"> 时携带会话 cookie,走同一鉴权;
         // 与其它端点一致置于鉴权之后,保持"所有数据端点均需鉴权"的边界。
-        ("/uplot.js", tiny_http::Method::Get) => {
-            let _ = respond_text(request, 200, "application/javascript", UPLOT_JS);
+        ("/echarts.js", tiny_http::Method::Get) => {
+            let _ = respond_text(request, 200, "application/javascript", ECHARTS_JS);
         }
 
         _ => {
@@ -555,7 +575,7 @@ fn handle_stats(request: tiny_http::Request, state: &HttpState) {
 /// 与 `query_stats` 的 `by_process` 维度逻辑同源,但本端点是 Activity 页专用,
 /// 返回扁平数组 + bytes_total 便于前端按字节降序排序展示。
 fn handle_processes(request: tiny_http::Request, state: &HttpState) {
-    use rusqlite::OpenFlags;
+    use rusqlite::{params, OpenFlags};
 
     let path = &state.db_path;
     if !path.exists() {
@@ -566,6 +586,11 @@ fn handle_processes(request: tiny_http::Request, state: &HttpState) {
         let _ = respond_json(request, 200, &response);
         return;
     }
+
+    // rustnetec: T-E2 — 解析 interface 参数，支持按网口过滤进程活动。
+    let url = request.url();
+    let params = parse_query_params(url);
+    let iface_filter = params.get("interface").filter(|s| !s.is_empty());
 
     let conn = match rusqlite::Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY) {
         Ok(c) => c,
@@ -578,18 +603,136 @@ fn handle_processes(request: tiny_http::Request, state: &HttpState) {
 
     // 按 process_name 聚合,按总字节降序取 top 50。
     // COALESCE 防 NULL;bytes_total = bytes_sent + bytes_received 供前端排序展示。
+    //
+    // rustnetec: T-E1 — 增加外网/局域网聚合字段：
+    // - `external_*`：dest_ip 不属于 RFC1918/loopback/link-local/CGNAT 的连接
+    // - `lan_*`：dest_ip 属于 RFC1918/CGNAT 的连接
+    // - loopback/link-local 既不计入 external 也不计入 lan
+    //
+    // SQL 近似外网判断（用 LIKE 表达私网段排除），精度略低于
+    // `netutil::classify_dest`（SQL 难以表达 CGNAT 100.64/10），
+    // 但 `/processes` 是概览页，精度可放宽。精确分类走 `/stats/*` 端点。
     let processes: Vec<serde_json::Value> = match conn.prepare(
-        "SELECT process_name, COUNT(*) as cnt, \
+        "SELECT process_name, \
+         COUNT(*) as cnt, \
          COALESCE(SUM(bytes_sent),0) as sent, \
-         COALESCE(SUM(bytes_received),0) as recv \
+         COALESCE(SUM(bytes_received),0) as recv, \
+         SUM(CASE \
+             WHEN dest_ip LIKE '10.%' \
+               OR dest_ip LIKE '172.16.%' OR dest_ip LIKE '172.17.%' OR dest_ip LIKE '172.18.%' \
+               OR dest_ip LIKE '172.19.%' OR dest_ip LIKE '172.20.%' OR dest_ip LIKE '172.21.%' \
+               OR dest_ip LIKE '172.22.%' OR dest_ip LIKE '172.23.%' OR dest_ip LIKE '172.24.%' \
+               OR dest_ip LIKE '172.25.%' OR dest_ip LIKE '172.26.%' OR dest_ip LIKE '172.27.%' \
+               OR dest_ip LIKE '172.28.%' OR dest_ip LIKE '172.29.%' OR dest_ip LIKE '172.30.%' \
+               OR dest_ip LIKE '172.31.%' \
+               OR dest_ip LIKE '192.168.%' \
+               OR dest_ip LIKE '100.64.%' OR dest_ip LIKE '100.65.%' OR dest_ip LIKE '100.66.%' \
+               OR dest_ip LIKE '100.67.%' OR dest_ip LIKE '100.68.%' OR dest_ip LIKE '100.69.%' \
+               OR dest_ip LIKE '100.70.%' OR dest_ip LIKE '100.71.%' OR dest_ip LIKE '100.72.%' \
+               OR dest_ip LIKE '100.73.%' OR dest_ip LIKE '100.74.%' OR dest_ip LIKE '100.75.%' \
+               OR dest_ip LIKE '100.76.%' OR dest_ip LIKE '100.77.%' OR dest_ip LIKE '100.78.%' \
+               OR dest_ip LIKE '100.79.%' OR dest_ip LIKE '100.80.%' OR dest_ip LIKE '100.81.%' \
+               OR dest_ip LIKE '100.82.%' OR dest_ip LIKE '100.83.%' OR dest_ip LIKE '100.84.%' \
+               OR dest_ip LIKE '100.85.%' OR dest_ip LIKE '100.86.%' OR dest_ip LIKE '100.87.%' \
+               OR dest_ip LIKE '100.88.%' OR dest_ip LIKE '100.89.%' OR dest_ip LIKE '100.90.%' \
+               OR dest_ip LIKE '100.91.%' OR dest_ip LIKE '100.92.%' OR dest_ip LIKE '100.93.%' \
+               OR dest_ip LIKE '100.94.%' OR dest_ip LIKE '100.95.%' OR dest_ip LIKE '100.96.%' \
+               OR dest_ip LIKE '100.97.%' OR dest_ip LIKE '100.98.%' OR dest_ip LIKE '100.99.%' \
+               OR dest_ip LIKE '100.100.%' OR dest_ip LIKE '100.101.%' OR dest_ip LIKE '100.102.%' \
+               OR dest_ip LIKE '100.103.%' OR dest_ip LIKE '100.104.%' OR dest_ip LIKE '100.105.%' \
+               OR dest_ip LIKE '100.106.%' OR dest_ip LIKE '100.107.%' OR dest_ip LIKE '100.108.%' \
+               OR dest_ip LIKE '100.109.%' OR dest_ip LIKE '100.110.%' OR dest_ip LIKE '100.111.%' \
+               OR dest_ip LIKE '100.112.%' OR dest_ip LIKE '100.113.%' OR dest_ip LIKE '100.114.%' \
+               OR dest_ip LIKE '100.115.%' OR dest_ip LIKE '100.116.%' OR dest_ip LIKE '100.117.%' \
+               OR dest_ip LIKE '100.118.%' OR dest_ip LIKE '100.119.%' OR dest_ip LIKE '100.120.%' \
+               OR dest_ip LIKE '100.121.%' OR dest_ip LIKE '100.122.%' OR dest_ip LIKE '100.123.%' \
+               OR dest_ip LIKE '100.124.%' OR dest_ip LIKE '100.125.%' OR dest_ip LIKE '100.126.%' \
+               OR dest_ip LIKE '100.127.%' \
+               OR dest_ip LIKE '127.%' \
+               OR dest_ip LIKE '169.254.%' \
+               THEN 0 ELSE 1 \
+         END) as external_conns, \
+         SUM(CASE \
+             WHEN dest_ip LIKE '10.%' \
+               OR dest_ip LIKE '172.16.%' OR dest_ip LIKE '172.17.%' OR dest_ip LIKE '172.18.%' \
+               OR dest_ip LIKE '172.19.%' OR dest_ip LIKE '172.20.%' OR dest_ip LIKE '172.21.%' \
+               OR dest_ip LIKE '172.22.%' OR dest_ip LIKE '172.23.%' OR dest_ip LIKE '172.24.%' \
+               OR dest_ip LIKE '172.25.%' OR dest_ip LIKE '172.26.%' OR dest_ip LIKE '172.27.%' \
+               OR dest_ip LIKE '172.28.%' OR dest_ip LIKE '172.29.%' OR dest_ip LIKE '172.30.%' \
+               OR dest_ip LIKE '172.31.%' \
+               OR dest_ip LIKE '192.168.%' \
+               OR dest_ip LIKE '100.64.%' OR dest_ip LIKE '100.65.%' OR dest_ip LIKE '100.66.%' \
+               OR dest_ip LIKE '100.67.%' OR dest_ip LIKE '100.68.%' OR dest_ip LIKE '100.69.%' \
+               OR dest_ip LIKE '100.70.%' OR dest_ip LIKE '100.71.%' OR dest_ip LIKE '100.72.%' \
+               OR dest_ip LIKE '100.73.%' OR dest_ip LIKE '100.74.%' OR dest_ip LIKE '100.75.%' \
+               OR dest_ip LIKE '100.76.%' OR dest_ip LIKE '100.77.%' OR dest_ip LIKE '100.78.%' \
+               OR dest_ip LIKE '100.79.%' OR dest_ip LIKE '100.80.%' OR dest_ip LIKE '100.81.%' \
+               OR dest_ip LIKE '100.82.%' OR dest_ip LIKE '100.83.%' OR dest_ip LIKE '100.84.%' \
+               OR dest_ip LIKE '100.85.%' OR dest_ip LIKE '100.86.%' OR dest_ip LIKE '100.87.%' \
+               OR dest_ip LIKE '100.88.%' OR dest_ip LIKE '100.89.%' OR dest_ip LIKE '100.90.%' \
+               OR dest_ip LIKE '100.91.%' OR dest_ip LIKE '100.92.%' OR dest_ip LIKE '100.93.%' \
+               OR dest_ip LIKE '100.94.%' OR dest_ip LIKE '100.95.%' OR dest_ip LIKE '100.96.%' \
+               OR dest_ip LIKE '100.97.%' OR dest_ip LIKE '100.98.%' OR dest_ip LIKE '100.99.%' \
+               OR dest_ip LIKE '100.100.%' OR dest_ip LIKE '100.101.%' OR dest_ip LIKE '100.102.%' \
+               OR dest_ip LIKE '100.103.%' OR dest_ip LIKE '100.104.%' OR dest_ip LIKE '100.105.%' \
+               OR dest_ip LIKE '100.106.%' OR dest_ip LIKE '100.107.%' OR dest_ip LIKE '100.108.%' \
+               OR dest_ip LIKE '100.109.%' OR dest_ip LIKE '100.110.%' OR dest_ip LIKE '100.111.%' \
+               OR dest_ip LIKE '100.112.%' OR dest_ip LIKE '100.113.%' OR dest_ip LIKE '100.114.%' \
+               OR dest_ip LIKE '100.115.%' OR dest_ip LIKE '100.116.%' OR dest_ip LIKE '100.117.%' \
+               OR dest_ip LIKE '100.118.%' OR dest_ip LIKE '100.119.%' OR dest_ip LIKE '100.120.%' \
+               OR dest_ip LIKE '100.121.%' OR dest_ip LIKE '100.122.%' OR dest_ip LIKE '100.123.%' \
+               OR dest_ip LIKE '100.124.%' OR dest_ip LIKE '100.125.%' OR dest_ip LIKE '100.126.%' \
+               OR dest_ip LIKE '100.127.%' \
+               THEN 1 ELSE 0 \
+         END) as lan_conns, \
+         SUM(CASE \
+             WHEN dest_ip NOT LIKE '10.%' \
+               AND dest_ip NOT LIKE '127.%' \
+               AND dest_ip NOT LIKE '169.254.%' \
+             THEN COALESCE(duration_secs,0) ELSE 0 \
+         END) as external_duration, \
+         SUM(CASE \
+             WHEN dest_ip NOT LIKE '10.%' \
+               AND dest_ip NOT LIKE '127.%' \
+               AND dest_ip NOT LIKE '169.254.%' \
+             THEN COALESCE(bytes_sent,0) + COALESCE(bytes_received,0) ELSE 0 \
+         END) as external_bytes, \
+         SUM(CASE \
+             WHEN dest_ip LIKE '10.%' \
+               OR dest_ip LIKE '192.168.%' \
+               OR dest_ip LIKE '172.16.%' OR dest_ip LIKE '172.17.%' OR dest_ip LIKE '172.18.%' \
+               OR dest_ip LIKE '172.19.%' OR dest_ip LIKE '172.20.%' OR dest_ip LIKE '172.21.%' \
+               OR dest_ip LIKE '172.22.%' OR dest_ip LIKE '172.23.%' OR dest_ip LIKE '172.24.%' \
+               OR dest_ip LIKE '172.25.%' OR dest_ip LIKE '172.26.%' OR dest_ip LIKE '172.27.%' \
+               OR dest_ip LIKE '172.28.%' OR dest_ip LIKE '172.29.%' OR dest_ip LIKE '172.30.%' \
+               OR dest_ip LIKE '172.31.%' \
+             THEN COALESCE(duration_secs,0) ELSE 0 \
+         END) as lan_duration, \
+         SUM(CASE \
+             WHEN dest_ip LIKE '10.%' \
+               OR dest_ip LIKE '192.168.%' \
+               OR dest_ip LIKE '172.16.%' OR dest_ip LIKE '172.17.%' OR dest_ip LIKE '172.18.%' \
+               OR dest_ip LIKE '172.19.%' OR dest_ip LIKE '172.20.%' OR dest_ip LIKE '172.21.%' \
+               OR dest_ip LIKE '172.22.%' OR dest_ip LIKE '172.23.%' OR dest_ip LIKE '172.24.%' \
+               OR dest_ip LIKE '172.25.%' OR dest_ip LIKE '172.26.%' OR dest_ip LIKE '172.27.%' \
+               OR dest_ip LIKE '172.28.%' OR dest_ip LIKE '172.29.%' OR dest_ip LIKE '172.30.%' \
+               OR dest_ip LIKE '172.31.%' \
+             THEN COALESCE(bytes_sent,0) + COALESCE(bytes_received,0) ELSE 0 \
+         END) as lan_bytes \
          FROM connection_events \
          WHERE process_name IS NOT NULL AND process_name != '' \
+           AND (? = '' OR interface = ?) \
          GROUP BY process_name \
          ORDER BY (sent + recv) DESC \
          LIMIT 50",
     ) {
         Ok(mut stmt) => {
-            let rows = stmt.query_map([], |row| {
+            // rustnetec: T-E2 — interface 过滤：
+            // SQL WHERE 末尾加 `AND (? = '' OR interface = ?)`，
+            // `iface_filter` 为 None 时绑定空串使条件恒真，
+            // 为 Some 时绑定实际网口名。单条 query_map 路径避免闭包类型冲突。
+            let iface_value = iface_filter.cloned().unwrap_or_default();
+            let rows_result = stmt.query_map(params![iface_value, iface_value], |row| {
                 let sent: i64 = row.get(2)?;
                 let recv: i64 = row.get(3)?;
                 Ok(serde_json::json!({
@@ -598,9 +741,15 @@ fn handle_processes(request: tiny_http::Request, state: &HttpState) {
                     "bytes_sent": sent,
                     "bytes_received": recv,
                     "bytes_total": sent + recv,
+                    "external_conns": row.get::<_, i64>(4)?,
+                    "lan_conns": row.get::<_, i64>(5)?,
+                    "external_duration": row.get::<_, i64>(6)?,
+                    "external_bytes": row.get::<_, i64>(7)?,
+                    "lan_duration": row.get::<_, i64>(8)?,
+                    "lan_bytes": row.get::<_, i64>(9)?,
                 }))
             });
-            match rows {
+            match rows_result {
                 Ok(r) => r.filter_map(|v| v.ok()).collect(),
                 Err(e) => {
                     let response =
@@ -620,6 +769,761 @@ fn handle_processes(request: tiny_http::Request, state: &HttpState) {
     let response = serde_json::json!({
         "processes": processes,
         "count": processes.len(),
+    });
+    let _ = respond_json(request, 200, &response);
+}
+
+/// rustnetec: T-B1 — GET /stats/range 时间桶流量/连接查询。
+///
+/// 参数：
+/// - `start` / `end`：RFC 3339 时间戳；缺省 end=now，start=now-1h。
+/// - `bucket`：`5s`/`1min`/`1hour`/`1day`，默认 `1min`。
+/// - `process`：进程名过滤，逗号分隔多进程（IN 语义）。
+/// - `interface`：网口过滤（精确匹配）。
+/// - `scope`：`external`/`lan`/`all`，默认 `all`。外网/局域网过滤在
+///   Rust 侧用 `classify_dest(dest_ip)` 判断（SQLite 无自定义函数）。
+///
+/// 返回 `[{ts, bytes_rx, bytes_tx, conn_count, active_seconds, process_name?}, ...]`。
+///
+/// 数据来源：直接查 `connection_events`（未走 aggregates 预聚合表，
+/// 因 scope 过滤需 Rust 侧判断 dest_ip，aggregates 表未存 dest_ip 维度）。
+fn handle_stats_range(request: tiny_http::Request, state: &HttpState) {
+    use rusqlite::OpenFlags;
+
+    let path = &state.db_path;
+    if !path.exists() {
+        let response = serde_json::json!({
+            "buckets": [],
+            "note": "database file not found — no capture data yet"
+        });
+        let _ = respond_json(request, 200, &response);
+        return;
+    }
+
+    let url = request.url();
+    let params = parse_query_params(url);
+
+    // 解析时间窗（默认最近 1 小时）。
+    let end = params.get("end").cloned().unwrap_or_else(|| {
+        chrono::Local::now().to_rfc3339()
+    });
+    let start = params.get("start").cloned().unwrap_or_else(|| {
+        chrono::Local::now()
+            .checked_sub_signed(chrono::Duration::hours(1))
+            .unwrap_or_else(chrono::Local::now)
+            .to_rfc3339()
+    });
+
+    // 解析 bucket 宽度。
+    let bucket = params.get("bucket").map(String::as_str).unwrap_or("1min");
+    let _label = match bucket {
+        "5s" => "5s",
+        "1min" => "1min",
+        "1hour" => "1hour",
+        "1day" => "1day",
+        _ => "1min",
+    };
+
+    // 构造 WHERE 子句。
+    let mut where_clauses: Vec<String> = vec![
+        "ts >= ?1".to_string(),
+        "ts <= ?2".to_string(),
+        "event_type = 'connection_closed'".to_string(),
+    ];
+    let mut bind_values: Vec<Box<dyn rusqlite::ToSql>> = vec![
+        Box::new(start.clone()),
+        Box::new(end.clone()),
+    ];
+    let mut bind_idx = 3;
+
+    // process 过滤（逗号分隔 → IN (?, ?, ...)）。
+    if let Some(proc_list) = params.get("process") {
+        let names: Vec<&str> = proc_list.split(',').filter(|s| !s.is_empty()).collect();
+        if !names.is_empty() {
+            let placeholders: Vec<String> = names
+                .iter()
+                .map(|_| format!("?{}", bind_idx))
+                .collect();
+            where_clauses.push(format!("process_name IN ({})", placeholders.join(", ")));
+            for name in names {
+                bind_values.push(Box::new(name.to_string()));
+                bind_idx += 1;
+            }
+        }
+    }
+
+    // interface 过滤（精确匹配）。
+    if let Some(iface) = params.get("interface") {
+        if !iface.is_empty() {
+            where_clauses.push(format!("interface = ?{}", bind_idx));
+            bind_values.push(Box::new(iface.clone()));
+            // bind_idx 不再递增：interface 是最后一个过滤条件，后续无使用。
+        }
+    }
+
+    // scope 过滤在 Rust 侧判断（拉取 dest_ip 后用 classify_dest），
+    // 此处 SQL 不加 scope 条件，后续遍历结果时过滤。
+
+    let sql = format!(
+        "SELECT ts, dest_ip, bytes_received, bytes_sent, duration_secs, process_name \
+         FROM connection_events \
+         WHERE {} \
+         ORDER BY ts ASC",
+        where_clauses.join(" AND ")
+    );
+
+    let conn = match rusqlite::Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY) {
+        Ok(c) => c,
+        Err(e) => {
+            let response = serde_json::json!({"error": format!("failed to open database: {}", e)});
+            let _ = respond_json(request, 500, &response);
+            return;
+        }
+    };
+
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(e) => {
+            let response = serde_json::json!({"error": format!("prepare failed: {}", e)});
+            let _ = respond_json(request, 500, &response);
+            return;
+        }
+    };
+
+    // 构建 binds 引用数组（rusqlite 需要 &[&dyn ToSql]）。
+    let bind_refs: Vec<&dyn rusqlite::ToSql> = bind_values.iter().map(|b| b.as_ref()).collect();
+    let rows = stmt.query_map(bind_refs.as_slice(), |row| {
+        Ok((
+            row.get::<_, String>(0)?,       // ts
+            row.get::<_, Option<String>>(1)?, // dest_ip
+            row.get::<_, Option<i64>>(2)?,  // bytes_received
+            row.get::<_, Option<i64>>(3)?,  // bytes_sent
+            row.get::<_, Option<i64>>(4)?,  // duration_secs
+            row.get::<_, Option<String>>(5)?, // process_name
+        ))
+    });
+
+    let rows = match rows {
+        Ok(r) => r,
+        Err(e) => {
+            let response = serde_json::json!({"error": format!("query failed: {}", e)});
+            let _ = respond_json(request, 500, &response);
+            return;
+        }
+    };
+
+    // 解析 scope 并构建分类器闭包。
+    let scope = params.get("scope").map(String::as_str).unwrap_or("all");
+    use crate::telemetry::netutil::{classify_dest, DestClass};
+    let scope_filter = |dest_ip: &Option<String>| -> bool {
+        match scope {
+            "external" => {
+                dest_ip.as_ref().map(|ip| classify_dest(ip) == DestClass::External).unwrap_or(false)
+            }
+            "lan" => {
+                dest_ip.as_ref().map(|ip| classify_dest(ip) == DestClass::Lan).unwrap_or(false)
+            }
+            _ => true, // all
+        }
+    };
+
+    // 按 bucket 聚合：用 BTreeMap 按桶时间排序。
+    use std::collections::BTreeMap;
+    #[derive(Default)]
+    struct BucketAcc {
+        bytes_rx: i64,
+        bytes_tx: i64,
+        conn_count: i64,
+        active_seconds: i64,
+        // 多进程时 process_name 可能为 None，此处暂不记录每进程细分。
+    }
+
+    let mut buckets: BTreeMap<String, BucketAcc> = BTreeMap::new();
+
+    // SQLite strftime 需要 ts 为 TEXT 且格式为 RFC 3339 或 ISO 8601。
+    // 为正确分桶，先在 Rust 侧解析 ts → 截断到 bucket 粒度 → 用作 map key。
+    let parse_ts = |ts: &str| -> Option<chrono::DateTime<chrono::FixedOffset>> {
+        chrono::DateTime::parse_from_rfc3339(ts).ok()
+    };
+
+    let truncate_ts = |dt: chrono::DateTime<chrono::FixedOffset>| -> String {
+        match bucket {
+            "5s" => {
+                let secs = dt.timestamp();
+                let truncated = secs - (secs % 5);
+                chrono::DateTime::from_timestamp(truncated, 0)
+                    .unwrap()
+                    .with_timezone(&chrono::FixedOffset::east_opt(0).unwrap())
+                    .format("%Y-%m-%dT%H:%M:%S")
+                    .to_string()
+            }
+            "1min" => dt.format("%Y-%m-%dT%H:%M").to_string(),
+            "1hour" => dt.format("%Y-%m-%dT%H").to_string(),
+            "1day" => dt.format("%Y-%m-%d").to_string(),
+            _ => dt.format("%Y-%m-%dT%H:%M").to_string(),
+        }
+    };
+
+    // 遍历查询结果，按桶聚合（跳过 scope 过滤不通过的行）。
+    for row in rows {
+        let (ts, dest_ip, bytes_rx, bytes_tx, duration_secs, _process_name) = match row {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+
+        // scope 过滤。
+        if !scope_filter(&dest_ip) {
+            continue;
+        }
+
+        // 解析 ts 并截断到 bucket 粒度。
+        let bucket_key = match parse_ts(&ts) {
+            Some(dt) => truncate_ts(dt),
+            None => continue, // ts 格式异常，跳过
+        };
+
+        let entry = buckets.entry(bucket_key).or_default();
+        entry.bytes_rx += bytes_rx.unwrap_or(0);
+        entry.bytes_tx += bytes_tx.unwrap_or(0);
+        entry.conn_count += 1;
+        entry.active_seconds += duration_secs.unwrap_or(0);
+    }
+
+    // 构建 JSON 响应。
+    let result: Vec<serde_json::Value> = buckets
+        .into_iter()
+        .map(|(ts, acc)| {
+            serde_json::json!({
+                "ts": ts,
+                "bytes_rx": acc.bytes_rx,
+                "bytes_tx": acc.bytes_tx,
+                "conn_count": acc.conn_count,
+                "active_seconds": acc.active_seconds,
+            })
+        })
+        .collect();
+
+    let response = serde_json::json!({
+        "buckets": result,
+        "count": result.len(),
+        "bucket": bucket,
+        "scope": scope,
+    });
+    let _ = respond_json(request, 200, &response);
+}
+
+/// rustnetec: T-B2 — GET /stats/rtt RTT 分位数时间序列。
+///
+/// 参数：
+/// - `start` / `end`：RFC 3339 时间戳；缺省 end=now，start=now-1h。
+/// - `bucket`：`5s`/`1min`/`1hour`/`1day`，默认 `1min`。
+/// - `interface`：网口过滤（精确匹配）。
+/// - `scope`：`external`/`lan`/`all`，默认 `external`（外网链路质量）。
+///
+/// 返回 `[{ts, p50, p95, p99, samples}, ...]`，按桶时间升序。
+fn handle_stats_rtt(request: tiny_http::Request, state: &HttpState) {
+    use rusqlite::OpenFlags;
+
+    let path = &state.db_path;
+    if !path.exists() {
+        let response = serde_json::json!({
+            "buckets": [],
+            "note": "database file not found — no capture data yet"
+        });
+        let _ = respond_json(request, 200, &response);
+        return;
+    }
+
+    let url = request.url();
+    let params = parse_query_params(url);
+
+    let end = params.get("end").cloned().unwrap_or_else(|| {
+        chrono::Local::now().to_rfc3339()
+    });
+    let start = params.get("start").cloned().unwrap_or_else(|| {
+        chrono::Local::now()
+            .checked_sub_signed(chrono::Duration::hours(1))
+            .unwrap_or_else(chrono::Local::now)
+            .to_rfc3339()
+    });
+
+    let bucket = params.get("bucket").map(String::as_str).unwrap_or("1min");
+    let scope = params.get("scope").map(String::as_str).unwrap_or("external");
+
+    // 构造 WHERE 子句。
+    let mut where_clauses: Vec<String> = vec![
+        "ts >= ?".to_string(),
+        "ts <= ?".to_string(),
+        "rtt_ms IS NOT NULL".to_string(),
+    ];
+    let mut bind_values: Vec<Box<dyn rusqlite::ToSql>> = vec![
+        Box::new(start.clone()),
+        Box::new(end.clone()),
+    ];
+
+    if let Some(iface) = params.get("interface") {
+        if !iface.is_empty() {
+            where_clauses.push("interface = ?".to_string());
+            bind_values.push(Box::new(iface.clone()));
+        }
+    }
+
+    let sql = format!(
+        "SELECT ts, dest_ip, rtt_ms FROM connection_events WHERE {} ORDER BY ts ASC",
+        where_clauses.join(" AND ")
+    );
+
+    let conn = match rusqlite::Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY) {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = respond_json(request, 500, &serde_json::json!({"error": format!("open: {}", e)}));
+            return;
+        }
+    };
+
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(e) => {
+            let _ = respond_json(request, 500, &serde_json::json!({"error": format!("prepare: {}", e)}));
+            return;
+        }
+    };
+
+    let bind_refs: Vec<&dyn rusqlite::ToSql> = bind_values.iter().map(|b| b.as_ref()).collect();
+    let rows = stmt.query_map(bind_refs.as_slice(), |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, f64>(2)?,
+        ))
+    });
+
+    use crate::telemetry::netutil::{classify_dest, DestClass};
+    use std::collections::BTreeMap;
+
+    let scope_match = |dest_ip: &Option<String>| -> bool {
+        match scope {
+            "external" => dest_ip.as_ref().map(|ip| classify_dest(ip) == DestClass::External).unwrap_or(false),
+            "lan" => dest_ip.as_ref().map(|ip| classify_dest(ip) == DestClass::Lan).unwrap_or(false),
+            _ => true,
+        }
+    };
+
+    let truncate_ts = |dt: chrono::DateTime<chrono::FixedOffset>| -> String {
+        match bucket {
+            "5s" => {
+                let secs = dt.timestamp();
+                chrono::DateTime::from_timestamp(secs - (secs % 5), 0)
+                    .unwrap()
+                    .format("%Y-%m-%dT%H:%M:%S")
+                    .to_string()
+            }
+            "1min" => dt.format("%Y-%m-%dT%H:%M").to_string(),
+            "1hour" => dt.format("%Y-%m-%dT%H").to_string(),
+            "1day" => dt.format("%Y-%m-%d").to_string(),
+            _ => dt.format("%Y-%m-%dT%H:%M").to_string(),
+        }
+    };
+
+    // 按桶收集 rtt_ms 列表。
+    let mut buckets: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+    let rows_iter = match rows {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = respond_json(request, 500, &serde_json::json!({"error": format!("query: {}", e)}));
+            return;
+        }
+    };
+
+    for row in rows_iter {
+        let (ts, dest_ip, rtt_ms) = match row {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        if !scope_match(&dest_ip) {
+            continue;
+        }
+        let dt = match chrono::DateTime::parse_from_rfc3339(&ts) {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+        let key = truncate_ts(dt);
+        buckets.entry(key).or_default().push(rtt_ms);
+    }
+
+    // 计算每桶 p50/p95/p99。
+    let percentile = |sorted: &[f64], p: f64| -> f64 {
+        if sorted.is_empty() {
+            return 0.0;
+        }
+        let idx = ((sorted.len() as f64 - 1.0) * p).round() as usize;
+        sorted[idx.min(sorted.len() - 1)]
+    };
+
+    let result: Vec<serde_json::Value> = buckets
+        .into_iter()
+        .map(|(ts, mut rtts)| {
+            rtts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let samples = rtts.len() as i64;
+            serde_json::json!({
+                "ts": ts,
+                "p50": percentile(&rtts, 0.5),
+                "p95": percentile(&rtts, 0.95),
+                "p99": percentile(&rtts, 0.99),
+                "samples": samples,
+            })
+        })
+        .collect();
+
+    let response = serde_json::json!({
+        "buckets": result,
+        "count": result.len(),
+        "bucket": bucket,
+        "scope": scope,
+    });
+    let _ = respond_json(request, 200, &response);
+}
+
+/// rustnetec: T-B3 — GET /stats/availability 可用性时间序列。
+///
+/// 参数：
+/// - `start` / `end`：RFC 3339 时间戳；缺省 end=now，start=now-15m。
+/// - `bucket`：`1min`/`1hour`/`1day`，默认 `1min`。
+/// - `interface`：网口过滤（精确匹配）。
+/// - `scope`：`external`/`lan`/`all`，默认 `external`。
+///
+/// 返回 `[{ts, available: bool, ratio: f64}, ...]`，按桶时间升序。
+/// `available=true` 表示该桶内有匹配 scope 的 closed 事件（即有外网/局域网流量）。
+/// `ratio` = 该桶匹配 scope 的连接数 / 该桶总连接数（0.0-1.0）。
+fn handle_stats_availability(request: tiny_http::Request, state: &HttpState) {
+    use rusqlite::OpenFlags;
+
+    let path = &state.db_path;
+    if !path.exists() {
+        let response = serde_json::json!({
+            "buckets": [],
+            "note": "database file not found — no capture data yet"
+        });
+        let _ = respond_json(request, 200, &response);
+        return;
+    }
+
+    let url = request.url();
+    let params = parse_query_params(url);
+
+    let end = params.get("end").cloned().unwrap_or_else(|| {
+        chrono::Local::now().to_rfc3339()
+    });
+    let start = params.get("start").cloned().unwrap_or_else(|| {
+        chrono::Local::now()
+            .checked_sub_signed(chrono::Duration::minutes(15))
+            .unwrap_or_else(chrono::Local::now)
+            .to_rfc3339()
+    });
+
+    let bucket = params.get("bucket").map(String::as_str).unwrap_or("1min");
+    let scope = params.get("scope").map(String::as_str).unwrap_or("external");
+
+    let mut where_clauses: Vec<String> = vec![
+        "ts >= ?".to_string(),
+        "ts <= ?".to_string(),
+        "event_type = 'connection_closed'".to_string(),
+    ];
+    let mut bind_values: Vec<Box<dyn rusqlite::ToSql>> = vec![
+        Box::new(start.clone()),
+        Box::new(end.clone()),
+    ];
+
+    if let Some(iface) = params.get("interface") {
+        if !iface.is_empty() {
+            where_clauses.push("interface = ?".to_string());
+            bind_values.push(Box::new(iface.clone()));
+        }
+    }
+
+    let sql = format!(
+        "SELECT ts, dest_ip FROM connection_events WHERE {} ORDER BY ts ASC",
+        where_clauses.join(" AND ")
+    );
+
+    let conn = match rusqlite::Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY) {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = respond_json(request, 500, &serde_json::json!({"error": format!("open: {}", e)}));
+            return;
+        }
+    };
+
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(e) => {
+            let _ = respond_json(request, 500, &serde_json::json!({"error": format!("prepare: {}", e)}));
+            return;
+        }
+    };
+
+    let bind_refs: Vec<&dyn rusqlite::ToSql> = bind_values.iter().map(|b| b.as_ref()).collect();
+    let rows = stmt.query_map(bind_refs.as_slice(), |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+    });
+
+    use crate::telemetry::netutil::{classify_dest, DestClass};
+    use std::collections::BTreeMap;
+
+    #[derive(Default)]
+    struct AvailAcc {
+        in_scope: i64,
+        total: i64,
+    }
+
+    let scope_match = |dest_ip: &Option<String>| -> bool {
+        match scope {
+            "external" => dest_ip.as_ref().map(|ip| classify_dest(ip) == DestClass::External).unwrap_or(false),
+            "lan" => dest_ip.as_ref().map(|ip| classify_dest(ip) == DestClass::Lan).unwrap_or(false),
+            _ => true,
+        }
+    };
+
+    let truncate_ts = |dt: chrono::DateTime<chrono::FixedOffset>| -> String {
+        match bucket {
+            "1min" => dt.format("%Y-%m-%dT%H:%M").to_string(),
+            "1hour" => dt.format("%Y-%m-%dT%H").to_string(),
+            "1day" => dt.format("%Y-%m-%d").to_string(),
+            _ => dt.format("%Y-%m-%dT%H:%M").to_string(),
+        }
+    };
+
+    let mut buckets: BTreeMap<String, AvailAcc> = BTreeMap::new();
+    let rows_iter = match rows {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = respond_json(request, 500, &serde_json::json!({"error": format!("query: {}", e)}));
+            return;
+        }
+    };
+
+    for row in rows_iter {
+        let (ts, dest_ip) = match row {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        let dt = match chrono::DateTime::parse_from_rfc3339(&ts) {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+        let key = truncate_ts(dt);
+        let entry = buckets.entry(key).or_default();
+        entry.total += 1;
+        if scope_match(&dest_ip) {
+            entry.in_scope += 1;
+        }
+    }
+
+    let result: Vec<serde_json::Value> = buckets
+        .into_iter()
+        .map(|(ts, acc)| {
+            let available = acc.in_scope > 0;
+            let ratio = if acc.total > 0 {
+                acc.in_scope as f64 / acc.total as f64
+            } else {
+                0.0
+            };
+            serde_json::json!({
+                "ts": ts,
+                "available": available,
+                "ratio": (ratio * 1000.0).round() / 1000.0,
+                "in_scope": acc.in_scope,
+                "total": acc.total,
+            })
+        })
+        .collect();
+
+    let response = serde_json::json!({
+        "buckets": result,
+        "count": result.len(),
+        "bucket": bucket,
+        "scope": scope,
+    });
+    let _ = respond_json(request, 200, &response);
+}
+
+/// rustnetec: T-B4 — GET /stats/duration 连接持续时长聚合。
+///
+/// 参数：
+/// - `start` / `end`：RFC 3339 时间戳；缺省 end=now，start=now-1h。
+/// - `bucket`：`1min`/`1hour`/`1day`，默认 `1min`。
+/// - `process`：进程名过滤，逗号分隔多进程（IN 语义）。
+/// - `interface`：网口过滤（精确匹配）。
+/// - `scope`：`external`/`lan`/`all`，默认 `external`。
+///
+/// 返回 `[{ts, avg, p95, max, samples}, ...]`，按桶时间升序。
+/// 用于「进程连接外网的持续时间」指标展示。
+fn handle_stats_duration(request: tiny_http::Request, state: &HttpState) {
+    use rusqlite::OpenFlags;
+
+    let path = &state.db_path;
+    if !path.exists() {
+        let response = serde_json::json!({
+            "buckets": [],
+            "note": "database file not found — no capture data yet"
+        });
+        let _ = respond_json(request, 200, &response);
+        return;
+    }
+
+    let url = request.url();
+    let params = parse_query_params(url);
+
+    let end = params.get("end").cloned().unwrap_or_else(|| {
+        chrono::Local::now().to_rfc3339()
+    });
+    let start = params.get("start").cloned().unwrap_or_else(|| {
+        chrono::Local::now()
+            .checked_sub_signed(chrono::Duration::hours(1))
+            .unwrap_or_else(chrono::Local::now)
+            .to_rfc3339()
+    });
+
+    let bucket = params.get("bucket").map(String::as_str).unwrap_or("1min");
+    let scope = params.get("scope").map(String::as_str).unwrap_or("external");
+
+    let mut where_clauses: Vec<String> = vec![
+        "ts >= ?".to_string(),
+        "ts <= ?".to_string(),
+        "event_type = 'connection_closed'".to_string(),
+        "duration_secs IS NOT NULL".to_string(),
+    ];
+    let mut bind_values: Vec<Box<dyn rusqlite::ToSql>> = vec![
+        Box::new(start.clone()),
+        Box::new(end.clone()),
+    ];
+    let mut bind_idx = 3;
+
+    if let Some(proc_list) = params.get("process") {
+        let names: Vec<&str> = proc_list.split(',').filter(|s| !s.is_empty()).collect();
+        if !names.is_empty() {
+            let placeholders: Vec<String> = names.iter().map(|_| format!("?{}", bind_idx)).collect();
+            where_clauses.push(format!("process_name IN ({})", placeholders.join(", ")));
+            for name in names {
+                bind_values.push(Box::new(name.to_string()));
+                bind_idx += 1;
+            }
+        }
+    }
+
+    if let Some(iface) = params.get("interface") {
+        if !iface.is_empty() {
+            where_clauses.push(format!("interface = ?{}", bind_idx));
+            bind_values.push(Box::new(iface.clone()));
+        }
+    }
+
+    let sql = format!(
+        "SELECT ts, dest_ip, duration_secs FROM connection_events WHERE {} ORDER BY ts ASC",
+        where_clauses.join(" AND ")
+    );
+
+    let conn = match rusqlite::Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY) {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = respond_json(request, 500, &serde_json::json!({"error": format!("open: {}", e)}));
+            return;
+        }
+    };
+
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(e) => {
+            let _ = respond_json(request, 500, &serde_json::json!({"error": format!("prepare: {}", e)}));
+            return;
+        }
+    };
+
+    let bind_refs: Vec<&dyn rusqlite::ToSql> = bind_values.iter().map(|b| b.as_ref()).collect();
+    let rows = stmt.query_map(bind_refs.as_slice(), |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, Option<i64>>(2)?,
+        ))
+    });
+
+    use crate::telemetry::netutil::{classify_dest, DestClass};
+    use std::collections::BTreeMap;
+
+    let scope_match = |dest_ip: &Option<String>| -> bool {
+        match scope {
+            "external" => dest_ip.as_ref().map(|ip| classify_dest(ip) == DestClass::External).unwrap_or(false),
+            "lan" => dest_ip.as_ref().map(|ip| classify_dest(ip) == DestClass::Lan).unwrap_or(false),
+            _ => true,
+        }
+    };
+
+    let truncate_ts = |dt: chrono::DateTime<chrono::FixedOffset>| -> String {
+        match bucket {
+            "1min" => dt.format("%Y-%m-%dT%H:%M").to_string(),
+            "1hour" => dt.format("%Y-%m-%dT%H").to_string(),
+            "1day" => dt.format("%Y-%m-%d").to_string(),
+            _ => dt.format("%Y-%m-%dT%H:%M").to_string(),
+        }
+    };
+
+    let mut buckets: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+    let rows_iter = match rows {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = respond_json(request, 500, &serde_json::json!({"error": format!("query: {}", e)}));
+            return;
+        }
+    };
+
+    for row in rows_iter {
+        let (ts, dest_ip, duration_secs) = match row {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        if !scope_match(&dest_ip) {
+            continue;
+        }
+        let dt = match chrono::DateTime::parse_from_rfc3339(&ts) {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+        let key = truncate_ts(dt);
+        buckets.entry(key).or_default().push(duration_secs.unwrap_or(0) as f64);
+    }
+
+    let percentile = |sorted: &[f64], p: f64| -> f64 {
+        if sorted.is_empty() {
+            return 0.0;
+        }
+        let idx = ((sorted.len() as f64 - 1.0) * p).round() as usize;
+        sorted[idx.min(sorted.len() - 1)]
+    };
+
+    let result: Vec<serde_json::Value> = buckets
+        .into_iter()
+        .map(|(ts, mut durations)| {
+            durations.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let samples = durations.len() as i64;
+            let sum: f64 = durations.iter().sum();
+            let avg = if samples > 0 { sum / samples as f64 } else { 0.0 };
+            let max = durations.iter().cloned().fold(0.0_f64, f64::max);
+            serde_json::json!({
+                "ts": ts,
+                "avg": (avg * 1000.0).round() / 1000.0,
+                "p95": percentile(&durations, 0.95),
+                "max": max,
+                "samples": samples,
+            })
+        })
+        .collect();
+
+    let response = serde_json::json!({
+        "buckets": result,
+        "count": result.len(),
+        "bucket": bucket,
+        "scope": scope,
     });
     let _ = respond_json(request, 200, &response);
 }
@@ -926,10 +1830,10 @@ fn respond_json(request: tiny_http::Request, status: u16, value: &serde_json::Va
 // 但现在是完整的标签栏 + 仪表盘 + /live 1s 轮询页面。
 const INDEX_HTML: &str = include_str!("../../webui/index.html");
 
-// rustnetec: W3.4 — uPlot 图表库静态资产(uPlot.iife.min.js v1.6.31, MIT)。
+// rustnetec: T-F3b — ECharts 图表库静态资产(echarts.min.js v5.5.1, Apache 2.0)。
 // 与 INDEX_HTML 同法用 include_str! 内嵌,离线可用;WebUI 以相对路径
-// `<script src="uplot.js">` 引用,daemon 与 rustnet-server 双端服务同源文件。
-const UPLOT_JS: &str = include_str!("../../webui/uPlot.iife.min.js");
+// `<script src="echarts.js">` 引用,daemon 与 rustnet-server 双端服务同源文件。
+const ECHARTS_JS: &str = include_str!("../../webui/echarts.min.js");
 
 /// rustnetec: Login landing page shown when no session is active (T3.3, R6).
 ///

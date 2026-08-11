@@ -9,6 +9,8 @@ pub mod identity; // rustnetec: Host identity — snowflake user_id + BLAKE3 mac
 pub mod launchdaemon;
 pub mod paths;
 pub mod query; // rustnetec: query subcommand with filter-to-SQL translation (R5, T1.3)
+// rustnetec: T-C3 — 外网/局域网/本机回路识别辅助函数。
+pub mod netutil;
 pub mod upload; // rustnetec: UploadSink — client→server data upload (R3, T2.6)
 
 use serde::{Deserialize, Serialize};
@@ -101,6 +103,10 @@ pub struct ConnectionEventData {
     pub bytes_received: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_secs: Option<u64>,
+
+    // rustnetec: T-A2 — 捕获网口名（如 "en0"），供按网口历史查询与聚合。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interface: Option<String>,
 }
 
 /// Trait for consuming connection events.
@@ -203,6 +209,7 @@ mod tests {
             bytes_sent: None,
             bytes_received: None,
             duration_secs: None,
+            interface: None,
         };
 
         let json = serde_json::to_value(&event).unwrap();
@@ -250,6 +257,7 @@ mod tests {
             bytes_sent: None,
             bytes_received: None,
             duration_secs: None,
+            interface: None,
         };
         sink.accept(&event); // should not panic
     }
