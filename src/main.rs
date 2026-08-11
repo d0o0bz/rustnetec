@@ -863,15 +863,27 @@ fn main() -> Result<()> {
                 }
             };
 
+            // rustnetec: 无状态 session 签名密钥——从持久化 machine_id/
+            // http_token 派生（config.yml 不丢则重启后旧 cookie 依然有效），
+            // 修复「托盘打开 OK、浏览器刷新报未授权」问题。
+            let session_key: [u8; 32] = {
+                let pc = rustnet_monitor::config::PersistentConfig::load()
+                    .unwrap_or_default();
+                let seed = format!(
+                    "{}:{}",
+                    pc.machine_id.as_deref().unwrap_or(""),
+                    pc.http_token.as_deref().unwrap_or("")
+                );
+                *blake3::hash(seed.as_bytes()).as_bytes()
+            };
+
             let state = std::sync::Arc::new(telemetry::http::HttpState {
                 db_path: db_path.clone(),
                 http_token,
                 should_stop: app.should_stop_handle(),
                 // rustnetec: one-time bootstrap code auth (T3.3, R6)
                 pending_guids: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
-                active_sessions: std::sync::Arc::new(std::sync::Mutex::new(
-                    std::collections::HashMap::new(),
-                )),
+                session_key: std::sync::Arc::new(session_key),
                 // rustnetec: HTTP listen port for launcher URL (T3.5, R6)
                 http_port,
                 // rustnetec: daemon→tray live snapshot bridge (T3.6.7, R6)

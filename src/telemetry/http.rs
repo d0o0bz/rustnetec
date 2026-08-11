@@ -11,7 +11,6 @@
 
 use anyhow::Result;
 use log::info;
-use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
@@ -43,13 +42,13 @@ pub struct HttpState {
     /// browser hits `/?code=<guid>`, at which point a session is issued. A
     /// guid that is never redeemed expires after `BOOTSTRAP_GUID_TTL`.
     pub pending_guids: Arc<Mutex<Vec<(String, Instant)>>>,
-    /// rustnetec: active sessions issued from bootstrap handshake (T3.3, R6).
+    /// rustnetec: 会话签名密钥（无状态 session，T3.3 修复，2026-08-11）。
     ///
-    /// `session_id -> issued_at`. A session cookie with this id is accepted by
-    /// `check_auth` as an equivalent credential to the Bearer token. Sessions
-    /// expire after `SESSION_TTL`; the process restart also clears them (state
-    /// is in-memory, which is acceptable for a localhost-only UI handshake).
-    pub active_sessions: Arc<Mutex<HashMap<String, Instant>>>,
+    /// session cookie 改为「时间戳.签名」无状态格式（BLAKE3 keyed hash），
+    /// 不再用内存态 `active_sessions` 映射——daemon 重启后旧 cookie 依然有效
+    /// （密钥从持久化 machine_id/http_token 派生，重启不丢失），修复
+    /// 「托盘打开 OK、浏览器刷新报未授权」问题（原内存态在进程重启时清空）。
+    pub session_key: Arc<[u8; 32]>,
     /// rustnetec: HTTP listen port (T3.5, R6).
     ///
     /// Stored on the state so the tray launcher can build the
@@ -181,11 +180,13 @@ fn handle_request(request: tiny_http::Request, state: &HttpState) {
         // rustnetec: one-time bootstrap code handshake (T3.3, R6)
         if let Some(code) = parse_query_param(&path, "code") {
             if let Some(session_id) = redeem_bootstrap_guid(state, &code) {
-                // Guid redeemed: issue a session cookie and render the index.
-                // The cookie is HttpOnly + SameSite=Strict; the browser will
-                // attach it to subsequent /live, /query, ... requests so the
-                // user never needs to paste the Bearer token into a URL.
-                let _ = respond_html_with_session(request, INDEX_HTML, &session_id);
+                // Guid redeemed: issue a session cookie then 303-redirect to
+                // the clean `/` URL. The redirect makes the address bar lose
+                // the one-time `?code=...`, so a browser refresh does not
+                // replay an already-redeemed guid (which would 403). The
+                // cookie is set on this 303 response and sent on the
+                // subsequent GET `/`, which then renders the index.
+                let _ = respond_redirect_with_session(request, "/", &session_id);
                 return;
             }
             // Unknown or already-redeemed guid: show a landing page that
@@ -2079,13 +2080,12 @@ fn parse_query_param(url: &str, key: &str) -> Option<String> {
 
 /// Redeem a one-time bootstrap guid.
 ///
-/// On success: removes the guid from `pending_guids`, generates a fresh
-/// session id, records it in `active_sessions`, and returns the session id.
+/// On success: removes the guid from `pending_guids`, issues a **无状态**
+/// session id（`<unix_secs>.<签名>`，BLAKE3 keyed hash），并返回该 id。
 /// On failure (guid unknown / already redeemed / expired): returns `None`.
 ///
-/// Side effect: also sweeps expired entries from both `pending_guids` and
-/// `active_sessions` so a long-running daemon does not accumulate stale
-/// state without a dedicated cleanup thread.
+/// Side effect: also sweeps expired bootstrap guids so a long-running daemon
+/// does not accumulate stale state without a dedicated cleanup thread.
 fn redeem_bootstrap_guid(state: &HttpState, code: &str) -> Option<String> {
     let now = Instant::now();
     // Take the lock once, do redeem + sweep in the same critical section.
@@ -2103,34 +2103,61 @@ fn redeem_bootstrap_guid(state: &HttpState, code: &str) -> Option<String> {
     // rustnetec: clippy question_mark — redeem succeeded iff redeemed is Some
     redeemed?;
 
-    // Issue a fresh session id (reuse the http_token generator for crypto rand).
-    let session_id = crate::config::PersistentConfig::generate_http_token();
-    if let Ok(mut sessions) = state.active_sessions.lock() {
-        // Sweep expired sessions (best-effort).
-        sessions.retain(|_, issued| now.duration_since(*issued) < SESSION_TTL);
-        sessions.insert(session_id.clone(), now);
-    }
-    Some(session_id)
+    // rustnetec: 无状态 session — 签发「时间戳.签名」id，不写内存态映射；
+    // 密钥由持久化 machine_id/http_token 派生，daemon 重启后 cookie 依然可验证。
+    Some(issue_session_id(&state.session_key))
 }
 
-/// Validate a request's session cookie against `active_sessions`.
+/// 签发无状态 session id：`<unix_secs>.<hex(blake3 keyed_hash(key, secs_le))>`。
+///
+/// 校验只需验签 + 时间窗，不依赖任何服务端存储；密钥持久化派生，
+/// 因此进程重启后旧 cookie 依然有效（修复刷新报未授权问题）。
+fn issue_session_id(key: &[u8; 32]) -> String {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    format!("{ts}.{}", blake3::keyed_hash(key, &ts.to_le_bytes()).to_hex())
+}
+
+/// 校验无状态 session id：格式 `ts.sig`、签名匹配、且未超过 `SESSION_TTL`。
+fn verify_session_id(key: &[u8; 32], id: &str) -> bool {
+    let Some((ts_str, sig)) = id.split_once('.') else {
+        return false;
+    };
+    let Ok(ts) = ts_str.parse::<u64>() else {
+        return false;
+    };
+    // TTL 检查（wall-clock；进程重启后依然可比）。
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    if now.saturating_sub(ts) >= SESSION_TTL.as_secs() {
+        return false;
+    }
+    // 签名校验：恒定时间比较，避免时序侧信道。
+    let expect = blake3::keyed_hash(key, &ts.to_le_bytes()).to_hex();
+    let (a, b) = (expect.as_str().as_bytes(), sig.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for i in 0..a.len() {
+        diff |= a[i] ^ b[i];
+    }
+    diff == 0
+}
+
+/// Validate a request's session cookie（无状态签名，无服务端存储）。
 ///
 /// Returns `true` if the `Cookie: session=<id>` header is present and the id
-/// is currently active (and not expired). The sweep of expired sessions is
-/// done lazily in `redeem_bootstrap_guid` to avoid taking the lock twice on
-/// the hot path; an expired-but-not-yet-swept id is rejected here by checking
-/// the timestamp explicitly.
+/// 签名有效且未过期。不再依赖内存态会话表，daemon 重启后仍可校验。
 fn validate_session(state: &HttpState, request: &tiny_http::Request) -> bool {
     let Some(cookie_val) = extract_session_cookie(request) else {
         return false;
     };
-    let Ok(sessions) = state.active_sessions.lock() else {
-        return false;
-    };
-    let Some(issued) = sessions.get(&cookie_val) else {
-        return false;
-    };
-    Instant::now().duration_since(*issued) < SESSION_TTL
+    verify_session_id(&state.session_key, &cookie_val)
 }
 
 /// Extract the `session=<id>` value from a `Cookie` header, if present.
@@ -2153,15 +2180,13 @@ fn extract_session_cookie(request: &tiny_http::Request) -> Option<String> {
     None
 }
 
-/// Send an HTML response that also sets the `session` cookie.
-///
-/// `HttpOnly` blocks JS access (mitigates XSS token theft), `SameSite=Strict`
-/// blocks CSRF (cookie is not sent on cross-site navigations), and `Path=/`
-/// scopes it to the whole API. No `Secure` flag because the panel is
-/// `http://127.0.0.1` only (localhost is trusted; HTTPS would need a cert).
-fn respond_html_with_session(
+/// 兑换引导码成功后：设置 session cookie 并 303 重定向到干净的 `location`
+/// （通常是 `/`）。重定向让浏览器地址栏丢掉一次性 `?code=...`，
+/// 这样刷新不会重复使用已兑换的码（那会 403）；cookie 随 303 响应下发，
+/// 浏览器随后 GET `/` 时带上 cookie，正常渲染面板。
+fn respond_redirect_with_session(
     request: tiny_http::Request,
-    body: &str,
+    location: &str,
     session_id: &str,
 ) -> Result<()> {
     let cookie = format!(
@@ -2170,14 +2195,14 @@ fn respond_html_with_session(
         SESSION_TTL.as_secs()
     );
     let response = tiny_http::Response::new(
-        tiny_http::StatusCode(200),
+        tiny_http::StatusCode(303),
         vec![
-            tiny_http::Header::from_bytes(&b"Content-Type"[..], b"text/html").unwrap(),
-            tiny_http::Header::from_bytes(&b"Access-Control-Allow-Origin"[..], b"*").unwrap(),
+            tiny_http::Header::from_bytes(&b"Location"[..], location.as_bytes()).unwrap(),
             tiny_http::Header::from_bytes(&b"Set-Cookie"[..], cookie.as_bytes()).unwrap(),
+            tiny_http::Header::from_bytes(&b"Content-Type"[..], b"text/html").unwrap(),
         ],
-        std::io::Cursor::new(body.as_bytes().to_vec()),
-        Some(body.len()),
+        std::io::Cursor::new(Vec::<u8>::new()),
+        Some(0),
         None,
     );
     request.respond(response)?;
@@ -2291,7 +2316,6 @@ mod tests {
 
     #[test]
     fn http_state_creation() {
-        use std::collections::HashMap;
         use std::sync::Mutex;
         use std::sync::RwLock;
         use std::sync::atomic::AtomicBool;
@@ -2301,7 +2325,7 @@ mod tests {
             should_stop: Arc::new(AtomicBool::new(false)),
             // rustnetec: T3.3 bootstrap handshake state (R6)
             pending_guids: Arc::new(Mutex::new(Vec::new())),
-            active_sessions: Arc::new(Mutex::new(HashMap::new())),
+            session_key: Arc::new([0u8; 32]),
             // rustnetec: T3.5 launcher URL port (R6)
             http_port: 19811,
             // rustnetec: T3.6.7 daemon→tray live snapshot (R6)
@@ -2317,7 +2341,6 @@ mod tests {
         assert!(!state.should_stop.load(std::sync::atomic::Ordering::Relaxed));
         // rustnetec: T3.3 — confirm the handshake state is wired and empty
         assert!(state.pending_guids.lock().unwrap().is_empty());
-        assert!(state.active_sessions.lock().unwrap().is_empty());
         // rustnetec: T3.5 — confirm the listen port is wired for the launcher
         assert_eq!(state.http_port, 19811);
         // rustnetec: T3.6.7 — live snapshot starts empty (no daemon yet)
@@ -2328,7 +2351,6 @@ mod tests {
 
     /// Build a minimal HttpState for handshake tests (no real DB / token needed).
     fn handshake_state() -> HttpState {
-        use std::collections::HashMap;
         use std::sync::Mutex;
         use std::sync::RwLock;
         use std::sync::atomic::AtomicBool;
@@ -2339,7 +2361,7 @@ mod tests {
             http_token: String::new(),
             should_stop: Arc::new(AtomicBool::new(false)),
             pending_guids: Arc::new(Mutex::new(Vec::new())),
-            active_sessions: Arc::new(Mutex::new(HashMap::new())),
+            session_key: Arc::new([0u8; 32]),
             // rustnetec: T3.5 — use a non-default port so launcher URL
             // construction would catch a hardcoded-19811 regression.
             http_port: 19812,
@@ -2368,7 +2390,6 @@ mod tests {
             "handshake_state must use a non-default port"
         );
         // A freshly-built default state should also expose the port field.
-        use std::collections::HashMap;
         use std::sync::Mutex;
         use std::sync::RwLock;
         use std::sync::atomic::AtomicBool;
@@ -2377,7 +2398,7 @@ mod tests {
             http_token: String::new(),
             should_stop: Arc::new(AtomicBool::new(false)),
             pending_guids: Arc::new(Mutex::new(Vec::new())),
-            active_sessions: Arc::new(Mutex::new(HashMap::new())),
+            session_key: Arc::new([0u8; 32]),
             http_port: 19813,
             // rustnetec: T3.6.7 daemon→tray live snapshot (R6)
             live_snapshot: Arc::new(RwLock::new(serde_json::json!({}))),
@@ -2440,10 +2461,10 @@ mod tests {
         let session =
             redeem_bootstrap_guid(&state, &guid).expect("freshly-issued guid should redeem");
         assert!(!session.is_empty());
-        // The session is recorded active.
+        // 无状态 session：签名可独立校验（不依赖服务端内存态）。
         assert!(
-            state.active_sessions.lock().unwrap().contains_key(&session),
-            "redeemed session should be active"
+            verify_session_id(&state.session_key, &session),
+            "redeemed session should be verifiable by signature"
         );
         // The guid is no longer pending (one-time).
         assert!(
@@ -2491,59 +2512,59 @@ mod tests {
     }
 
     #[test]
-    fn redeem_sweeps_expired_active_sessions() {
-        let state = handshake_state();
-        // Inject an expired session directly so we can observe the sweep
-        // without waiting for real wall-clock time.
-        {
-            let mut sessions = state.active_sessions.lock().unwrap();
-            sessions.insert(
-                "stale-session".to_string(),
-                Instant::now() - SESSION_TTL - Duration::from_secs(1),
-            );
-        }
-        // A fresh redeem should sweep the stale session as a side effect.
-        let guid = state.issue_bootstrap_guid();
-        let fresh_session = redeem_bootstrap_guid(&state, &guid).expect("fresh guid redeemable");
-        let sessions = state.active_sessions.lock().unwrap();
-        assert!(
-            !sessions.contains_key("stale-session"),
-            "expired session should have been swept"
+    fn verify_session_id_rejects_expired_signature() {
+        // 无状态 session 无服务端存储，过期由时间戳 + TTL 判定。
+        let key = [0u8; 32];
+        // 构造一个过期时间戳的签名 id（1 秒前过期）。
+        let expired_ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() - SESSION_TTL.as_secs() - 1)
+            .unwrap_or(0);
+        let expired = format!(
+            "{expired_ts}.{}",
+            blake3::keyed_hash(&key, &expired_ts.to_le_bytes()).to_hex()
         );
-        assert!(sessions.contains_key(&fresh_session));
+        assert!(
+            !verify_session_id(&key, &expired),
+            "expired session id must be rejected"
+        );
+        // 合法 id（当前时间戳 + 正确签名）应通过。
+        let valid = issue_session_id(&key);
+        assert!(verify_session_id(&key, &valid), "fresh session id must pass");
     }
 
     #[test]
     fn validate_session_rejects_empty_cookie() {
+        // 无状态校验：空/畸形 id 一律拒绝（不依赖服务端内存态）。
         let state = handshake_state();
-        // No cookie header at all — tiny_http::Request is hard to build in
-        // unit tests without a live socket, so exercise the state-level
-        // predicate indirectly: an empty active_sessions map rejects any
-        // lookup. We validate by confirming the active_sessions starts empty
-        // and a redeem-driven session is required for acceptance.
-        assert!(state.active_sessions.lock().unwrap().is_empty());
+        assert!(!verify_session_id(&state.session_key, ""));
+        assert!(!verify_session_id(&state.session_key, "not-a-session"));
+        assert!(!verify_session_id(&state.session_key, "1234567890"));
     }
 
     #[test]
     fn extract_session_cookie_no_header_returns_none() {
         // Building a tiny_http::Request requires a TcpStream; for unit coverage
-        // we instead assert the parsing helper tolerates an empty cookie string
-        // by reusing its string-level logic (the helper splits on ';' / '=').
-        // If the helper were string-based we'd test it directly; here we confirm
-        // the bootstrap handshake state machine's invariants hold end-to-end.
+        // we instead assert the bootstrap handshake state machine's invariants
+        // hold end-to-end: each redemption yields a verifiable session.
         let state = handshake_state();
         let guid = state.issue_bootstrap_guid();
         let session = redeem_bootstrap_guid(&state, &guid).unwrap();
-        // The session is unique per redemption.
+        // 无状态 session：id = 时间戳.签名，同一秒内多次兑换可能相同（幂等），
+        // 但每次都必须能由签名独立校验（不依赖服务端内存态）。
         let guid2 = state.issue_bootstrap_guid();
         let session2 = redeem_bootstrap_guid(&state, &guid2).unwrap();
-        assert_ne!(
-            session, session2,
-            "each redemption yields a distinct session"
+        assert!(verify_session_id(&state.session_key, &session));
+        assert!(verify_session_id(&state.session_key, &session2));
+        // 不同时间戳的 session 必然不同（可区分不同会话窗口）。
+        let older_ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs().saturating_sub(1))
+            .unwrap_or(0);
+        let older = format!(
+            "{older_ts}.{}",
+            blake3::keyed_hash(&state.session_key, &older_ts.to_le_bytes()).to_hex()
         );
-        // Both sessions remain active until TTL sweep.
-        let sessions = state.active_sessions.lock().unwrap();
-        assert!(sessions.contains_key(&session));
-        assert!(sessions.contains_key(&session2));
+        assert_ne!(older, session, "different timestamps yield distinct ids");
     }
 }
