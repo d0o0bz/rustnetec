@@ -26,6 +26,9 @@
     <string>10.13</string>
     <key>LSRequiresCarbon</key>
     <false/>
+    <!-- rustnetec: 菜单栏 agent 应用，隐藏 Dock 图标和 Cmd+Tab 切换；UI 全部在状态栏托盘 -->
+    <key>LSUIElement</key>
+    <true/>
     <key>NSHumanReadableCopyright</key>
     <string>Copyright © 2025 domcyrus. All rights reserved.</string>
     <key>NSHighResolutionCapable</key>

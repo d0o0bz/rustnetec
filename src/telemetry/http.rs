@@ -842,15 +842,20 @@ fn handle_stats_range(request: tiny_http::Request, state: &HttpState) {
     if let Some(proc_list) = params.get("process") {
         let names: Vec<&str> = proc_list.split(',').filter(|s| !s.is_empty()).collect();
         if !names.is_empty() {
+            // rustnetec: T-E5 修复 — 每个进程占一个独立占位符（?3, ?4, ...），
+            // 旧代码 map 闭包未递增 bind_idx，选中 ≥2 个进程时生成重复的 ?3，
+            // 与绑定值数量不匹配导致 rusqlite 报错 → HTTP 500。
+            let n = names.len();
             let placeholders: Vec<String> = names
                 .iter()
-                .map(|_| format!("?{}", bind_idx))
+                .enumerate()
+                .map(|(i, _)| format!("?{}", bind_idx + i))
                 .collect();
             where_clauses.push(format!("process_name IN ({})", placeholders.join(", ")));
             for name in names {
                 bind_values.push(Box::new(name.to_string()));
-                bind_idx += 1;
             }
+            bind_idx += n;
         }
     }
 
@@ -929,18 +934,20 @@ fn handle_stats_range(request: tiny_http::Request, state: &HttpState) {
         }
     };
 
-    // 按 bucket 聚合：用 BTreeMap 按桶时间排序。
+    // rustnetec: T-E5 — 按 (bucket, process_name) 双键聚合，同时保留总计 buckets。
+    // buckets: 所有命中进程的总计（向后兼容 LAN/外网图表等单系列调用方）；
+    // by_process: 外层 key=bucket_ts，内层 key=process_name，供多进程对比渲染多条折线。
     use std::collections::BTreeMap;
-    #[derive(Default)]
+    #[derive(Default, Clone)]
     struct BucketAcc {
         bytes_rx: i64,
         bytes_tx: i64,
         conn_count: i64,
         active_seconds: i64,
-        // 多进程时 process_name 可能为 None，此处暂不记录每进程细分。
     }
 
-    let mut buckets: BTreeMap<String, BucketAcc> = BTreeMap::new();
+    let mut totals: BTreeMap<String, BucketAcc> = BTreeMap::new();
+    let mut by_process: BTreeMap<String, BTreeMap<String, BucketAcc>> = BTreeMap::new();
 
     // SQLite strftime 需要 ts 为 TEXT 且格式为 RFC 3339 或 ISO 8601。
     // 为正确分桶，先在 Rust 侧解析 ts → 截断到 bucket 粒度 → 用作 map key。
@@ -970,7 +977,7 @@ fn handle_stats_range(request: tiny_http::Request, state: &HttpState) {
 
     // 遍历查询结果，按桶聚合（跳过 scope 过滤不通过的行）。
     for row in rows {
-        let (ts, dest_ip, bytes_rx, bytes_tx, duration_secs, _process_name) = match row {
+        let (ts, dest_ip, bytes_rx, bytes_tx, duration_secs, process_name) = match row {
             Ok(r) => r,
             Err(_) => continue,
         };
@@ -986,16 +993,30 @@ fn handle_stats_range(request: tiny_http::Request, state: &HttpState) {
             None => continue, // ts 格式异常，跳过
         };
 
-        let entry = buckets.entry(bucket_key).or_default();
-        entry.bytes_rx += bytes_rx.unwrap_or(0);
-        entry.bytes_tx += bytes_tx.unwrap_or(0);
-        entry.conn_count += 1;
-        entry.active_seconds += duration_secs.unwrap_or(0);
+        let rx = bytes_rx.unwrap_or(0);
+        let tx = bytes_tx.unwrap_or(0);
+        let dur = duration_secs.unwrap_or(0);
+
+        // 总计聚合
+        let t = totals.entry(bucket_key.clone()).or_default();
+        t.bytes_rx += rx;
+        t.bytes_tx += tx;
+        t.conn_count += 1;
+        t.active_seconds += dur;
+
+        // 按进程聚合（process_name 为空时归入 "_unknown"，不丢弃以免漏计）
+        let pname = process_name.unwrap_or_else(|| "_unknown".to_string());
+        let proc_map = by_process.entry(bucket_key).or_default();
+        let e = proc_map.entry(pname).or_default();
+        e.bytes_rx += rx;
+        e.bytes_tx += tx;
+        e.conn_count += 1;
+        e.active_seconds += dur;
     }
 
-    // 构建 JSON 响应。
-    let result: Vec<serde_json::Value> = buckets
-        .into_iter()
+    // 构建总计 buckets JSON（向后兼容）。
+    let result: Vec<serde_json::Value> = totals
+        .iter()
         .map(|(ts, acc)| {
             serde_json::json!({
                 "ts": ts,
@@ -1007,8 +1028,37 @@ fn handle_stats_range(request: tiny_http::Request, state: &HttpState) {
         })
         .collect();
 
+    // rustnetec: T-E5 — 构建按进程分组的 series：[{name, points:[[ts,bytes_total],...]}]。
+    // 先收集所有进程名（保持稳定顺序：按首次出现），再逐进程从 by_process 取点。
+    let mut proc_order: Vec<String> = Vec::new();
+    for (_ts, proc_map) in &by_process {
+        for pname in proc_map.keys() {
+            if !proc_order.contains(pname) {
+                proc_order.push(pname.clone());
+            }
+        }
+    }
+    let series: Vec<serde_json::Value> = proc_order
+        .iter()
+        .map(|pname| {
+            let points: Vec<serde_json::Value> = by_process
+                .iter()
+                .filter_map(|(ts, proc_map)| {
+                    proc_map.get(pname).map(|acc| {
+                        serde_json::json!([ts, acc.bytes_rx + acc.bytes_tx])
+                    })
+                })
+                .collect();
+            serde_json::json!({
+                "name": pname,
+                "points": points,
+            })
+        })
+        .collect();
+
     let response = serde_json::json!({
         "buckets": result,
+        "series": series,
         "count": result.len(),
         "bucket": bucket,
         "scope": scope,

@@ -349,3 +349,177 @@ pub struct ProcessesResponse {
 // Silence unused import for `AggregateRow` until T2.5 bucket queries land.
 #[allow(dead_code)]
 fn _retain_aggregate_row_type(_: AggregateRow) {}
+
+// ---------------------------------------------------------------------------
+// rustnetec: T-E5 — /stats/range 时间桶流量查询（供 WebUI 多进程对比等）。
+// 与 daemon 侧 handle_stats_range JSON 形状对齐：
+//   { buckets: [{ts, bytes_rx, bytes_tx, conn_count, active_seconds}],
+//     series:  [{name, points: [[ts, bytes_total], ...]}],
+//     count, bucket, scope }
+// 数据直接查 server_events（server_aggregates 桶维护延后，见 stats() 注释）。
+// 不做 scope 外网/局域网分类（server 侧无需本机 netutil，对比视图默认 scope=all）。
+// ---------------------------------------------------------------------------
+
+/// rustnetec: T-E5 — 时间桶 + process 过滤参数。
+pub struct RangeParams {
+    pub start: String,
+    pub end: String,
+    pub bucket: String,
+    /// 进程名列表（IN 语义，空 = 全部进程）。
+    pub processes: Vec<String>,
+}
+
+/// rustnetec: T-E5 — 查询时间桶聚合，返回与 daemon /stats/range 同形的 JSON。
+pub fn stats_range(conn: &mut Connection, params: &RangeParams) -> Result<serde_json::Value> {
+    use std::collections::BTreeMap;
+
+    #[derive(Default, Clone)]
+    struct BucketAcc {
+        bytes_rx: i64,
+        bytes_tx: i64,
+        conn_count: i64,
+        active_seconds: i64,
+    }
+
+    // 构造 WHERE 子句（参数化，防注入）。
+    let mut where_clauses: Vec<String> = vec![
+        "ts >= ?1".to_string(),
+        "ts <= ?2".to_string(),
+    ];
+    let mut bind_values: Vec<Box<dyn rusqlite::ToSql>> = vec![
+        Box::new(params.start.clone()),
+        Box::new(params.end.clone()),
+    ];
+    let bind_idx = 3;
+
+    if !params.processes.is_empty() {
+        let placeholders: Vec<String> = params
+            .processes
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("?{}", bind_idx + i))
+            .collect();
+        where_clauses.push(format!("process_name IN ({})", placeholders.join(", ")));
+        for name in &params.processes {
+            bind_values.push(Box::new(name.clone()));
+        }
+    }
+
+    let sql = format!(
+        "SELECT ts, bytes_received, bytes_sent, duration_secs, process_name \
+         FROM server_events \
+         WHERE {} \
+         ORDER BY ts ASC",
+        where_clauses.join(" AND ")
+    );
+
+    let mut stmt = conn.prepare(&sql).context("stats_range prepare failed")?;
+    let bind_refs: Vec<&dyn rusqlite::ToSql> = bind_values.iter().map(|b| b.as_ref()).collect();
+    let rows = stmt.query_map(bind_refs.as_slice(), |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<i64>>(1)?,
+            row.get::<_, Option<i64>>(2)?,
+            row.get::<_, Option<i64>>(3)?,
+            row.get::<_, Option<String>>(4)?,
+        ))
+    })?;
+
+    // 桶宽 → chrono truncate 格式。
+    let bucket = params.bucket.as_str();
+    let truncate = |dt: chrono::DateTime<chrono::FixedOffset>| -> String {
+        let utc = dt.with_timezone(&chrono::Utc);
+        match bucket {
+            "5s" => {
+                let secs = utc.timestamp();
+                let truncated = secs - (secs % 5);
+                chrono::DateTime::from_timestamp(truncated, 0)
+                    .unwrap()
+                    .format("%Y-%m-%dT%H:%M:%S")
+                    .to_string()
+            }
+            "1min" => utc.format("%Y-%m-%dT%H:%M").to_string(),
+            "1hour" => utc.format("%Y-%m-%dT%H").to_string(),
+            "1day" => utc.format("%Y-%m-%d").to_string(),
+            _ => utc.format("%Y-%m-%dT%H:%M").to_string(),
+        }
+    };
+
+    let mut totals: BTreeMap<String, BucketAcc> = BTreeMap::new();
+    let mut by_process: BTreeMap<String, BTreeMap<String, BucketAcc>> = BTreeMap::new();
+
+    for row in rows {
+        let (ts, bytes_rx, bytes_tx, duration_secs, process_name) = match row {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        let dt = match chrono::DateTime::parse_from_rfc3339(&ts) {
+            Ok(dt) => dt,
+            Err(_) => continue,
+        };
+        let bucket_key = truncate(dt);
+
+        let rx = bytes_rx.unwrap_or(0);
+        let tx = bytes_tx.unwrap_or(0);
+        let dur = duration_secs.unwrap_or(0);
+
+        let t = totals.entry(bucket_key.clone()).or_default();
+        t.bytes_rx += rx;
+        t.bytes_tx += tx;
+        t.conn_count += 1;
+        t.active_seconds += dur;
+
+        let pname = process_name.unwrap_or_else(|| "_unknown".to_string());
+        let proc_map = by_process.entry(bucket_key).or_default();
+        let e = proc_map.entry(pname).or_default();
+        e.bytes_rx += rx;
+        e.bytes_tx += tx;
+        e.conn_count += 1;
+        e.active_seconds += dur;
+    }
+
+    let buckets: Vec<serde_json::Value> = totals
+        .iter()
+        .map(|(ts, acc)| {
+            serde_json::json!({
+                "ts": ts,
+                "bytes_rx": acc.bytes_rx,
+                "bytes_tx": acc.bytes_tx,
+                "conn_count": acc.conn_count,
+                "active_seconds": acc.active_seconds,
+            })
+        })
+        .collect();
+
+    // 收集进程名（按首次出现顺序）。
+    let mut proc_order: Vec<String> = Vec::new();
+    for (_ts, proc_map) in &by_process {
+        for pname in proc_map.keys() {
+            if !proc_order.contains(pname) {
+                proc_order.push(pname.clone());
+            }
+        }
+    }
+    let series: Vec<serde_json::Value> = proc_order
+        .iter()
+        .map(|pname| {
+            let points: Vec<serde_json::Value> = by_process
+                .iter()
+                .filter_map(|(ts, proc_map)| {
+                    proc_map.get(pname).map(|acc| {
+                        serde_json::json!([ts, acc.bytes_rx + acc.bytes_tx])
+                    })
+                })
+                .collect();
+            serde_json::json!({ "name": pname, "points": points })
+        })
+        .collect();
+
+    Ok(serde_json::json!({
+        "buckets": buckets,
+        "series": series,
+        "count": buckets.len(),
+        "bucket": bucket,
+        "scope": "all",
+    }))
+}

@@ -317,6 +317,38 @@
     height: 360px;
   }
 
+  /* rustnetec: T-E7 — 月度每日流量图样式 */
+  #monthly-toolbar {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    margin-bottom: 10px;
+    flex-wrap: wrap;
+  }
+  #monthly-toolbar button {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 4px 12px;
+    color: var(--text);
+    cursor: pointer;
+    font-size: 13px;
+  }
+  #monthly-toolbar button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  #monthly-toolbar button:disabled { opacity: 0.4; cursor: not-allowed; }
+  #monthly-label { font-size: 14px; font-weight: 600; min-width: 120px; text-align: center; }
+  #monthly-total { margin-left: auto; font-size: 13px; }
+  #monthly-chart-wrap {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px;
+  }
+  #monthly-chart {
+    width: 100%;
+    height: 300px;
+  }
+
   /* rustnetec: T-D1 — 仪表盘 SLA gauge 卡片（外网可用性占比） */
   #sla-gauge {
     width: 100%;
@@ -800,6 +832,24 @@
     <div id="graph-canvas-wrap">
       <div id="graph-canvas"></div>
     </div>
+
+    <!-- rustnetec: T-E7 — 月度每日流量图（按天聚合，可切内网/外网/总流量） -->
+    <p class="chart-title" style="margin-top:20px;">月度每日流量
+      <span class="window-btns" id="monthly-scope-btns">
+        <button data-scope="all" class="active">总流量</button>
+        <button data-scope="lan">内网</button>
+        <button data-scope="external">外网</button>
+      </span>
+    </p>
+    <div id="monthly-toolbar">
+      <button id="monthly-prev" type="button">‹ 上月</button>
+      <span id="monthly-label" class="muted"></span>
+      <button id="monthly-next" type="button">下月 ›</button>
+      <span id="monthly-total" class="muted"></span>
+    </div>
+    <div id="monthly-chart-wrap">
+      <div id="monthly-chart"></div>
+    </div>
   </section>
 
   <section id="settings-view" class="view">
@@ -949,6 +999,7 @@
     // 按需加载:首次切到流量图才初始化 ECharts 实例
     if (viewId === "graph") {
       initGraphView();
+      initMonthlyView();
     }
     // 按需加载:切回仪表盘时初始化 sparkline + 协议分布(首次)并续起 /stats 轮询
     if (viewId === "overview") {
@@ -1447,6 +1498,181 @@
     setInterval(function () {
       if (isPageVisible) scheduleGraphRedraw();
     }, 1000);
+  }
+
+  // rustnetec: T-E7 — 月度每日流量图（柱状，按天聚合，可切内网/外网/总流量）。
+  // 数据：GET /stats/range?bucket=1day&scope=...&start=<月初>&end=<月末>。
+  var monthlyState = {
+    chart: null,
+    initialized: false,
+    // 当前查看月份（Date 对象，日字段设为 1）
+    month: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
+    scope: "all",
+  };
+
+  // 计算某月的起止 RFC3339（本地时区）与该月天数。
+  function monthRange(d) {
+    var y = d.getFullYear(), m = d.getMonth();
+    var start = new Date(y, m, 1, 0, 0, 0);
+    var end = new Date(y, m + 1, 0, 23, 59, 59);
+    var days = end.getDate();
+    return {
+      start: toLocalIso(start),
+      end: toLocalIso(end),
+      days: days,
+    };
+  }
+
+  // 本地时间转 RFC3339（带时区偏移），避免 toISOString 转 UTC 导致跨月。
+  function toLocalIso(d) {
+    var pad = function (n) { return n < 10 ? "0" + n : "" + n; };
+    var off = -d.getTimezoneOffset();
+    var sign = off >= 0 ? "+" : "-";
+    var oh = Math.floor(Math.abs(off) / 60);
+    var om = Math.abs(off) % 60;
+    return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) +
+      "T" + pad(d.getHours()) + ":" + pad(d.getMinutes()) + ":" + pad(d.getSeconds()) +
+      sign + pad(oh) + ":" + pad(om);
+  }
+
+  function scopeColor(scope) {
+    if (scope === "lan") return LAN_COLORS.flow;
+    if (scope === "external") return GRAPH_COLORS.out;
+    return GRAPH_COLORS.in;
+  }
+  function scopeLabel(scope) {
+    if (scope === "lan") return "内网";
+    if (scope === "external") return "外网";
+    return "总流量";
+  }
+
+  function initMonthlyChart() {
+    if (monthlyState.chart) return;
+    var el = document.getElementById("monthly-chart");
+    if (!el) return;
+    monthlyState.chart = echarts.init(el, null, { renderer: "canvas" });
+  }
+
+  function fetchMonthly() {
+    initMonthlyChart();
+    if (!monthlyState.chart) return;
+
+    var range = monthRange(monthlyState.month);
+    var label = monthlyState.month.getFullYear() + "年" + (monthlyState.month.getMonth() + 1) + "月";
+    var labelEl = document.getElementById("monthly-label");
+    if (labelEl) labelEl.textContent = label;
+
+    // 下月按钮：超过当前月则禁用
+    var now = new Date();
+    var atLatest = monthlyState.month.getFullYear() > now.getFullYear() ||
+      (monthlyState.month.getFullYear() === now.getFullYear() &&
+       monthlyState.month.getMonth() >= now.getMonth());
+    var nextBtn = document.getElementById("monthly-next");
+    if (nextBtn) nextBtn.disabled = atLatest;
+
+    var url = "/stats/range?start=" + encodeURIComponent(range.start) +
+      "&end=" + encodeURIComponent(range.end) +
+      "&bucket=1day&scope=" + monthlyState.scope;
+    fetch(url, { credentials: "same-origin" })
+      .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+      .then(function (data) {
+        var buckets = data.buckets || [];
+        // 按"日"索引：ts 为 UTC "YYYY-MM-DD"，转本地日号。
+        var byDay = {};
+        var total = 0;
+        for (var i = 0; i < buckets.length; i++) {
+          var b = buckets[i];
+          var dt = new Date(b.ts + "T00:00:00Z");
+          var day = dt.getDate(); // 本地日号（UTC 日期在东八区仍为同一日）
+          var v = (Number(b.bytes_rx) || 0) + (Number(b.bytes_tx) || 0);
+          byDay[day] = v;
+          total += v;
+        }
+        var xdata = [];
+        var ydata = [];
+        for (var d = 1; d <= range.days; d++) {
+          xdata.push(String(d));
+          ydata.push(byDay[d] || 0);
+        }
+        var totalEl = document.getElementById("monthly-total");
+        if (totalEl) totalEl.textContent = scopeLabel(monthlyState.scope) + "合计：" + formatBytes(total);
+
+        monthlyState.chart.setOption({
+          tooltip: {
+            trigger: "axis", axisPointer: { type: "shadow" },
+            formatter: function (params) {
+              var p = params[0];
+              return label + " " + p.name + "日<br/>" + scopeLabel(monthlyState.scope) + "：" + formatBytes(p.value);
+            },
+          },
+          grid: { left: 72, right: 16, top: 24, bottom: 40 },
+          xAxis: {
+            type: "category", data: xdata, name: "日",
+            nameTextStyle: { color: GRAPH_COLORS.axis, fontSize: 10 },
+            axisLine: { lineStyle: { color: GRAPH_COLORS.axis } },
+            axisLabel: { color: GRAPH_COLORS.axis, fontSize: 10 },
+            splitLine: { show: false },
+          },
+          yAxis: {
+            type: "value", name: "流量",
+            nameTextStyle: { color: GRAPH_COLORS.axis },
+            axisLine: { lineStyle: { color: GRAPH_COLORS.axis } },
+            axisLabel: {
+              color: GRAPH_COLORS.axis, fontSize: 10,
+              formatter: function (v) { return formatBytes(v); },
+            },
+            splitLine: { lineStyle: { color: GRAPH_COLORS.grid } },
+          },
+          series: [{
+            name: scopeLabel(monthlyState.scope),
+            type: "bar", barWidth: "70%",
+            itemStyle: { color: scopeColor(monthlyState.scope) },
+            data: ydata,
+          }],
+        }, true);
+      })
+      .catch(function (err) {
+        var totalEl = document.getElementById("monthly-total");
+        if (totalEl) totalEl.textContent = "加载失败：" + (err && err.message ? err.message : err);
+        console.error("[monthly-chart] /stats/range failed:", err);
+      });
+  }
+
+  function initMonthlyView() {
+    if (monthlyState.initialized) return;
+    monthlyState.initialized = true;
+    initMonthlyChart();
+    fetchMonthly();
+    // 上月
+    var prevBtn = document.getElementById("monthly-prev");
+    if (prevBtn) prevBtn.addEventListener("click", function () {
+      monthlyState.month = new Date(
+        monthlyState.month.getFullYear(),
+        monthlyState.month.getMonth() - 1, 1);
+      fetchMonthly();
+    });
+    // 下月
+    var nextBtn = document.getElementById("monthly-next");
+    if (nextBtn) nextBtn.addEventListener("click", function () {
+      monthlyState.month = new Date(
+        monthlyState.month.getFullYear(),
+        monthlyState.month.getMonth() + 1, 1);
+      fetchMonthly();
+    });
+    // 内网/外网/总流量切换
+    var scopeBtns = document.querySelectorAll("#monthly-scope-btns button");
+    scopeBtns.forEach(function (b) {
+      b.addEventListener("click", function () {
+        scopeBtns.forEach(function (x) { x.classList.remove("active"); });
+        b.classList.add("active");
+        monthlyState.scope = b.getAttribute("data-scope") || "all";
+        fetchMonthly();
+      });
+    });
+    // 窗口尺寸变化时自适应
+    window.addEventListener("resize", function () {
+      if (monthlyState.chart) monthlyState.chart.resize();
+    });
   }
 
   // rustnetec: T-F3e — 仪表盘 sparkline(速率图)与协议分布,均用 ECharts。
@@ -2391,6 +2617,26 @@
   var activityCompareSelected = [];
   var compareChart = null;
   var COMPARE_MAX = 5;
+  // 多进程折线调色板（最多 5 条，与暗色主题协调）
+  var COMPARE_PALETTE = ["#58a6ff", "#3fb950", "#a371f7", "#f0883e", "#e3b341"];
+
+  // rustnetec: T-E5 — 按 bucket 宽度把后端截断 ts（UTC，无 Z 后缀）解析为毫秒时间戳。
+  // 5s:"2026-08-11T12:00:00" / 1min:"...T12:00" / 1hour:"...T12" / 1day:"2026-08-11"。
+  function parseBucketTs(ts, bucket) {
+    if (ts == null) return NaN;
+    var s = String(ts);
+    if ((s.length === 10 || s.indexOf("T") < 0) && /^\d{4}-\d{2}-\d{2}$/.test(s)) {
+      s = s + "T00:00:00Z";            // 1day
+    } else if (/T\d{2}$/.test(s)) {
+      s = s + ":00:00Z";               // 1hour
+    } else if (/T\d{2}:\d{2}$/.test(s)) {
+      s = s + ":00Z";                  // 1min
+    } else if (!/[zZ]$/.test(s)) {
+      s = s + "Z";                     // 5s（已含秒）
+    }
+    var ms = Date.parse(s);
+    return isNaN(ms) ? NaN : ms;
+  }
 
   function onActivityCbxChange(processName, checked) {
     if (!processName) return;
@@ -2441,19 +2687,55 @@
     fetch(url, { credentials: "same-origin" })
       .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
       .then(function (data) {
-        // 后端按桶返回聚合，未按 process_name 细分；此处以「总流量」单系列展示对比趋势，
-        // 精确的每进程系列需后端增 process_name 维度分组，列入后续 issue。
-        var buckets = data.buckets || [];
-        var pts = [];
-        for (var i = 0; i < buckets.length; i++) {
-          var b = buckets[i];
-          var ts = Date.parse(b.ts + ":00Z") || Date.parse(b.ts + "Z") || b.ts;
-          if (!ts || isNaN(ts)) ts = b.ts;
-          pts.push([ts, (Number(b.bytes_rx) || 0) + (Number(b.bytes_tx) || 0)]);
+        var caption = document.getElementById("process-compare-caption");
+        // rustnetec: T-E5 — 优先用后端按进程分组的 series（每进程一条折线）。
+        var seriesIn = data.series || [];
+        var legendData = [];
+        var seriesOut = [];
+        for (var i = 0; i < seriesIn.length; i++) {
+          var s = seriesIn[i];
+          var name = s.name || ("进程" + (i + 1));
+          var color = COMPARE_PALETTE[i % COMPARE_PALETTE.length];
+          var pts = [];
+          var raw = s.points || [];
+          for (var j = 0; j < raw.length; j++) {
+            var p = raw[j];
+            if (!p || p.length < 2) continue;
+            var ts = parseBucketTs(p[0], bucket);
+            if (isNaN(ts)) continue;
+            pts.push([ts, Number(p[1]) || 0]);
+          }
+          legendData.push(name);
+          seriesOut.push({
+            name: name, type: "line", showSymbol: false, smooth: true,
+            lineStyle: { color: color, width: 1.5 },
+            itemStyle: { color: color },
+            data: pts,
+          });
         }
+        // 兼容旧后端（无 series）：回退到单系列总计折线。
+        if (seriesOut.length === 0) {
+          var buckets = data.buckets || [];
+          var pts = [];
+          for (var k = 0; k < buckets.length; k++) {
+            var b = buckets[k];
+            var ts2 = parseBucketTs(b.ts, bucket);
+            if (isNaN(ts2)) continue;
+            pts.push([ts2, (Number(b.bytes_rx) || 0) + (Number(b.bytes_tx) || 0)]);
+          }
+          legendData.push("对比流量");
+          seriesOut.push({
+            name: "对比流量", type: "line", showSymbol: false, smooth: true,
+            lineStyle: { color: LAN_COLORS.flow, width: 1.5 }, data: pts,
+          });
+        }
+        if (caption) caption.textContent = "多进程流量对比 — 每进程一条折线（最多 " + COMPARE_MAX + " 个）";
         compareChart.setOption({
-          tooltip: { trigger: "axis" },
-          legend: { data: ["对比流量"], textStyle: { color: GRAPH_COLORS.axis } },
+          tooltip: {
+            trigger: "axis",
+            valueFormatter: function (v) { return formatRate(v); },
+          },
+          legend: { data: legendData, textStyle: { color: GRAPH_COLORS.axis }, top: 4 },
           grid: { left: 64, right: 16, top: 32, bottom: 40 },
           xAxis: { type: "time", axisLine: { lineStyle: { color: GRAPH_COLORS.axis } },
             axisLabel: { color: GRAPH_COLORS.axis, fontSize: 10 },
@@ -2462,13 +2744,15 @@
             axisLine: { lineStyle: { color: GRAPH_COLORS.axis } },
             axisLabel: { color: GRAPH_COLORS.axis, fontSize: 10, formatter: function (v) { return formatRate(v); } },
             splitLine: { lineStyle: { color: GRAPH_COLORS.grid } } },
-          series: [
-            { name: "对比流量", type: "line", showSymbol: false, smooth: true,
-              lineStyle: { color: LAN_COLORS.flow, width: 1.5 }, data: pts },
-          ],
-        });
+          series: seriesOut,
+        }, true);
       })
-      .catch(function () { /* 静默置空 */ });
+      .catch(function (err) {
+        // rustnetec: T-E5 — 错误可见（不再静默）：在 caption 显示并打控制台。
+        var caption = document.getElementById("process-compare-caption");
+        if (caption) caption.textContent = "对比数据加载失败：" + (err && err.message ? err.message : err);
+        console.error("[process-compare] /stats/range failed:", err);
+      });
   }
 
   // 对比视图控件事件绑定（清空选择 / 关闭对比）

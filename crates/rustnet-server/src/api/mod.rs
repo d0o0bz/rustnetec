@@ -8,6 +8,7 @@
 //! | POST   | `/ingest`  | `Ingest`/`Admin`| Accept a client event batch       |
 //! | GET    | `/query`   | `Query`/`Admin`| Read-only historical query        |
 //! | GET    | `/stats`   | `Query`/`Admin`| Aggregate statistics              |
+//! | GET    | `/stats/range` | `Query`/`Admin`| Per-bucket time series (T-E5) |
 //!
 //! Auth uses Bearer tokens hashed with BLAKE3 (see [`auth`] and [`token`]).
 //! `/health` is intentionally unauthenticated so load balancers can probe it.
@@ -84,6 +85,11 @@ pub fn build_router(db: AppState) -> Router {
             "/stats",
             get(stats).route_layer(from_fn_with_state(db.clone(), require_query)),
         )
+        // rustnetec: T-E5 — /stats/range 时间桶流量查询（多进程对比图）。
+        .route(
+            "/stats/range",
+            get(stats_range).route_layer(from_fn_with_state(db.clone(), require_query)),
+        )
         // rustnetec: W5.3 — /processes 供 WebUI Activity 页专用(与 daemon 对齐)。
         .route(
             "/processes",
@@ -141,6 +147,81 @@ async fn query(
 async fn stats(State(db): State<AppState>) -> Result<Json<StatsResponse>, ApiError> {
     let resp = db.stats().map_err(ApiError::from)?;
     Ok(Json(resp))
+}
+
+/// rustnetec: T-E5 — 时间桶流量查询（/stats/range）。
+///
+/// 查询参数：`start`/`end`（RFC3339 或 `now-<n><s|m|h|d>`）、`bucket`
+/// （`5s`/`1min`/`1hour`/`1day`）、`process`（逗号分隔进程名）。
+/// 返回与 daemon 侧 `/stats/range` 同形的 JSON，供 WebUI 多进程对比图表使用。
+async fn stats_range(
+    State(db): State<AppState>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let end = parse_time_param(params.get("end").map(String::as_str), chrono::Duration::zero());
+    let start = parse_time_param(
+        params.get("start").map(String::as_str),
+        chrono::Duration::hours(1),
+    );
+    let bucket = params
+        .get("bucket")
+        .map(String::as_str)
+        .unwrap_or("1min")
+        .to_string();
+    let processes: Vec<String> = params
+        .get("process")
+        .map(|p| p.split(',').filter(|s| !s.is_empty()).map(String::from).collect())
+        .unwrap_or_default();
+
+    let rp = crate::db::query::RangeParams {
+        start,
+        end,
+        bucket,
+        processes,
+    };
+    let resp = db.stats_range(&rp).map_err(ApiError::from)?;
+    Ok(Json(resp))
+}
+
+/// 解析时间参数（相对/绝对），与 daemon 侧 `parse_time_param` 同源。
+fn parse_time_param(value: Option<&str>, default_sub: chrono::Duration) -> String {
+    let now = chrono::Local::now();
+    let fallback = || {
+        now.checked_sub_signed(default_sub)
+            .unwrap_or(now)
+            .to_rfc3339()
+    };
+    let Some(v) = value.map(str::trim).filter(|s| !s.is_empty()) else {
+        return fallback();
+    };
+    if v == "now" {
+        return now.to_rfc3339();
+    }
+    if let Some(rest) = v.strip_prefix("now-") {
+        return match parse_relative_duration(rest) {
+            Some(dur) => now.checked_sub_signed(dur).unwrap_or(now).to_rfc3339(),
+            None => fallback(),
+        };
+    }
+    v.to_string()
+}
+
+/// 解析 `"<n><unit>"` 形式相对时长（s/m/h/d）。
+fn parse_relative_duration(s: &str) -> Option<chrono::Duration> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let unit = s.chars().last()?;
+    let num_str = &s[..s.len() - unit.len_utf8()];
+    let n: i64 = num_str.parse().ok()?;
+    match unit {
+        's' => chrono::Duration::try_seconds(n),
+        'm' => chrono::Duration::try_minutes(n),
+        'h' => chrono::Duration::try_hours(n),
+        'd' => chrono::Duration::try_days(n),
+        _ => None,
+    }
 }
 
 /// rustnetec: W5.3 — 按 process_name 聚合 top 50,供 WebUI Activity 页专用。

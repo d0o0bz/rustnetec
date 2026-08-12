@@ -103,6 +103,15 @@ impl ServerDb {
         Ok(query::ProcessesResponse { processes: rows, count })
     }
 
+    /// rustnetec: T-E5 — 时间桶流量聚合（/stats/range），供 WebUI 多进程对比。
+    pub fn stats_range(
+        &self,
+        params: &query::RangeParams,
+    ) -> Result<serde_json::Value> {
+        let mut conn = self.lock_writer();
+        query::stats_range(&mut conn, params)
+    }
+
     /// Path of the underlying database file (for backups/debugging).
     pub fn db_path(&self) -> &Path {
         &self.db_path
