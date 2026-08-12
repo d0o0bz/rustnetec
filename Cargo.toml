@@ -110,6 +110,7 @@ windows = { version = "0.62", features = [
     "Win32_NetworkManagement_Ndis",
     "Win32_Networking_WinSock",
     "Win32_Security",
+    "Win32_System_Console",
     "Win32_System_JobObjects",
     "Win32_System_LibraryLoader",
     "Win32_System_Registry",
@@ -141,6 +142,8 @@ clap_mangen = "0.3"
 http_req = "0.14"
 zip = "8.6"
 sha2 = "0.11"
+# rustnetec: 构建期把 rustnetec.ico 嵌入 rustnet.exe 资源（图标显示）
+winres = "0.1"
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_NetworkManagement_IpHelper",

@@ -21,6 +21,23 @@ fn resolve_db_path(matches: &clap::ArgMatches) -> PathBuf {
     }
 }
 
+/// rustnetec: 检测 Windows 下程序是否由「双击」启动（Explorer 新建了控制台）。
+///
+/// `GetConsoleProcessList` 返回附加到当前控制台的所有进程 PID 数量：
+/// - count == 1：独占一个新控制台 → 双击启动（Explorer 为 console 程序新建窗口）
+/// - count >= 2：与 shell（cmd/PowerShell）共享控制台 → 从终端运行
+/// - count == 0：无控制台（输出被重定向）→ 不是双击
+///
+/// 仅在判定为双击时返回 true，由调用方据此强制进入托盘模式；
+/// 显式 `--tray` / `--daemon` 参数始终优先。
+#[cfg(all(feature = "tray", target_os = "windows"))]
+fn launched_by_double_click() -> bool {
+    use windows::Win32::System::Console::GetConsoleProcessList;
+    let mut pids = [0u32; 2];
+    let count = unsafe { GetConsoleProcessList(&mut pids) };
+    count == 1 && pids[0] != 0
+}
+
 fn main() -> Result<()> {
     // Check for required dependencies on Windows
     #[cfg(target_os = "windows")]
@@ -61,7 +78,12 @@ fn main() -> Result<()> {
 
     // rustnetec: Determine run mode (TUI / daemon / tray)
     let daemon_mode = matches.get_flag("daemon");
-    #[cfg(feature = "tray")]
+    // rustnetec: Windows 双击启动（独占新控制台）且未显式 --daemon 时
+    // 强制进入托盘模式（自动开 TUI 见 run_tray_helper）。
+    #[cfg(all(feature = "tray", target_os = "windows"))]
+    let tray_mode =
+        matches.get_flag("tray") || (launched_by_double_click() && !daemon_mode);
+    #[cfg(all(feature = "tray", not(target_os = "windows")))]
     let tray_mode = matches.get_flag("tray");
     #[cfg(not(feature = "tray"))]
     let tray_mode = false;
@@ -93,6 +115,15 @@ fn main() -> Result<()> {
     // the BPF device itself.
     #[cfg(all(feature = "tray", not(target_os = "freebsd")))]
     if tray_mode && !daemon_mode {
+        // rustnetec: Windows 双击启动（Explorer 新建了控制台黑窗）时
+        // 释放控制台，避免托盘 GUI 背后残留黑色窗口。从终端显式运行
+        // 不触发（共享控制台，count >= 2）。
+        #[cfg(all(feature = "tray", target_os = "windows"))]
+        if launched_by_double_click() {
+            unsafe {
+                let _ = windows::Win32::System::Console::FreeConsole();
+            }
+        }
         return run_tray_helper(&matches);
     }
 
@@ -1355,11 +1386,20 @@ fn run_tray_helper(matches: &clap::ArgMatches) -> Result<()> {
         // rustnetec: T4.2 — 非 macOS 保持原路径。
         #[cfg(not(target_os = "macos"))]
         let _spawned_privately = {
-            let child = std::process::Command::new(&exe)
+            let mut daemon_cmd = std::process::Command::new(&exe);
+            daemon_cmd
                 .arg("--daemon")
                 .arg("--http-port")
                 .arg(http_port.to_string())
-                .env("RUSTNETEC_TRAY_DAEMON", "1")
+                .env("RUSTNETEC_TRAY_DAEMON", "1");
+            // rustnetec: Windows 下以 CREATE_NO_WINDOW 启动 daemon 子进程，
+            // 避免托盘 helper 释放控制台后 daemon 再弹出一个新的黑窗。
+            #[cfg(target_os = "windows")]
+            {
+                use std::os::windows::process::CommandExt;
+                daemon_cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+            }
+            let child = daemon_cmd
                 .spawn()
                 .map_err(|e| anyhow::anyhow!("failed to spawn daemon child: {e}"))?;
             *daemon_child.lock().unwrap() = Some(child);
@@ -1424,6 +1464,15 @@ fn run_tray_helper(matches: &clap::ArgMatches) -> Result<()> {
     };
     let pc = rustnet_monitor::config::PersistentConfig::load().unwrap_or_default();
     tray_controller.set_remote_enabled(pc.server_url.is_some());
+
+    // rustnetec: Windows 双击启动时自动打开 TUI 终端（单实例，
+    // open_terminal_monitor 会复用已有 TUI 窗口）。TUI 是独立进程，
+    // 用户关闭 TUI 窗口不影响托盘与 daemon 继续运行；托盘菜单
+    // 「打开终端监控」随时可再次拉起。
+    #[cfg(all(feature = "tray", target_os = "windows"))]
+    if launched_by_double_click() {
+        ui::open_terminal_monitor();
+    }
 
     // --- macOS: initialize NSApplication and run the blocking Cocoa event
     //     loop (T3.6.8). AppKit only dispatches menu clicks/tracking events

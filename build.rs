@@ -13,6 +13,10 @@ fn main() -> Result<()> {
     #[cfg(target_os = "windows")]
     download_windows_npcap_sdk()?;
 
+    // rustnetec: 构建期把 rustnetec.ico 嵌入 exe 资源（图标显示）
+    #[cfg(target_os = "windows")]
+    embed_windows_icon()?;
+
     println!("cargo:rerun-if-changed=src/cli.rs");
 
     Ok(())
@@ -76,6 +80,19 @@ fn generate_assets() -> Result<()> {
     let manpage = Man::new(cmd);
     manpage.render(&mut manpage_out)?;
 
+    Ok(())
+}
+
+/// rustnetec: 构建期把 rustnetec.ico 嵌入 exe 资源，使 rustnet.exe 在
+/// 资源管理器/任务栏显示品牌图标。仅 Windows 原生构建生效（build.rs 的
+/// cfg(target_os) 基于宿主平台；macOS 交叉编译不会执行）。
+#[cfg(target_os = "windows")]
+fn embed_windows_icon() -> Result<()> {
+    let mut res = winres::WindowsResource::new();
+    res.set_icon("resources/packaging/windows/graphics/rustnetec.ico");
+    res.compile()
+        .map_err(|e| anyhow::anyhow!("winres failed to embed rustnetec.ico: {e}"))?;
+    println!("cargo:rerun-if-changed=resources/packaging/windows/graphics/rustnetec.ico");
     Ok(())
 }
 
