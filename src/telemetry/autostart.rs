@@ -383,7 +383,7 @@ fn install_windows(mode: AutostartMode) -> Result<()> {
         RegOpenKeyExW(
             HKEY_CURRENT_USER,
             w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run"),
-            0,
+            Some(0),
             KEY_SET_VALUE,
             hkey.as_mut_ptr(),
         )
@@ -401,7 +401,7 @@ fn install_windows(mode: AutostartMode) -> Result<()> {
         RegSetValueExW(
             hkey,
             w!("Rustnetec"),
-            0,
+            Some(0),
             REG_SZ,
             Some(std::slice::from_raw_parts(
                 data.as_ptr() as *const u8,
@@ -429,7 +429,7 @@ fn uninstall_windows() -> Result<()> {
         RegOpenKeyExW(
             HKEY_CURRENT_USER,
             w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run"),
-            0,
+            Some(0),
             KEY_SET_VALUE,
             hkey.as_mut_ptr(),
         )
@@ -458,7 +458,7 @@ fn is_installed_windows() -> bool {
         RegOpenKeyExW(
             HKEY_CURRENT_USER,
             w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run"),
-            0,
+            Some(0),
             KEY_QUERY_VALUE,
             hkey.as_mut_ptr(),
         )
