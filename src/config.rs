@@ -373,7 +373,7 @@ fn default_refresh_interval() -> u64 {
     500
 }
 fn default_language() -> String {
-    "en".to_string()
+    "zh-CN".to_string()
 }
 fn default_upload_batch_size() -> u32 {
     500
@@ -444,7 +444,7 @@ impl Default for PersistentConfig {
 
             show_ptr_lookups: false,
             show_historic: false,
-            language: "en".to_string(),
+            language: "zh-CN".to_string(),
 
             geoip_country_path: None,
             geoip_asn_path: None,

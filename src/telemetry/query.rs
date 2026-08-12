@@ -29,7 +29,7 @@ pub fn run_query(
     sql: Option<&str>,
     live: bool,
 ) -> Result<Vec<Value>> {
-    run_query_paged(db_path, filter, sql, live, None, None, None)
+    run_query_paged(db_path, filter, sql, live, None, None, None, None)
 }
 
 /// rustnetec: W0.5 — 分页版 `run_query`。
@@ -40,6 +40,8 @@ pub fn run_query(
 /// - `offset`:`Some(n)` 生成 `OFFSET n`;`None` 无 offset。
 /// - `order`:`Some("ts ASC" | "ts DESC")` 白名单值,控制 ORDER BY;
 ///   `None` 默认 `ts DESC`。任何不在白名单的值会被 `bail!` 拒绝。
+/// - `since_ts`:`Some(RFC3339)` 时追加 `ts >= since_ts` 过滤(连接表时间范围);
+///   `None` 不过滤。值由 HTTP 层解析生成,参数化绑定,无注入风险。
 ///
 /// 安全约束:
 /// - `order` 走白名单,防止前端注入任意 ORDER BY 表达式。
@@ -53,6 +55,7 @@ pub fn run_query_paged(
     limit: Option<i64>,
     offset: Option<i64>,
     order: Option<&str>,
+    since_ts: Option<&str>,
 ) -> Result<Vec<Value>> {
     if live {
         return run_live_query();
@@ -138,9 +141,9 @@ pub fn run_query_paged(
     if let Some(raw_sql) = sql {
         run_raw_sql(&conn, raw_sql)
     } else if let Some(filter_str) = filter {
-        run_filter_query_paged(&conn, filter_str, limit_val, offset, &order_clause)
+        run_filter_query_paged(&conn, filter_str, since_ts, limit_val, offset, &order_clause)
     } else {
-        run_default_query_paged(&conn, limit_val, offset, &order_clause)
+        run_default_query_paged(&conn, since_ts, limit_val, offset, &order_clause)
     }
 }
 
@@ -166,15 +169,28 @@ fn run_raw_sql(conn: &Connection, sql: &str) -> Result<Vec<Value>> {
 ///
 /// `limit` 已由上层钳制到 [1, DEFAULT_QUERY_LIMIT];`offset` 为 `Some(n)` 时追加
 /// `OFFSET n`;`order_clause` 已通过白名单校验(`ts ASC` / `ts DESC`)。
+/// `since_ts` 为 `Some(RFC3339)` 时追加 `ts >= ?` 参数化过滤(连接表时间范围)。
 fn run_filter_query_paged(
     conn: &Connection,
     filter_str: &str,
+    since_ts: Option<&str>,
     limit: i64,
     offset: Option<i64>,
     order_clause: &str,
 ) -> Result<Vec<Value>> {
     let filter = ConnectionFilter::parse(filter_str);
-    let (where_clause, params) = filter_to_sql(&filter);
+    let (mut where_clause, mut params) = filter_to_sql(&filter);
+
+    // rustnetec: 时间范围过滤 — 追加参数化条件,与既有条件 AND 连接。
+    if let Some(since) = since_ts {
+        let idx = params.len() + 1;
+        if where_clause.is_empty() {
+            where_clause = format!("ts >= ?{idx}");
+        } else {
+            where_clause = format!("{where_clause} AND ts >= ?{idx}");
+        }
+        params.push(Box::new(since.to_string()));
+    }
 
     // rustnetec: W0.5 — 安全拼接:order 已白名单化,limit 已钳制,offset 仅数字。
     let mut sql = if where_clause.is_empty() {
@@ -194,12 +210,28 @@ fn run_filter_query_paged(
 
 /// Default query: show recent events.
 /// rustnetec: W0.5 — 默认查询分页版(无 filter,展示最近事件)。
+/// `since_ts` 为 `Some(RFC3339)` 时追加 `ts >= ?` 参数化过滤(连接表时间范围)。
 fn run_default_query_paged(
     conn: &Connection,
+    since_ts: Option<&str>,
     limit: i64,
     offset: Option<i64>,
     order_clause: &str,
 ) -> Result<Vec<Value>> {
+    if let Some(since) = since_ts {
+        // 有时间过滤时走参数化查询(与 run_filter_query_paged 同构)。
+        let sql = format!(
+            "SELECT * FROM connection_events WHERE ts >= ?1 ORDER BY {} LIMIT {}",
+            order_clause, limit
+        );
+        let mut sql = sql;
+        if let Some(off) = offset {
+            sql.push_str(&format!(" OFFSET {}", off));
+        }
+        let params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(since.to_string())];
+        return execute_param_query(conn, &sql, &params);
+    }
+
     let mut sql = format!(
         "SELECT * FROM connection_events ORDER BY {} LIMIT {}",
         order_clause, limit

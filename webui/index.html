@@ -589,6 +589,18 @@
     padding: 0 6px;
   }
   .restart-hint { color: var(--yellow); font-size: 12px; font-weight: 400; }
+  /* rustnetec: 主机身份只读展示行（user_id / machine_id，不可编辑） */
+  #settings-form .identity-readonly {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin: 4px 12px 4px 0;
+    font-size: 13px;
+    color: var(--muted);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    word-break: break-all;
+  }
+  #settings-form .identity-readonly span { color: var(--text); }
   #settings-form label {
     display: inline-flex;
     align-items: center;
@@ -598,7 +610,8 @@
     color: var(--text);
   }
   #settings-form input[type="text"],
-  #settings-form input[type="number"] {
+  #settings-form input[type="number"],
+  #settings-form select {
     background: var(--bg);
     border: 1px solid var(--border);
     border-radius: 4px;
@@ -607,7 +620,22 @@
     font-size: 13px;
     width: 200px;
   }
-  #settings-form input:focus { outline: none; border-color: var(--accent); }
+  #settings-form select { width: auto; cursor: pointer; }
+  #settings-form input:focus,
+  #settings-form select:focus { outline: none; border-color: var(--accent); }
+  /* rustnetec: 托盘状态行字段多选组（T3.2） */
+  #settings-form .tray-fields {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 8px;
+    margin: 4px 0;
+  }
+  #settings-form .tray-fields-label {
+    color: var(--muted);
+    font-size: 13px;
+    margin-right: 4px;
+  }
   #settings-actions {
     display: flex;
     gap: 8px;
@@ -678,10 +706,11 @@
     <p class="chart-title">协议分布（按连接数 Top 12）</p>
     <div id="protocol-dist"></div>
 
-    <!-- rustnetec: T-D1 — SLA gauge 卡片（最近 15min 外网可用性占比） -->
+    <!-- rustnetec: T-D1 — SLA gauge 卡片已隐藏（保留代码，如需恢复取消注释）
     <p class="chart-title">外网可用性 SLA</p>
     <p class="chart-caption">最近 15 分钟内有外网流量的分钟占比</p>
     <div id="sla-gauge"></div>
+    -->
 
     <!-- rustnetec: 外网可达率（DNS/UDP 探测 5 个公共 DNS，20s 轮询，双轴：可达率% + 延迟ms） -->
     <p class="chart-title">外网可达率
@@ -726,6 +755,16 @@
   <section id="details-view" class="view">
     <div id="details-toolbar">
       <input type="text" id="details-filter" placeholder="过滤:proto:TCP port:443 process:curl sni:example.com country:US …" autocomplete="off">
+      <label class="muted">范围
+        <select id="details-since">
+          <option value="">全部</option>
+          <option value="1d" selected>最近1天</option>
+          <option value="7d">最近7天</option>
+          <option value="1m">最近1月</option>
+          <option value="3m">最近3月</option>
+          <option value="1y">最近1年</option>
+        </select>
+      </label>
       <button id="details-refresh">刷新</button>
       <button id="details-mode-toggle" data-mode="realtime">实时:开</button>
       <span id="details-count" class="muted"></span>
@@ -801,6 +840,16 @@
       <div id="process-compare-header">
         <h3>多进程对比</h3>
         <span id="process-compare-count" class="muted"></span>
+        <label class="muted">时间窗
+          <select id="process-compare-window">
+            <option value="1800">30分钟</option>
+            <option value="3600" selected>1小时</option>
+            <option value="10800">3小时</option>
+            <option value="21600">6小时</option>
+            <option value="86400">1天</option>
+            <option value="604800">7天</option>
+          </select>
+        </label>
         <button id="process-compare-clear" type="button">清空选择</button>
         <button id="process-compare-close" type="button">关闭对比</button>
       </div>
@@ -856,12 +905,18 @@
     <div id="settings-status" class="muted"></div>
     <form id="settings-form">
       <fieldset>
-        <legend>记录字段</legend>
+        <legend>主机身份 <span class="restart-hint">(即时生效)</span></legend>
+        <label>用户名<input type="text" data-cfg="username" placeholder="(系统用户名)"></label>
+        <div class="identity-readonly">user_id：<span id="identity-user-id">—</span></div>
+        <div class="identity-readonly">machine_id：<span id="identity-machine-id">—</span></div>
+      </fieldset>
+      <fieldset>
+        <legend>记录字段 <span class="restart-hint">(重启生效)</span></legend>
         <label><input type="checkbox" data-cfg="record_dns">DNS 反向解析</label>
         <label><input type="checkbox" data-cfg="record_process">进程归因</label>
         <label><input type="checkbox" data-cfg="record_service">服务识别</label>
         <label><input type="checkbox" data-cfg="record_rtt">RTT</label>
-        <label><input type="checkbox" data-cfg="record_stats">连接统计</label>
+        <label><input type="checkbox" data-cfg="record_connection_stats">连接统计</label>
         <label><input type="checkbox" data-cfg="record_geoip">GeoIP</label>
         <label><input type="checkbox" data-cfg="record_dpi">DPI</label>
       </fieldset>
@@ -870,34 +925,73 @@
         <label>接口<input type="text" data-cfg="interface" placeholder="auto"></label>
         <label>BPF 过滤<input type="text" data-cfg="bpf_filter" placeholder="(默认)"></label>
         <label><input type="checkbox" data-cfg="enable_dpi">启用 DPI</label>
-        <label>刷新间隔(秒)<input type="number" data-cfg="refresh_interval" min="1"></label>
+        <label><input type="checkbox" data-cfg="filter_localhost">过滤本机回环(loopback)</label>
+        <label>刷新间隔(毫秒)<input type="number" data-cfg="refresh_interval" min="100" max="60000"></label>
       </fieldset>
       <fieldset>
-        <legend>输出</legend>
+        <legend>输出 <span class="restart-hint">(重启进程生效)</span></legend>
         <label>JSON 日志<input type="text" data-cfg="json_log_file" placeholder="(空=关闭)"></label>
         <label>pcap 导出<input type="text" data-cfg="pcap_export_file" placeholder="(空=关闭)"></label>
         <label>pcapng 导出<input type="text" data-cfg="pcapng_export_file" placeholder="(空=关闭)"></label>
       </fieldset>
       <fieldset>
-        <legend>显示</legend>
+        <legend>显示 <span class="restart-hint">(即时生效)</span></legend>
         <label><input type="checkbox" data-cfg="show_ptr_lookups">PTR 查询</label>
         <label><input type="checkbox" data-cfg="show_historic">历史</label>
         <label>语言<input type="text" data-cfg="language" placeholder="zh-CN"></label>
       </fieldset>
       <fieldset>
-        <legend>上传到服务端</legend>
+        <legend>上传到服务端 <span class="restart-hint">(重启生效)</span></legend>
         <label>URL<input type="text" data-cfg="server_url" placeholder="https://…"></label>
         <label>Token<input type="text" data-cfg="server_token" placeholder="(空=关闭)"></label>
-        <label>批量大小<input type="number" data-cfg="upload_batch_size" min="1"></label>
+        <label>批量大小<input type="number" data-cfg="upload_batch_size" min="1" max="5000"></label>
+        <label>上传间隔(秒)<input type="number" data-cfg="upload_interval_secs" min="5" max="3600"></label>
       </fieldset>
       <fieldset>
-        <legend>本机 HTTP</legend>
+        <legend>本机 HTTP <span class="restart-hint">(端口重启生效)</span></legend>
         <label>端口<input type="number" data-cfg="http_port" min="1" max="65535"></label>
         <label>Token<input type="text" data-cfg="http_token" placeholder="(自动生成)"></label>
       </fieldset>
       <fieldset>
-        <legend>数据保留</legend>
-        <label>保留天数<input type="number" data-cfg="retention_days" min="1"></label>
+        <legend>数据保留 <span class="restart-hint">(重启生效)</span></legend>
+        <label>保留天数<input type="number" data-cfg="retention_days" min="1" max="180"></label>
+      </fieldset>
+      <fieldset>
+        <legend>GeoIP <span class="restart-hint">(重启进程生效)</span></legend>
+        <label>国家库路径<input type="text" data-cfg="geoip_country_path" placeholder="(自动发现)"></label>
+        <label>ASN 库路径<input type="text" data-cfg="geoip_asn_path" placeholder="(自动发现)"></label>
+        <label>城市库路径<input type="text" data-cfg="geoip_city_path" placeholder="(自动发现)"></label>
+        <label><input type="checkbox" data-cfg="disable_geoip">禁用 GeoIP</label>
+      </fieldset>
+      <fieldset>
+        <legend>外网可达率探测 <span class="restart-hint">(重启进程生效)</span></legend>
+        <label><input type="checkbox" data-cfg="reachability_enabled">启用探测</label>
+        <label>探测目标(逗号分隔)<input type="text" data-cfg-array="reachability_targets" data-cfg="reachability_targets" placeholder="114.114.115.115:53,8.8.8.8:53"></label>
+        <label>探测间隔(秒)<input type="number" data-cfg="reachability_interval_secs" min="1"></label>
+      </fieldset>
+      <fieldset>
+        <legend>开机自启 <span class="restart-hint">(重启进程生效)</span></legend>
+        <label><input type="checkbox" data-cfg="autostart_enabled">启用自启</label>
+        <label>自启模式
+          <select data-cfg="autostart_mode">
+            <option value="Daemon">Daemon(后台捕获)</option>
+            <option value="Tray">Tray(托盘+捕获)</option>
+          </select>
+        </label>
+      </fieldset>
+      <fieldset>
+        <legend>系统托盘 <span class="restart-hint">(即时生效)</span></legend>
+        <label>刷新间隔(秒)<input type="number" data-cfg="tray_refresh_interval_secs" min="1" max="15"></label>
+        <div class="tray-fields" id="tray-status-fields">
+          <span class="tray-fields-label">状态行字段：</span>
+          <label><input type="checkbox" data-cfg-array="tray_status_fields" data-item="state">状态</label>
+          <label><input type="checkbox" data-cfg-array="tray_status_fields" data-item="interface">接口</label>
+          <label><input type="checkbox" data-cfg-array="tray_status_fields" data-item="ratein">入站速率</label>
+          <label><input type="checkbox" data-cfg-array="tray_status_fields" data-item="rateout">出站速率</label>
+          <label><input type="checkbox" data-cfg-array="tray_status_fields" data-item="ratetotal">总速率</label>
+          <label><input type="checkbox" data-cfg-array="tray_status_fields" data-item="connections">连接数</label>
+          <label><input type="checkbox" data-cfg-array="tray_status_fields" data-item="uptime">运行时长</label>
+        </div>
       </fieldset>
       <div id="settings-actions">
         <button type="submit" id="settings-save">保存</button>
@@ -1057,6 +1151,8 @@
   // 安全:XSS 防护,所有动态文本经 textContent 渲染,禁止 innerHTML 拼接外部数据。
   // 列顺序对齐设计文档 §3.2:时间/协议/源IP:端口/目的IP:端口/主机名/进程/服务/DPI/方向/RTT/GeoIP/字节。
   var DETAILS_COLUMNS = [
+    // rustnetec: 连接表首列加日期（数据同 ts，仅展示，排序仍由时间列承载）
+    { key: "ts", label: "日期", sortable: false, format: formatDate },
     { key: "ts", label: "时间", sortable: true, format: formatTs },
     { key: "protocol", label: "协议", sortable: true },
     { key: "source_ip", label: "源 IP", sortable: true, format: formatAddrPort.bind(null, "source_port") },
@@ -1080,6 +1176,8 @@
     pageSize: 50,
     columns: [],
     rows: [],
+    // rustnetec: 连接表时间范围(如 1d/7d/1m/3m/1y,空=全部)；默认最近1天
+    since: "1d",
     // rustnetec: W2.3 — 实时模式:定时轮询 /query(5s),自动回首页看最新连接。
     // 历史模式:暂停轮询,用户手动翻页/过滤/排序。
     realtime: true,
@@ -1124,6 +1222,18 @@
     return s;
   }
 
+  // rustnetec: 格式化日期(RFC3339 → YYYY-MM-DD)，供连接表首列展示
+  function formatDate(val) {
+    if (val == null) return "—";
+    var s = String(val);
+    // 取 T 前的日期部分
+    var tIdx = s.indexOf("T");
+    if (tIdx > 0) {
+      return s.substring(0, tIdx);
+    }
+    return s;
+  }
+
   // 格式化字节(B → KB/MB)
   function formatBytes(val) {
     if (val == null || val === 0) return "—";
@@ -1153,6 +1263,9 @@
     params.push("limit=" + detailsState.pageSize);
     params.push("offset=" + (detailsState.page * detailsState.pageSize));
     params.push("order=" + detailsState.sortKey + " " + detailsState.sortDir);
+    if (detailsState.since) {
+      params.push("since=" + encodeURIComponent(detailsState.since));
+    }
     if (detailsState.filter) {
       params.push("filter=" + encodeURIComponent(detailsState.filter));
     }
@@ -1336,6 +1449,16 @@
       detailsState.page = 0;
       fetchDetails();
     });
+
+    // rustnetec: 连接表时间范围选择 — 切换即回首页重新查询
+    var sinceSel = document.getElementById("details-since");
+    if (sinceSel) {
+      sinceSel.addEventListener("change", function () {
+        detailsState.since = sinceSel.value || "";
+        detailsState.page = 0;
+        fetchDetails();
+      });
+    }
   }
 
   // rustnetec: W2.4 行点击详情抽屉 — 渲染该连接完整字段(textContent, XSS 防护)
@@ -2431,6 +2554,19 @@
         if (protoPlot && el2) protoPlot.resize();
         var elR = document.getElementById("reachability-chart");
         if (reachChart && elR) reachChart.resize();
+        // rustnetec: T-E8 — 其余仪表盘图表随浏览器宽度自适应。
+        var elS = document.getElementById("sla-gauge");
+        if (slaGauge && elS) slaGauge.resize();
+        var elRtt = document.getElementById("rtt-chart");
+        if (rttChart && elRtt) rttChart.resize();
+        var elStack = document.getElementById("external-stack");
+        if (externalStack && elStack) externalStack.resize();
+        var elHeat = document.getElementById("availability-heatmap");
+        if (availHeatmap && elHeat) availHeatmap.resize();
+        var elLanF = document.getElementById("lan-flow-chart");
+        if (lanFlowChart && elLanF) lanFlowChart.resize();
+        var elLanD = document.getElementById("lan-dual-chart");
+        if (lanDualChart && elLanD) lanDualChart.resize();
       });
     }
   }
@@ -2666,7 +2802,7 @@
   function refreshCompareView() {
     var view = document.getElementById("process-compare");
     var cntEl = document.getElementById("process-compare-count");
-    if (activityCompareSelected.length < 2) {
+    if (activityCompareSelected.length < 1) {
       view.style.display = "none";
       if (cntEl) cntEl.textContent = "";
       return;
@@ -2678,8 +2814,8 @@
     if (!compareChart) {
       compareChart = echarts.init(el, null, { renderer: "canvas" });
     }
-    // 按抽屉时间窗推 bucket
-    var secs = parseInt(document.getElementById("process-window").value, 10) || 3600;
+    // rustnetec: T-E5 — 对比视图独立时间窗（不随抽屉 process-window 联动）
+    var secs = parseInt(document.getElementById("process-compare-window").value, 10) || 3600;
     var bucket = bucketForWindow(secs);
     var start = "now-" + secs + "s";
     var procList = activityCompareSelected.map(encodeURIComponent).join(",");
@@ -2771,10 +2907,11 @@
       cbxs.forEach(function (c) { c.checked = false; });
       document.getElementById("process-compare").style.display = "none";
     });
-    // 抽屉时间窗变化也刷新对比视图
+    // rustnetec: T-E5 — 对比视图独立时间窗变化刷新对比图
+    var cmpWinSel = document.getElementById("process-compare-window");
+    if (cmpWinSel) cmpWinSel.addEventListener("change", refreshCompareView);
+    // 抽屉时间窗变化刷新热力图（T-E6）
     var winSel = document.getElementById("process-window");
-    if (winSel) winSel.addEventListener("change", refreshCompareView);
-    // 抽屉时间窗变化也刷新热力图（T-E6）
     if (winSel) winSel.addEventListener("change", refreshProcessAvailHeatmap);
   })();
 
@@ -2901,6 +3038,7 @@
     var inputs = document.querySelectorAll("#settings-form [data-cfg]");
     inputs.forEach(function (el) {
       var key = el.getAttribute("data-cfg");
+      if (el.hasAttribute("data-cfg-array")) return; // 数组字段下方单独处理
       var val = cfg[key];
       if (el.type === "checkbox") {
         el.checked = val === true;
@@ -2910,20 +3048,42 @@
         el.value = String(val);
       }
     });
+    // rustnetec: 数组字段（data-cfg-array）— 文本框逗号分隔 / 多选 checkbox 按 item 勾选
+    document.querySelectorAll("#settings-form [data-cfg-array]").forEach(function (el) {
+      var key = el.getAttribute("data-cfg-array");
+      var arr = Array.isArray(cfg[key]) ? cfg[key] : [];
+      if (el.hasAttribute("data-item")) {
+        el.checked = arr.indexOf(el.getAttribute("data-item")) >= 0;
+      } else {
+        el.value = arr.join(", ");
+      }
+    });
+    // rustnetec: 主机身份只读回显（user_id / machine_id 不可编辑）
+    var uidEl = document.getElementById("identity-user-id");
+    if (uidEl) uidEl.textContent = cfg.user_id != null ? String(cfg.user_id) : "—";
+    var midEl = document.getElementById("identity-machine-id");
+    if (midEl) midEl.textContent = cfg.machine_id || "—";
   }
 
-  // 收集表单值 → Object(按 data-cfg 属性),空字符串→ null(Option::None)
+  // 收集表单值 → Object(按 data-cfg 属性)
   function collectSettingsForm() {
     var obj = {};
     document.querySelectorAll("#settings-form [data-cfg]").forEach(function (el) {
+      if (el.hasAttribute("data-cfg-array")) return; // 数组字段下方单独处理
       var key = el.getAttribute("data-cfg");
       if (el.type === "checkbox") {
         obj[key] = el.checked;
       } else {
         var v = el.value.trim();
-        // 数字字段保留为数字;空字符串→ null(Option::None)
         if (v === "") {
-          obj[key] = null;
+          // rustnetec: 空值处理 — 数字字段/u16 端口/language(String 非 Option)
+          // 提交 `key:`(null) 会让 serde 反序列化 u64/String 失败 → HTTP 400，
+          // 故跳过该键，后端用 serde default 填充；Option 字段(interface 等)置 null 合法。
+          if (el.type === "number" || key === "language") {
+            delete obj[key];
+          } else {
+            obj[key] = null;
+          }
         } else if (el.type === "number") {
           var n = Number(v);
           obj[key] = isNaN(n) ? null : n;
@@ -2931,6 +3091,28 @@
           obj[key] = v;
         }
       }
+    });
+    // rustnetec: 数组字段 — 文本框逗号 split；多选 checkbox 组按勾选收集
+    document.querySelectorAll("#settings-form [data-cfg-array]").forEach(function (el) {
+      var key = el.getAttribute("data-cfg-array");
+      if (el.hasAttribute("data-item")) {
+        if (!Array.isArray(obj[key])) obj[key] = [];
+        if (el.checked) obj[key].push(el.getAttribute("data-item"));
+      } else {
+        var v = el.value.trim();
+        if (v === "") {
+          // 数组文本框空 → 跳过该键(后端 serde default)，避免 `key:` null 解析失败
+          delete obj[key];
+        } else {
+          obj[key] = v.split(",").map(function (s) { return s.trim(); })
+            .filter(function (s) { return s.length > 0; });
+        }
+      }
+    });
+    // rustnetec: 多选组全不勾选 → 空数组会被 validate() 拒绝("must not be empty")，
+    // 改为删除键，让后端用默认字段集。
+    Object.keys(obj).forEach(function (k) {
+      if (Array.isArray(obj[k]) && obj[k].length === 0) delete obj[k];
     });
     return obj;
   }
@@ -2950,7 +3132,12 @@
       body: yaml,
     })
       .then(function (resp) {
-        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        // rustnetec: 非 2xx 时读取响应体 error 字段，显示具体原因而非裸 HTTP 状态码
+        if (!resp.ok) {
+          return resp.json().catch(function () { return {}; }).then(function (body) {
+            throw new Error((body && body.error) || ("HTTP " + resp.status));
+          });
+        }
         return resp.json();
       })
       .then(function (data) {
@@ -3010,8 +3197,8 @@
   }
 
   // YAML 行格式编码(零构建:不引 js-yaml,手写最小子集)
-  // 支持:bool(true/false)、null(空)、number、string。
-  // 不支持嵌套对象/数组(PersistentConfig 全是扁平字段,足够)。
+  // 支持:bool(true/false)、null(空)、number、string、数组(flow 序列)。
+  // 不支持嵌套对象(PersistentConfig 全是扁平字段 + 顶层数组,足够)。
   function yamlEncode(obj) {
     var lines = [];
     for (var key in obj) {
@@ -3024,6 +3211,11 @@
         lines.push(key + ": " + (v ? "true" : "false"));
       } else if (typeof v === "number") {
         lines.push(key + ": " + v);
+      } else if (Array.isArray(v)) {
+        // rustnetec: 数组 → YAML flow 序列 [a, b](serde_yaml 可解析为 Vec)
+        lines.push(key + ": [" + v.map(function (s) {
+          return '"' + String(s).replace(/"/g, '\\"') + '"';
+        }).join(", ") + "]");
       } else {
         // 字符串:含空格或特殊字符加引号(简化:统一加双引号)
         lines.push(key + ': "' + String(v).replace(/"/g, '\\"') + '"');

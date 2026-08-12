@@ -493,6 +493,14 @@ fn handle_query(request: tiny_http::Request, state: &HttpState) {
     };
     let order_param: Option<&str> = params.get("order").map(|s| s.as_str());
 
+    // rustnetec: 连接表时间范围过滤 — `since` 为相对时长(如 1d/7d/1m/3m/1y)，
+    // 转成 RFC3339 后作为 `ts >= ?` 参数化条件传给查询层。
+    // 注:不复用 parse_time_param(其 m=分钟、无 y),见 parse_since_param。
+    let since_ts: Option<String> = params
+        .get("since")
+        .map(String::as_str)
+        .and_then(parse_since_param);
+
     let result = crate::telemetry::query::run_query_paged(
         &state.db_path,
         filter_param,
@@ -501,6 +509,7 @@ fn handle_query(request: tiny_http::Request, state: &HttpState) {
         limit_param,
         offset_param,
         order_param,
+        since_ts.as_deref(),
     );
 
     match result {
@@ -2044,6 +2053,40 @@ fn parse_relative_duration(s: &str) -> Option<chrono::Duration> {
         'd' => chrono::Duration::try_days(n),
         _ => None,
     }
+}
+
+/// rustnetec: 解析连接表 `since` 时间范围参数为 RFC 3339 截止时间戳。
+///
+/// 与 `parse_time_param` 不同，此处支持 **月/年** 语义：
+/// - `d`：天（如 `1d`、`7d`）
+/// - `m`：月（如 `1m`、`3m`，按日历月减）
+/// - `y`：年（如 `1y`，按 12 个月减）
+/// 返回 `None` 表示参数缺失或非法（调用方不过滤）。
+fn parse_since_param(v: &str) -> Option<String> {
+    let s = v.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let unit = s.chars().last()?;
+    let num_str = &s[..s.len() - unit.len_utf8()];
+    let n: i64 = num_str.parse().ok()?;
+    if n <= 0 {
+        return None;
+    }
+    let now = chrono::Local::now();
+    let cutoff = match unit {
+        'd' => now.checked_sub_signed(chrono::Duration::try_days(n)?)?,
+        'm' => {
+            let months = chrono::Months::new(n as u32);
+            now.checked_sub_months(months)?
+        }
+        'y' => {
+            let months = chrono::Months::new((n as u32).saturating_mul(12));
+            now.checked_sub_months(months)?
+        }
+        _ => return None,
+    };
+    Some(cutoff.to_rfc3339())
 }
 
 /// Send a plain text response (consumes the request).
