@@ -595,7 +595,7 @@ jobs:
           # Create app bundle
           mkdir -p "Rustnet.app/Contents/"{MacOS,Resources/assets}
           cp resources/packaging/macos/Info.plist "Rustnet.app/Contents/"
-          cp resources/packaging/macos/graphics/rustnet.icns "Rustnet.app/Contents/Resources/"
+          cp resources/packaging/macos/graphics/rustnetec.icns "Rustnet.app/Contents/Resources/"
           cp "rustnet-${{ github.ref_name }}-${{ matrix.target }}/rustnet" "Rustnet.app/Contents/MacOS/"
           cp resources/packaging/macos/wrapper.sh "Rustnet.app/Contents/MacOS/"
           cp "rustnet-${{ github.ref_name }}-${{ matrix.target }}/assets/services" "Rustnet.app/Contents/Resources/assets/"

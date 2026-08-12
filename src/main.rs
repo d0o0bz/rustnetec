@@ -1405,7 +1405,7 @@ fn run_tray_helper(matches: &clap::ArgMatches) -> Result<()> {
 
     // --- Build the pure-GUI tray controller (no App, no capture) ---
     let mut tray_controller = match ui::TrayController::new(
-        include_bytes!("../resources/packaging/linux/graphics/rustnet.png"),
+        include_bytes!("../resources/packaging/linux/graphics/rustnetec.png"),
         256,
         256,
         "Rustnetec",
@@ -1870,7 +1870,7 @@ fn run_daemon_loop(
     let mut tray_controller: Option<ui::TrayController> = if tray_mode {
         eprintln!("[tray-diag] creating TrayController…");
         match ui::TrayController::new(
-            include_bytes!("../resources/packaging/linux/graphics/rustnet.png"),
+            include_bytes!("../resources/packaging/linux/graphics/rustnetec.png"),
             256,
             256,
             "Rustnetec",

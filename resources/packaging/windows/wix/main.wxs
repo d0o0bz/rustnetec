@@ -61,9 +61,9 @@
                     </Component>
                     <Component Id='AppIcon' Guid='*' Win64='$(var.Win64)'>
                         <File Id='RustnetIco'
-                            Name='rustnet.ico'
+                            Name='rustnetec.ico'
                             DiskId='1'
-                            Source='resources\packaging\windows\graphics\rustnet.ico'/>
+                            Source='resources\packaging\windows\graphics\rustnetec.ico'/>
                     </Component>
                     <Component Id='AssetsDir' Guid='*' Win64='$(var.Win64)'>
                         <File Id='ServicesFile'
@@ -83,7 +83,7 @@
                             Description="Cross-platform network monitoring tool"
                             Target="[APPLICATIONROOTDIRECTORY]rustnet.exe"
                             WorkingDirectory="APPLICATIONROOTDIRECTORY"
-                            Icon="rustnet.ico"/>
+                            Icon="rustnetec.ico"/>
                         <RemoveFolder Id="ApplicationProgramsFolder" On="uninstall"/>
                         <RegistryValue Root="HKCU" Key="Software\domcyrus\Rustnet" Name="installed" Type="integer" Value="1" KeyPath="yes"/>
                     </Component>
@@ -91,7 +91,7 @@
             </Directory>
         </Directory>
 
-        <Icon Id="rustnet.ico" SourceFile="resources\packaging\windows\graphics\rustnet.ico" />
+        <Icon Id="rustnetec.ico" SourceFile="resources\packaging\windows\graphics\rustnetec.ico" />
 
         <Feature
             Id='Complete'

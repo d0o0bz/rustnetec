@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="RustNetec logo — traffic wave mark (minimal)">
+  <defs>
+    <!-- RX wave 5-stop ramp, mirrors src/ui/theme.rs RX_WAVE_STOPS -->
+    <linearGradient id="waveStrokeA" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%"  stop-color="#3B82F6"/>
+      <stop offset="30%" stop-color="#6366F1"/>
+      <stop offset="60%" stop-color="#06B6D4"/>
+      <stop offset="85%" stop-color="#00F5D4"/>
+      <stop offset="100%" stop-color="#FFFFFF"/>
+    </linearGradient>
+    <radialGradient id="peakGlowA" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0%"   stop-color="#FFFFFF" stop-opacity="0.45"/>
+      <stop offset="100%" stop-color="#00F5D4" stop-opacity="0"/>
+    </radialGradient>
+    <!-- Wordmark gradient: same RX 5-stop ramp, spread across the full word -->
+    <linearGradient id="wordGradA" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%"   stop-color="#3B82F6"/>
+      <stop offset="30%"  stop-color="#6366F1"/>
+      <stop offset="60%"  stop-color="#06B6D4"/>
+      <stop offset="85%"  stop-color="#00F5D4"/>
+      <stop offset="100%" stop-color="#22D3EE"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Rounded terminal panel -->
+  <rect x="192" y="96" width="640" height="640" rx="128" fill="#161b22" stroke="#30363d" stroke-width="8"/>
+
+  <!-- Soft glow behind the crest -->
+  <circle cx="612" cy="328" r="150" fill="url(#peakGlowA)"/>
+
+  <!-- Single clean wave: small left bump -> main crest at upper-right golden ratio -->
+  <path d="M 268 512 C 320 512, 344 486, 372 486 C 400 486, 420 512, 448 512 C 512 512, 560 396, 596 344 C 604 332, 612 328, 612 328 C 612 328, 620 332, 628 344 C 664 396, 704 456, 756 456"
+        fill="none" stroke="url(#waveStrokeA)" stroke-width="26" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Crest node: connection lighting up at the peak -->
+  <circle cx="612" cy="328" r="30" fill="#FFFFFF"/>
+  <circle cx="612" cy="328" r="14" fill="#06B6D4"/>
+
+  <!-- Wordmark: same RX gradient as the wave -->
+  <text x="512" y="878" text-anchor="middle"
+        font-family="'JetBrains Mono','SF Mono','IBM Plex Mono',Menlo,Consolas,monospace"
+        font-size="104" font-weight="700" letter-spacing="-2" fill="url(#wordGradA)">
+    RustNetec
+  </text>
+</svg>

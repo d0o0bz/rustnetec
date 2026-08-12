@@ -88,7 +88,7 @@ rm -f %{buildroot}%{_prefix}/.crates.toml %{buildroot}%{_prefix}/.crates2.json
 install -Dpm 0755 target/release/rustnet -t %{buildroot}%{_bindir}/
 %endif
 install -Dpm 0644 crates/rustnet-core/assets/services -t %{buildroot}%{_datadir}/%{name}/
-install -Dpm 0644 resources/packaging/linux/graphics/rustnet.png -t %{buildroot}%{_datadir}/icons/hicolor/256x256/apps/
+install -Dpm 0644 resources/packaging/linux/graphics/rustnetec.png -t %{buildroot}%{_datadir}/icons/hicolor/256x256/apps/
 install -Dpm 0644 resources/packaging/linux/rustnet.desktop -t %{buildroot}%{_datadir}/applications/
 
 %files
@@ -100,7 +100,7 @@ install -Dpm 0644 resources/packaging/linux/rustnet.desktop -t %{buildroot}%{_da
 %dir %{_datadir}/icons/hicolor
 %dir %{_datadir}/icons/hicolor/256x256
 %dir %{_datadir}/icons/hicolor/256x256/apps
-%{_datadir}/icons/hicolor/256x256/apps/rustnet.png
+%{_datadir}/icons/hicolor/256x256/apps/rustnetec.png
 %{_datadir}/applications/rustnet.desktop
 
 %post

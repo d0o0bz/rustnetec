@@ -1,5 +1,6 @@
 <p align="center">
-  <h1 align="center">RustNet</h1>
+  <img src="./assets/logo-rustnetec-A-wave.svg" alt="RustNetec logo" width="220">
+  <h1 align="center">RustNetec</h1>
   <p align="center">
     <strong>面向终端的进程级网络监控工具：实时呈现 TCP、UDP、QUIC 连接，自带深度包检测，默认沙箱隔离运行。</strong>
   </p>

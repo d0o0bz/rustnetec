@@ -1,5 +1,6 @@
 <p align="center">
-  <h1 align="center">RustNet</h1>
+  <img src="./assets/logo-rustnetec-A-wave.svg" alt="RustNetec logo" width="220">
+  <h1 align="center">RustNetec</h1>
   <p align="center">
     <strong>Per-process network monitoring for your terminal: live TCP, UDP, and QUIC connections with deep packet inspection, sandboxed by default.</strong>
   </p>

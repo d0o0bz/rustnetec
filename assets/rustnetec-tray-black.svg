@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="64" height="64" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="RustNetec tray template — black negative-space">
+  <defs>
+    <!-- mask: white keeps, black punches a hole. The wave stroke and the
+         crest dot are black, so they become transparent in the panel.
+         Wave path = main logo wave scaled into the 3..61 panel with the
+         same ~12% side margin, so it never touches the panel edge. -->
+    <mask id="hole">
+      <rect x="0" y="0" width="64" height="64" fill="#FFFFFF"/>
+      <path d="M 9.9 40.7 C 14.6 40.7, 16.8 38.3, 19.3 38.3 C 21.9 38.3, 23.7 40.7, 26.2 40.7 C 32.0 40.7, 36.4 30.2, 39.6 25.5 C 40.3 24.4, 41.1 24.0, 41.1 24.0 C 41.1 24.0, 41.8 24.4, 42.5 25.5 C 45.8 30.2, 49.4 35.6, 54.1 35.6"
+            fill="none" stroke="#000000" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+      <circle cx="41.1" cy="24.0" r="3" fill="#000000"/>
+    </mask>
+  </defs>
+
+  <!-- Solid rounded panel (3px margin) with the wave and crest dot cut out (transparent) -->
+  <rect x="3" y="3" width="58" height="58" rx="12" fill="#000000" mask="url(#hole)"/>
+</svg>

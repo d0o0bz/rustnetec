@@ -44,8 +44,8 @@ override_dh_auto_install:
 		debian/rustnet/usr/share/applications/rustnet.desktop
 
 	# Install icon
-	install -Dm644 resources/packaging/linux/graphics/rustnet.png \
-		debian/rustnet/usr/share/icons/hicolor/256x256/apps/rustnet.png
+	install -Dm644 resources/packaging/linux/graphics/rustnetec.png \
+		debian/rustnet/usr/share/icons/hicolor/256x256/apps/rustnetec.png
 
 	# Install documentation
 	install -Dm644 README.md debian/rustnet/usr/share/doc/rustnet/README.md

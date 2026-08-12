@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="RustNetec mark — traffic wave crest">
+  <defs>
+    <!-- RX wave 5-stop ramp, mirrors src/ui/theme.rs RX_WAVE_STOPS -->
+    <linearGradient id="waveStrokeA" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%"  stop-color="#3B82F6"/>
+      <stop offset="30%" stop-color="#6366F1"/>
+      <stop offset="60%" stop-color="#06B6D4"/>
+      <stop offset="85%" stop-color="#00F5D4"/>
+      <stop offset="100%" stop-color="#FFFFFF"/>
+    </linearGradient>
+    <radialGradient id="peakGlowA" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0%"   stop-color="#FFFFFF" stop-opacity="0.45"/>
+      <stop offset="100%" stop-color="#00F5D4" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Rounded terminal panel: 880x880, ~7% margin, centered -->
+  <rect x="72" y="72" width="880" height="880" rx="176" fill="#161b22" stroke="#30363d" stroke-width="11"/>
+
+  <!-- Soft glow behind the crest -->
+  <circle cx="649.5" cy="391" r="206" fill="url(#peakGlowA)"/>
+
+  <!-- Single clean wave: small left bump -> main crest at upper-right golden ratio -->
+  <path d="M 176.5 644 C 248 644, 281 608.25, 319.5 608.25 C 358 608.25, 385.5 644, 424 644 C 512 644, 578 484.5, 627.5 413 C 638.5 396.5, 649.5 391, 649.5 391 C 649.5 391, 660.5 396.5, 671.5 413 C 721 484.5, 776 567, 847.5 567"
+        fill="none" stroke="url(#waveStrokeA)" stroke-width="36" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Crest node: connection lighting up at the peak -->
+  <circle cx="649.5" cy="391" r="41" fill="#FFFFFF"/>
+  <circle cx="649.5" cy="391" r="19" fill="#06B6D4"/>
+</svg>
