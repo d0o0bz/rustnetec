@@ -67,6 +67,7 @@ pub fn open_terminal_monitor() {
     let exe = std::env::current_exe()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| "rustnet".to_string());
+    #[cfg(unix)]
     let quoted = format!("'{}'", exe.replace('\'', "'\\''"));
     // rustnetec: 前台 TUI 抓包需要 root（BPF 设备），unix 下用 sudo 启动；
     // 密码由用户在打开的 Terminal 窗口输入（sudo 会提示）。Windows 无 sudo，
@@ -86,7 +87,7 @@ pub fn open_terminal_monitor() {
         format!("sudo env HOME={home_quoted} {quoted}")
     };
     #[cfg(windows)]
-    let cmd = quoted;
+    let cmd = format!("\"{}\"", exe);
     open_terminal(&cmd);
 }
 

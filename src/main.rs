@@ -1682,6 +1682,23 @@ fn run_tray_helper(matches: &clap::ArgMatches) -> Result<()> {
         let mut last_live_refresh = std::time::Instant::now()
             - std::time::Duration::from_secs(pc0.tray_refresh_interval_secs.max(1));
         while !quit_flag.load(std::sync::atomic::Ordering::Relaxed) {
+            // rustnetec: Windows 需要 Win32 消息泵才能把托盘图标/菜单的
+            // 窗口消息（WM_APP/WM_COMMAND）分发到 tray_proc——没有它
+            // 右键菜单和点击事件永远到不了 MenuEvent channel（实测
+            // 托盘无菜单）。非阻塞 PeekMessageW 与 50ms 轮询共存。
+            #[cfg(target_os = "windows")]
+            {
+                use windows::Win32::UI::WindowsAndMessaging::{
+                    DispatchMessageW, MSG, PeekMessageW, TranslateMessage, PM_REMOVE,
+                };
+                let mut msg: MSG = unsafe { std::mem::zeroed() };
+                while unsafe { PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE) }.as_bool() {
+                    unsafe {
+                        let _ = TranslateMessage(&msg);
+                        DispatchMessageW(&msg);
+                    }
+                }
+            }
             use ui::TrayCommand as Cmd;
             match tray_controller.poll_command() {
                 Cmd::Quit => {
