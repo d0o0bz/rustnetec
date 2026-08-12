@@ -1810,7 +1810,9 @@ fn run_daemon_loop(
     //
     // 使用 signal-hook 注册 SIGINT/SIGTERM/HUP/QUIT，收到信号后调用 app.stop()
     // 设置 should_stop，capture thread 检测后优雅退出，run_daemon_loop 随后 break。
-    use signal_hook::consts::signal::{SIGHUP, SIGINT, SIGQUIT, SIGTERM};
+    use signal_hook::consts::signal::{SIGINT, SIGTERM};
+    #[cfg(not(windows))]
+    use signal_hook::consts::signal::{SIGHUP, SIGQUIT};
     use signal_hook::flag;
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
@@ -1818,7 +1820,13 @@ fn run_daemon_loop(
     let shutdown_flag = Arc::new(AtomicBool::new(false));
     // best-effort registration; failure here only means we can't catch
     // that particular signal, not that the daemon is broken.
-    for sig in [SIGINT, SIGTERM, SIGHUP, SIGQUIT] {
+    // SIGHUP/SIGQUIT are Unix-only (signal-hook gates them with
+    // #[cfg(not(windows))]); Windows gets SIGINT/SIGTERM only.
+    for sig in [SIGINT, SIGTERM] {
+        let _ = flag::register(sig, Arc::clone(&shutdown_flag));
+    }
+    #[cfg(not(windows))]
+    for sig in [SIGHUP, SIGQUIT] {
         let _ = flag::register(sig, Arc::clone(&shutdown_flag));
     }
 
