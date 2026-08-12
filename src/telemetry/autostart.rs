@@ -382,7 +382,7 @@ fn install_windows(mode: AutostartMode) -> Result<()> {
     let status = unsafe {
         RegOpenKeyExW(
             HKEY_CURRENT_USER,
-            w!(RUN_KEY_PATH),
+            w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run"),
             0,
             KEY_SET_VALUE,
             hkey.as_mut_ptr(),
@@ -400,7 +400,7 @@ fn install_windows(mode: AutostartMode) -> Result<()> {
     let status = unsafe {
         RegSetValueExW(
             hkey,
-            w!(RUN_VALUE_NAME),
+            w!("Rustnetec"),
             0,
             REG_SZ,
             Some(std::slice::from_raw_parts(
@@ -428,7 +428,7 @@ fn uninstall_windows() -> Result<()> {
     let status = unsafe {
         RegOpenKeyExW(
             HKEY_CURRENT_USER,
-            w!(RUN_KEY_PATH),
+            w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run"),
             0,
             KEY_SET_VALUE,
             hkey.as_mut_ptr(),
@@ -441,7 +441,7 @@ fn uninstall_windows() -> Result<()> {
     let hkey = unsafe { hkey.assume_init() };
 
     // Delete is best-effort: missing value returns an error we swallow.
-    let _ = unsafe { RegDeleteValueW(hkey, w!(RUN_VALUE_NAME)) };
+    let _ = unsafe { RegDeleteValueW(hkey, w!("Rustnetec")) };
     let _ = unsafe { RegCloseKey(hkey) };
     Ok(())
 }
@@ -457,7 +457,7 @@ fn is_installed_windows() -> bool {
     let status = unsafe {
         RegOpenKeyExW(
             HKEY_CURRENT_USER,
-            w!(RUN_KEY_PATH),
+            w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run"),
             0,
             KEY_QUERY_VALUE,
             hkey.as_mut_ptr(),
@@ -470,7 +470,7 @@ fn is_installed_windows() -> bool {
 
     let mut len: u32 = 0;
     let query_status =
-        unsafe { RegQueryValueExW(hkey, w!(RUN_VALUE_NAME), None, None, None, Some(&mut len)) };
+        unsafe { RegQueryValueExW(hkey, w!("Rustnetec"), None, None, None, Some(&mut len)) };
     let _ = unsafe { RegCloseKey(hkey) };
     query_status.is_ok()
 }
