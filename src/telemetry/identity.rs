@@ -178,7 +178,7 @@ fn read_primary_mac_address() -> Option<String> {
     {
         read_mac_windows()
     }
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     {
         None
     }
@@ -286,7 +286,7 @@ pub fn collect_ip_list() -> Vec<String> {
     {
         collect_ip_list_windows()
     }
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     {
         Vec::new()
     }
