@@ -46,25 +46,32 @@ jobs:
           - build: linux-x64-gnu
             target: x86_64-unknown-linux-gnu
             run-tests: true
+            features: tray
           - build: linux-aarch64-gnu
             target: aarch64-unknown-linux-gnu
             cargo: cross
+            features: tray
           - build: linux-armv7-gnueabihf
             target: armv7-unknown-linux-gnueabihf
             cargo: cross
+            features: tray
           - build: macos-aarch64
             os: macos-14
             target: aarch64-apple-darwin
             run-tests: true
+            features: tray
           - build: macos-x64
             os: macos-14
             target: x86_64-apple-darwin
+            features: tray
           - build: windows-x64-msvc
             os: windows-latest
             target: x86_64-pc-windows-msvc
+            features: tray
           - build: windows-x86-msvc
             os: windows-latest
             target: i686-pc-windows-msvc
+            features: tray
 
     steps:
       - name: Checkout repository
@@ -91,6 +98,7 @@ jobs:
           cargo-command: ${{ matrix.cargo }}
           default-features: ${{ contains(matrix.target, 'linux') && 'true' || 'false' }}
           strip-symbols: ${{ inputs.strip-symbols && 'true' || 'false' }}
+          features: ${{ matrix.features }}
 
       - name: Run tests
         if: matrix.run-tests

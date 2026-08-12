@@ -17,6 +17,10 @@ inputs:
     description: 'Strip debug symbols from binary (true/false)'
     required: false
     default: 'true'
+  features:
+    description: 'Extra cargo features to enable, space-separated (e.g., "tray")'
+    required: false
+    default: ''
 
 runs:
   using: 'composite'
@@ -32,6 +36,10 @@ runs:
 
         if [[ "${{ inputs.default-features }}" != "true" ]]; then
           BUILD_CMD="$BUILD_CMD --no-default-features"
+        fi
+
+        if [[ -n "${{ inputs.features }}" ]]; then
+          BUILD_CMD="$BUILD_CMD --features ${{ inputs.features }}"
         fi
 
         echo "Running: $BUILD_CMD"
