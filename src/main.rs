@@ -1872,11 +1872,27 @@ fn run_tray_helper(matches: &clap::ArgMatches) -> Result<()> {
         let quit_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let pc0 = rustnet_monitor::config::PersistentConfig::load().unwrap_or_default();
         let status_fields = pc0.tray_status_fields.clone();
-        // rustnetec: throttle /live polling to tray_refresh_interval_secs
-        // (start with the interval already elapsed so the first refresh is
-        // immediate instead of waiting one full cadence).
+
+        // Windows: WM_TIMER 驱动 /live 刷新。右键弹出菜单时 tray-icon 调用
+        // TrackPopupMenu 进入模态消息循环，我们的 while 循环被阻塞在
+        // DispatchMessageW 里，循环内的 /live 轮询在菜单打开期间不执行，
+        // 状态行冻结在打开瞬间的值。改用 message-only 窗口的 WM_TIMER——
+        // TrackPopupMenu 的模态循环会照常分发 WM_TIMER，菜单打开期间状态行
+        // 持续刷新（macOS 用 kCFRunLoopCommonModes 解决同类问题）。
+        #[cfg(target_os = "windows")]
+        let _refresh_timer = win_tray_refresh::spawn(
+            &mut tray_controller,
+            daemon_base.clone(),
+            status_fields.clone(),
+            pc0.tray_refresh_interval_secs.max(1),
+        );
+
+        // 非 Windows（ksni/Linux）：循环内节流轮询 /live。起始将上次刷新
+        // 时刻前移一个间隔，使第一次刷新立即发生。
+        #[cfg(not(target_os = "windows"))]
         let mut last_live_refresh = std::time::Instant::now()
             - std::time::Duration::from_secs(pc0.tray_refresh_interval_secs.max(1));
+
         while !quit_flag.load(std::sync::atomic::Ordering::Relaxed) {
             // rustnetec: Windows 需要 Win32 消息泵才能把托盘图标/菜单的
             // 窗口消息（WM_APP/WM_COMMAND）分发到 tray_proc——没有它
@@ -1931,29 +1947,33 @@ fn run_tray_helper(matches: &clap::ArgMatches) -> Result<()> {
                 Cmd::None => {}
             }
             // Poll /live for the status line on the configured cadence.
-            // rustnetec: T4.3 — 与 macOS refresh_cb 同款修复：/live 需要
-            // Bearer 鉴权，http_token 非空时不带 token 会 401，动态状态不刷新。
-            // rustnetec: 按 tray_refresh_interval_secs 节流（原来每 50ms 都
-            // 请求一次 /live），失败时打 warn 日志便于诊断状态不更新。
-            if last_live_refresh.elapsed().as_secs() >= pc0.tray_refresh_interval_secs.max(1) {
-                last_live_refresh = std::time::Instant::now();
-                if let Ok(pc) = rustnet_monitor::config::PersistentConfig::load() {
-                    let mut req = ureq::get(&format!("{daemon_base}/live"))
-                        .timeout(Duration::from_millis(800));
-                    if let Some(token) = pc.http_token.as_deref().filter(|t| !t.is_empty()) {
-                        req = req.set("Authorization", &format!("Bearer {token}"));
+            // (Windows 上由 WM_TIMER 处理，见 win_tray_refresh 模块注释。)
+            #[cfg(not(target_os = "windows"))]
+            {
+                // rustnetec: T4.3 — 与 macOS refresh_cb 同款修复：/live 需要
+                // Bearer 鉴权，http_token 非空时不带 token 会 401，动态状态不刷新。
+                // rustnetec: 按 tray_refresh_interval_secs 节流（原来每 50ms 都
+                // 请求一次 /live），失败时打 warn 日志便于诊断状态不更新。
+                if last_live_refresh.elapsed().as_secs() >= pc0.tray_refresh_interval_secs.max(1) {
+                    last_live_refresh = std::time::Instant::now();
+                    if let Ok(pc) = rustnet_monitor::config::PersistentConfig::load() {
+                        let mut req = ureq::get(&format!("{daemon_base}/live"))
+                            .timeout(Duration::from_millis(800));
+                        if let Some(token) = pc.http_token.as_deref().filter(|t| !t.is_empty()) {
+                            req = req.set("Authorization", &format!("Bearer {token}"));
+                        }
+                        match req.call() {
+                            Ok(resp) => match resp.into_json::<serde_json::Value>() {
+                                Ok(live) => {
+                                    tray_controller.refresh_status_from_live(&live, &status_fields);
+                                }
+                                Err(e) => warn!("Tray helper: /live JSON decode failed: {e}"),
+                            },
+                            Err(e) => warn!("Tray helper: GET /live failed: {e}"),
+                        }
+                    } else {
+                        warn!("Tray helper: PersistentConfig::load failed — skipping status refresh");
                     }
-                    match req.call() {
-                        Ok(resp) => match resp.into_json::<serde_json::Value>() {
-                            Ok(live) => {
-                                tray_controller.refresh_status_from_live(&live, &status_fields);
-                            }
-                            Err(e) => warn!("Tray helper: /live JSON decode failed: {e}"),
-                        },
-                        Err(e) => warn!("Tray helper: GET /live failed: {e}"),
-                    }
-                } else {
-                    warn!("Tray helper: PersistentConfig::load failed — skipping status refresh");
                 }
             }
             std::thread::sleep(Duration::from_millis(50));
@@ -3138,6 +3158,161 @@ fn check_dll_available(dll_name: &str) -> bool {
             true
         } else {
             false
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Windows: WM_TIMER-driven tray status refresh.
+//
+// On Windows, right-clicking the tray icon opens the menu via
+// `TrackPopupMenu`, which runs its own *modal* message loop inside
+// tray-icon's window proc. While the menu is open, our poll loop in
+// `run_tray_helper` is blocked inside `DispatchMessageW`, so the `/live`
+// poll that normally repaints the status line never runs — the status line
+// freezes at whatever value it had when the menu opened (the macOS analogue
+// of this was fixed by registering the refresh timer on
+// `kCFRunLoopCommonModes`; there is no such run-loop mode switch on Win32,
+// so we use a `WM_TIMER` on a message-only window instead — timer messages
+// ARE dispatched by `TrackPopupMenu`'s modal loop).
+//
+// A `WM_TIMER` on a hidden message-only window keeps firing while the menu
+// is open, so the status line keeps updating live.
+// ---------------------------------------------------------------------------
+#[cfg(all(feature = "tray", target_os = "windows"))]
+mod win_tray_refresh {
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+    use windows::Win32::Graphics::Gdi::HBRUSH;
+    use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CreateWindowExW, DefWindowProcW, DestroyWindow, GetWindowLongPtrW, KillTimer,
+        RegisterClassW, SetTimer, SetWindowLongPtrW, CW_USEDEFAULT, GWLP_USERDATA, HCURSOR,
+        HICON, HWND_MESSAGE, WINDOW_EX_STYLE, WINDOW_STYLE, WNDCLASSW, WNDCLASS_STYLES, WM_TIMER,
+    };
+
+    use rustnet_monitor::config::TrayStatusField;
+    use ui::TrayController;
+
+    const REFRESH_TIMER_ID: usize = 0x52_55_53_54; // "RUST"
+
+    struct RefreshCtx {
+        controller: *mut TrayController,
+        daemon_base: String,
+        status_fields: Vec<TrayStatusField>,
+    }
+
+    /// RAII guard owning the timer window; killing the timer and destroying
+    /// the window on drop.
+    pub struct RefreshTimerGuard {
+        hwnd: HWND,
+        ctx: *mut RefreshCtx,
+    }
+
+    impl Drop for RefreshTimerGuard {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = KillTimer(Some(self.hwnd), REFRESH_TIMER_ID);
+                let _ = DestroyWindow(self.hwnd);
+                drop(Box::from_raw(self.ctx));
+            }
+        }
+    }
+
+    unsafe extern "system" fn wnd_proc(
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        _lparam: LPARAM,
+    ) -> LRESULT {
+        if msg == WM_TIMER && wparam.0 == REFRESH_TIMER_ID {
+            let ctx = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut RefreshCtx };
+            if !ctx.is_null() {
+                let ctx = unsafe { &mut *ctx };
+                let live_url = format!("{}/live", ctx.daemon_base);
+                let mut req = ureq::get(&live_url).timeout(std::time::Duration::from_millis(800));
+                if let Some(token) = rustnet_monitor::config::PersistentConfig::load()
+                    .ok()
+                    .and_then(|c| c.http_token)
+                    .filter(|t| !t.is_empty())
+                {
+                    req = req.set("Authorization", &format!("Bearer {token}"));
+                }
+                if let Ok(resp) = req.call()
+                    && let Ok(live) = resp.into_json::<serde_json::Value>()
+                {
+                    let ctrl = unsafe { &mut *ctx.controller };
+                    ctrl.refresh_status_from_live(&live, &ctx.status_fields);
+                }
+            }
+            return LRESULT(0);
+        }
+        unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+    }
+
+    /// Create the message-only refresh window and start its `WM_TIMER`.
+    ///
+    /// `controller` must remain alive for the lifetime of the returned guard
+    /// (it is borrowed via a raw pointer).
+    pub fn spawn(
+        controller: &mut TrayController,
+        daemon_base: String,
+        status_fields: Vec<TrayStatusField>,
+        interval_secs: u64,
+    ) -> Option<RefreshTimerGuard> {
+        unsafe {
+            let class_name = windows::core::w!("RustnetecRefreshTimer");
+
+            let hinstance = GetModuleHandleW(PCWSTR::null()).ok()?;
+            let wc = WNDCLASSW {
+                style: WNDCLASS_STYLES::default(),
+                lpfnWndProc: Some(wnd_proc),
+                cbClsExtra: 0,
+                cbWndExtra: 0,
+                hInstance: hinstance.into(),
+                hIcon: HICON::default(),
+                hCursor: HCURSOR::default(),
+                hbrBackground: HBRUSH::default(),
+                lpszMenuName: PCWSTR::null(),
+                lpszClassName: class_name,
+            };
+            // RegisterClassW returns 0 on failure (class may already exist from
+            // a previous registration — that is fine and treated as success).
+            let _ = RegisterClassW(&wc);
+
+            let hwnd = CreateWindowExW(
+                WINDOW_EX_STYLE::default(),
+                class_name,
+                class_name,
+                WINDOW_STYLE::default(),
+                CW_USEDEFAULT,
+                CW_USEDEFAULT,
+                CW_USEDEFAULT,
+                CW_USEDEFAULT,
+                Some(HWND_MESSAGE),
+                None,
+                Some(hinstance),
+                None,
+            )
+            .ok()?;
+
+            let ctx = Box::new(RefreshCtx {
+                controller: controller as *mut TrayController,
+                daemon_base,
+                status_fields,
+            });
+            let ctx_ptr = Box::into_raw(ctx);
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, ctx_ptr as isize);
+
+            let interval_ms = interval_secs.max(1) * 1000;
+            if SetTimer(Some(hwnd), REFRESH_TIMER_ID, interval_ms as u32, None) == 0 {
+                // Timer failed — clean up and fall through to no-op.
+                let _ = DestroyWindow(hwnd);
+                drop(Box::from_raw(ctx_ptr));
+                return None;
+            }
+
+            Some(RefreshTimerGuard { hwnd, ctx: ctx_ptr })
         }
     }
 }

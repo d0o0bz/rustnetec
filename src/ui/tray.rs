@@ -267,7 +267,7 @@ impl TrayController {
         } else {
             format!("● 监控中 · {}", status_text)
         };
-        self.set_status_text(&menu_label);
+        let _ = self.status_item.set_text(menu_label);
 
         // Flip pause menu item text
         let pause_label = if ctx.is_paused {
@@ -275,7 +275,7 @@ impl TrayController {
         } else {
             "⏸ 暂停捕获"
         };
-        self.set_pause_text(pause_label);
+        let _ = self.pause_item.set_text(pause_label);
     }
 
     /// Refresh the dynamic status line + tooltip from the daemon's live
@@ -306,7 +306,7 @@ impl TrayController {
         } else {
             format!("● 监控中 · {}", status_text)
         };
-        self.set_status_text(&menu_label);
+        let _ = self.status_item.set_text(menu_label);
 
         // Flip pause menu item text
         let pause_label = if ctx.is_paused {
@@ -314,47 +314,7 @@ impl TrayController {
         } else {
             "⏸ 暂停捕获"
         };
-        self.set_pause_text(pause_label);
-    }
-
-    /// Update the status-line menu item text in a platform-appropriate way.
-    ///
-    /// On Windows the system-tray menu is shown via `TrackPopupMenu` from a
-    /// cached HMENU, and muda's `set_text` (`SetMenuItemInfoW`) does not
-    /// reliably repaint a popup menu item that is already in the menu — the
-    /// status line stays frozen at its initial label. We work around it by
-    /// structurally replacing the item (`RemoveMenu` + `InsertMenuW`), which
-    /// mutates the popup HMENU in place so the next `TrackPopupMenu` renders
-    /// the new label. macOS/Linux repaint via their own backends, so they keep
-    /// the cheap `set_text` path.
-    fn set_status_text(&mut self, label: &str) {
-        #[cfg(target_os = "windows")]
-        {
-            let _ = self.menu.remove(&self.status_item);
-            let new_item = muda::MenuItem::with_id("status", label, false, None);
-            let _ = self.menu.prepend(&new_item);
-            self.status_item = new_item;
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            let _ = self.status_item.set_text(label);
-        }
-    }
-
-    /// Update the pause/continue menu item text (see [`Self::set_status_text`]).
-    fn set_pause_text(&mut self, label: &str) {
-        #[cfg(target_os = "windows")]
-        {
-            // pause_item 位于原菜单的第 7 项（index 6，sep2 之后、sep3 之前）。
-            let _ = self.menu.remove(&self.pause_item);
-            let new_item = muda::MenuItem::with_id(menu_ids::TOGGLE_PAUSE, label, true, None);
-            let _ = self.menu.insert(&new_item, 6);
-            self.pause_item = new_item;
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            let _ = self.pause_item.set_text(label);
-        }
+        let _ = self.pause_item.set_text(pause_label);
     }
 
     /// Build a `StatusContext` from the daemon's `/live` JSON snapshot.
