@@ -385,6 +385,29 @@ impl PacketParser {
                     _ => None,
                 }
             }
+            // TUN interfaces (utun*) carry inner frames as DLT_NULL (0, a
+            // 4-byte address-family header before the raw IP packet), the
+            // DLT_RAW variant (101), or bare IPv4/IPv6 (228/229). Delegate
+            // to the TUN/TAP parser, which strips the DLT_NULL family header
+            // and dispatches on the inner IP version nibble.
+            // 228 (LINKTYPE_IPV4) and 229 (LINKTYPE_IPV6) are the bare
+            // IPv4/IPv6 linktypes; they equal `link_layer::dlt::LINKTYPE_IPV4`
+            // / `LINKTYPE_IPV6` (inlined here because match patterns cannot
+            // use `as` casts of constants).
+            0 | 101 | 228 | 229 => {
+                log::debug!(
+                    "PKTAP inner TUN frame (DLT {}) on {}",
+                    pktap_header.inner_dlt(),
+                    pktap_header.get_interface()
+                );
+                link_layer::tun_tap::parse_by_dlt(
+                    payload,
+                    pktap_header.inner_dlt() as i32,
+                    self,
+                    process_name,
+                    process_id,
+                )
+            }
             _ => {
                 log::debug!("Unsupported PKTAP inner DLT: {}", pktap_header.inner_dlt());
                 None
@@ -945,6 +968,58 @@ mod tests {
         ]
     }
 
+    // ====== PKTAP (macOS) helpers ======
+
+    /// Build a synthetic PKTAP frame: a valid header (as produced by
+    /// `PktapHeader::from_bytes`) followed by the inner link-layer payload.
+    /// The header is serialized via the same repr(C) layout `from_bytes`
+    /// reads, so field offsets match by construction.
+    #[cfg(target_os = "macos")]
+    fn pktap_frame(inner_dlt: u32, payload: &[u8], epid: u32, comm: &str) -> Vec<u8> {
+        use crate::network::link_layer::pktap::PktapHeader;
+        use std::mem;
+
+        let header = PktapHeader {
+            pth_length: mem::size_of::<PktapHeader>() as u32,
+            pth_type_next: 0,
+            pth_dlt: inner_dlt,
+            pth_ifname: {
+                let mut name = [0u8; 24];
+                name[..5].copy_from_slice(b"utun0");
+                name
+            },
+            pth_flags: 0,
+            pth_protocol_family: 2, // PF_INET
+            pth_frame_pre_length: 0,
+            pth_frame_post_length: 0,
+            pth_iftype: 0,
+            pth_unit: 0,
+            pth_epid: epid,
+            pth_comm: {
+                let mut buf = [0u8; 20];
+                let n = comm.len().min(20);
+                buf[..n].copy_from_slice(&comm.as_bytes()[..n]);
+                buf
+            },
+            pth_svc_class: 0,
+            pth_flowid: 0,
+            pth_ipproto: 0,
+            pth_pid: 0,
+            pth_e_comm: [0u8; 20],
+        };
+
+        let mut frame = Vec::with_capacity(mem::size_of::<PktapHeader>() + payload.len());
+        unsafe {
+            let ptr = (&header as *const PktapHeader).cast::<u8>();
+            frame.extend_from_slice(std::slice::from_raw_parts(
+                ptr,
+                mem::size_of::<PktapHeader>(),
+            ));
+        }
+        frame.extend_from_slice(payload);
+        frame
+    }
+
     // ====== DLT_EN10MB (Ethernet) Tests ======
 
     #[test]
@@ -1417,5 +1492,71 @@ mod tests {
 
         let parsed = parser.parse_packet(&packet).unwrap();
         assert_eq!(parsed.tcp_header.unwrap().payload_len, 4);
+    }
+
+    // ====== PKTAP inner-DLT tests (macOS) ======
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_pktap_inner_dlt_null_utun_frame_parses() {
+        // Regression: with a VPN (e.g. Outline) active, utun frames reach
+        // PKTAP with inner DLT_NULL (0): a 4-byte address-family header
+        // followed by the raw IP packet. These were silently dropped before
+        // the DLT 0 dispatch was wired through tun_tap::parse_by_dlt.
+        let parser = create_parser_with_linktype(149); // PKTAP linktype
+
+        // Inner IPv4/UDP packet: 192.168.1.100:1234 -> 8.8.8.8:53 (DNS).
+        let inner_ip: &[u8] = &[
+            // IPv4 header (protocol 0x11 = UDP)
+            0x45, 0x00, 0x00, 0x20, 0x00, 0x01, 0x00, 0x00, 0x40, 0x11, 0x00, 0x00, 192, 168, 1,
+            100, 8, 8, 8, 8, // UDP header: src 1234, dst 53
+            0x04, 0xd2, 0x00, 0x35, 0x00, 0x0c, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04,
+        ];
+        // DLT_NULL frame: AF_INET (2, host byte order / little-endian here)
+        // then the raw IP packet.
+        let mut payload = vec![0x02, 0x00, 0x00, 0x00];
+        payload.extend_from_slice(inner_ip);
+
+        let frame = pktap_frame(0, &payload, 4242, "Outline");
+
+        let parsed = parser
+            .parse_packet(&frame)
+            .expect("PKTAP inner DLT_NULL (utun) frame should parse");
+        assert_eq!(parsed.protocol, Protocol::Udp);
+        // PKTAP process metadata must survive the TUN dispatch.
+        assert_eq!(parsed.process_id, Some(4242));
+        assert_eq!(parsed.process_name.as_deref(), Some("Outline"));
+        // The 4-byte family header must be stripped before IP parsing.
+        let ports = [parsed.local_addr.port(), parsed.remote_addr.port()];
+        assert!(
+            ports.contains(&1234) && ports.contains(&53),
+            "inner UDP ports 1234/53 must survive the header strip, got {ports:?}",
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test_pktap_inner_dlt_raw_utun_frame_parses() {
+        // DLT_RAW (12): the other common utun linktype — bare IP, no
+        // link-layer or family header.
+        let parser = create_parser_with_linktype(149); // PKTAP linktype
+
+        let payload: &[u8] = &[
+            0x45, 0x00, 0x00, 0x20, 0x00, 0x01, 0x00, 0x00, 0x40, 0x11, 0x00, 0x00, 192, 168, 1,
+            100, 8, 8, 8, 8, 0x04, 0xd2, 0x00, 0x35, 0x00, 0x0c, 0x00, 0x00, 0x01, 0x02, 0x03,
+            0x04,
+        ];
+
+        let frame = pktap_frame(12, payload, 0, "");
+
+        let parsed = parser
+            .parse_packet(&frame)
+            .expect("PKTAP inner DLT_RAW (utun) frame should parse");
+        assert_eq!(parsed.protocol, Protocol::Udp);
+        let ports = [parsed.local_addr.port(), parsed.remote_addr.port()];
+        assert!(
+            ports.contains(&1234) && ports.contains(&53),
+            "inner UDP ports 1234/53 must be present, got {ports:?}",
+        );
     }
 }

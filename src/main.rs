@@ -865,6 +865,17 @@ fn main() -> Result<()> {
 
     // rustnetec: Branch on run mode
     if daemon_mode || tray_mode {
+        // rustnetec: W-fix — write daemon.pid so the tray helper can SIGTERM
+        // the daemon as a fallback when POST /admin/shutdown can't reach it
+        // (e.g. the single-threaded HTTP server was wedged before this fix,
+        // or a request is stuck). Best-effort; failure does not stop startup.
+        if let Ok(dir) = telemetry::paths::data_dir() {
+            let pid_path = dir.join("daemon.pid");
+            if let Err(e) = std::fs::write(&pid_path, std::process::id().to_string()) {
+                warn!("Failed to write daemon.pid at {}: {e}", pid_path.display());
+            }
+        }
+
         // rustnetec: http_state lives in the outer scope so the tray launcher
         // (T3.3) can call issue_bootstrap_guid on it from run_daemon_loop.
         // Wrapped in Option because daemon mode (no tray) does not need it,
@@ -1017,6 +1028,11 @@ fn main() -> Result<()> {
         if let Ok(dir) = telemetry::paths::data_dir() {
             let _ = std::fs::remove_file(dir.join("tui.pid"));
         }
+    }
+    // rustnetec: W-fix — 删除 daemon.pid，避免托盘 helper 误向已退出的 PID
+    // 发信号。daemon/tray 模式下写过；TUI 模式下文件不存在，remove 静默失败。
+    if let Ok(dir) = telemetry::paths::data_dir() {
+        let _ = std::fs::remove_file(dir.join("daemon.pid"));
     }
 
     info!("RustNet Monitor shutting down");
@@ -1788,13 +1804,19 @@ fn daemon_port_open(port: u16) -> bool {
     TcpStream::connect_timeout(&addr, Duration::from_millis(300)).is_ok()
 }
 
-/// rustnetec: T4.2 — gracefully stop the daemon over HTTP (`/admin/shutdown`).
+/// rustnetec: T4.2 — stop the daemon, first over HTTP (`/admin/shutdown`),
+/// then via a direct signal from `daemon.pid` as a fallback.
 ///
 /// Used when the daemon was launched via the auth dialog (osascript): the
 /// helper has no `Child` handle for it (it is a nohup'd grandchild), so the
 /// normal `child.kill()` reap cannot reach it. `handle_admin_shutdown` sets
 /// `should_stop`, which the daemon's main loop observes and exits cleanly.
-/// Best-effort: no-op / warn when the daemon is already gone.
+///
+/// rustnetec: W-fix — the original HTTP-only path could leave the daemon
+/// running when the (previously single-threaded) HTTP server was wedged on a
+/// stuck request, making `/admin/shutdown` time out. After a brief grace
+/// period we read `daemon.pid` and send SIGTERM directly so the daemon is
+/// reliably reaped. Best-effort: no-op / warn when the daemon is already gone.
 #[cfg(all(feature = "tray", not(target_os = "freebsd")))]
 fn stop_daemon_via_http(daemon_base: &str) {
     use std::time::Duration;
@@ -1811,6 +1833,67 @@ fn stop_daemon_via_http(daemon_base: &str) {
         Ok(_) => info!("Tray helper: sent /admin/shutdown to daemon"),
         Err(e) => warn!("Tray helper: /admin/shutdown failed: {e}"),
     }
+
+    // Give the daemon a brief moment to exit gracefully after the HTTP
+    // request before escalating to a signal.
+    std::thread::sleep(Duration::from_millis(600));
+
+    // Fallback: if the daemon is still alive, signal it directly via the PID
+    // file. This covers the wedged-HTTP-server case and any race where the
+    // shutdown request was not processed. kill(pid, 0) on Unix / a zero exit
+    // status tells us whether the process still exists.
+    if let Some(pid) = read_daemon_pid() {
+        if pid_is_alive(pid) {
+            warn!(
+                "Tray helper: daemon (pid {pid}) still running after HTTP shutdown; sending signal"
+            );
+            terminate_pid(pid);
+        } else {
+            info!("Tray helper: daemon (pid {pid}) exited cleanly after HTTP shutdown");
+        }
+    }
+}
+
+/// rustnetec: W-fix — read the daemon's PID from `<data_dir>/daemon.pid`.
+#[cfg(all(feature = "tray", not(target_os = "freebsd")))]
+fn read_daemon_pid() -> Option<u32> {
+    let dir = telemetry::paths::data_dir().ok()?;
+    let raw = std::fs::read_to_string(dir.join("daemon.pid")).ok()?;
+    raw.trim().parse::<u32>().ok()
+}
+
+/// rustnetec: W-fix — whether a process with `pid` is still alive.
+#[cfg(all(unix, feature = "tray", not(target_os = "freebsd")))]
+fn pid_is_alive(pid: u32) -> bool {
+    // kill(pid, 0) performs no signal but checks existence/permissions.
+    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+}
+
+/// rustnetec: W-fix — send SIGTERM to `pid` (Unix).
+#[cfg(all(unix, feature = "tray", not(target_os = "freebsd")))]
+fn terminate_pid(pid: u32) {
+    unsafe {
+        let _ = libc::kill(pid as libc::pid_t, libc::SIGTERM);
+    }
+}
+
+/// rustnetec: W-fix — whether a process with `pid` is still alive (Windows).
+#[cfg(all(windows, feature = "tray", not(target_os = "freebsd")))]
+fn pid_is_alive(pid: u32) -> bool {
+    // taskkill with no /F just probes; a zero status means it exists.
+    std::process::Command::new("taskkill")
+        .args(["/PID", &pid.to_string()])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// rustnetec: W-fix — force-kill `pid` and its child tree (Windows).
+#[cfg(all(windows, feature = "tray", not(target_os = "freebsd")))]
+fn terminate_pid(pid: u32) {
+    let _ = std::process::Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/F", "/T"])
+        .output();
 }
 
 /// rustnetec: T3.6.9 — build the bootstrap-handshake panel URL for the tray

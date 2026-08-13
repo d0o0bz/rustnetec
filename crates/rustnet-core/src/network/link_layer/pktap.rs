@@ -125,7 +125,9 @@ impl PktapHeader {
         // Basic sanity checks
         self.pth_length >= 108 &&
         self.pth_length <= 4096 && // Reasonable upper bound
-        self.pth_dlt > 0 &&
+        // pth_dlt == 0 (DLT_NULL) is valid: utun/TUN frames reach PKTAP with
+        // a DLT_NULL inner linktype, so the old `> 0` guard dropped every
+        // VPN-tunnel packet before parsing ever saw it.
         self.pth_dlt < 1000 // Reasonable DLT range
     }
 }

@@ -1512,6 +1512,27 @@ impl App {
             .spawn(move || {
                 info!("Packet processor {} started", id);
 
+                // Every path that ends processing for a reason other than
+                // shutdown has to be surfaced. The capture thread holds the
+                // send side of the packet channel and only notices processor
+                // exits when the channel disconnects; a processor that dies
+                // silently (panic outside the per-packet guards, or a lost
+                // channel) would otherwise leave the connection table frozen
+                // while the UI still reports a healthy capture.
+                let record_failure = |message: String| {
+                    if !should_stop.load(Ordering::Relaxed) {
+                        if let Ok(mut status) = capture_status.write() {
+                            *status = CaptureStatus::Failed(message);
+                        }
+                    }
+                };
+
+                // Whole-body panic guard: the per-packet catch_unwind calls
+                // cover parsing and ingest, but a panic anywhere else in this
+                // thread (e.g. pcapng export, tracker reads) would otherwise
+                // exit the thread without marking the capture failed. Run the
+                // whole body under catch_unwind so the exit is surfaced.
+                let body_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 // This thread only parses captured bytes; it needs neither raw
                 // sockets nor bpf(2) (Linux only).
                 #[cfg(all(target_os = "linux", feature = "landlock"))]
@@ -1558,6 +1579,13 @@ impl App {
                         Err(crossbeam::channel::RecvTimeoutError::Timeout) => continue,
                         Err(crossbeam::channel::RecvTimeoutError::Disconnected) => {
                             info!("pcap_rx_{}: channel disconnected, exiting", id);
+                            // The capture thread vanished without a clean
+                            // shutdown handoff; surface it instead of leaving
+                            // the table frozen (no-op during normal stop).
+                            record_failure(capture_failure_message(
+                                "Capture stopped",
+                                &"the packet capture channel disconnected",
+                            ));
                             return;
                         }
                     };
@@ -1587,23 +1615,42 @@ impl App {
                             }));
                         let key = match parse_result {
                             Ok(Some(parsed)) => {
-                                let outcome = update_connection(
-                                    &tracker,
-                                    parsed,
-                                    packet_timestamp,
-                                    &stats,
-                                    &EventOutputs {
-                                        json_log_file: json_log_file.as_ref(),
-                                        pcap_sidecar_file: pcap_sidecar_file.as_ref(),
-                                        sqlite_sink: sqlite_sink.as_ref(),
-                                    },
-                                    dns_resolver.as_deref(),
+                                // update_connection (tracker ingest, event
+                                // logging, DNS lookup) must not be able to
+                                // kill the whole pcap_rx thread: a panic here
+                                // would silently freeze the connection table.
+                                let outcome = std::panic::catch_unwind(
+                                    std::panic::AssertUnwindSafe(|| {
+                                        update_connection(
+                                            &tracker,
+                                            parsed,
+                                            packet_timestamp,
+                                            &stats,
+                                            &EventOutputs {
+                                                json_log_file: json_log_file.as_ref(),
+                                                pcap_sidecar_file: pcap_sidecar_file.as_ref(),
+                                                sqlite_sink: sqlite_sink.as_ref(),
+                                            },
+                                            dns_resolver.as_deref(),
+                                        )
+                                    }),
                                 );
-                                parsed_count += 1;
-                                if outcome.dropped || outcome.ignored_late {
-                                    None
-                                } else {
-                                    Some(outcome.key)
+                                match outcome {
+                                    Ok(outcome) => {
+                                        parsed_count += 1;
+                                        if outcome.dropped || outcome.ignored_late {
+                                            None
+                                        } else {
+                                            Some(outcome.key)
+                                        }
+                                    }
+                                    Err(_) => {
+                                        warn!(
+                                            "pcap_rx_{}: update_connection panicked on a packet; skipping",
+                                            id
+                                        );
+                                        None
+                                    }
                                 }
                             }
                             Ok(None) => None,
@@ -1660,6 +1707,18 @@ impl App {
                     "Packet processor {} exiting, total processed: {}",
                     id, total_processed
                 );
+                }));
+
+                if let Err(_) = body_result {
+                    error!(
+                        "pcap_rx_{}: processor thread panicked; marking capture failed",
+                        id
+                    );
+                    record_failure(capture_failure_message(
+                        "Capture stopped",
+                        &"the packet processing thread panicked",
+                    ));
+                }
             })
             .unwrap_or_else(|_| panic!("Failed to spawn pcap_rx_{} thread", id));
     }
@@ -2286,9 +2345,22 @@ impl App {
                     let ui_publish_due = last_ui_publish
                         .is_none_or(|published| published.elapsed() >= refresh_interval);
                     if ui_publish_due {
-                        // Publish the connection vector used by the UI.
-                        *snapshot.write().unwrap() = snapshot_data;
-                        snapshot_generation.fetch_add(1, Ordering::Release);
+                        // Publish the connection vector used by the UI. The
+                        // write must survive a poisoned lock: another thread
+                        // that panicked while holding `snapshot` leaves it
+                        // poisoned, and `unwrap()` here would kill the
+                        // snapshot thread too — freezing the table while the
+                        // rest of the monitor keeps running. Degrade instead:
+                        // skip this publish and keep the thread alive.
+                        match snapshot.write() {
+                            Ok(mut guard) => {
+                                *guard = snapshot_data;
+                                snapshot_generation.fetch_add(1, Ordering::Release);
+                            }
+                            Err(_) => {
+                                warn!("snapshot_ui: snapshot lock poisoned; skipping this publish");
+                            }
+                        }
                         last_ui_publish = Some(Instant::now());
 
                         // Update stats (only count active connections)

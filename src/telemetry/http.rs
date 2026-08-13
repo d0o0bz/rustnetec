@@ -10,7 +10,7 @@
 //   POST /config/restart-capture  — restart capture with pending items (auth)
 
 use anyhow::Result;
-use log::info;
+use log::{info, warn};
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
@@ -142,6 +142,17 @@ impl HttpState {
 
 /// Start the HTTP server on a background thread.
 /// Returns immediately; the server runs until the process exits.
+/// Upper bound on concurrent request-handler threads.
+///
+/// The server binds 127.0.0.1 only, so load is local and bounded, but an
+/// unbounded spawn on every request could still fork-bomb under a runaway
+/// WebUI polling loop. A fixed worker pool (or tokio) would be more elegant,
+/// but a counting semaphore keeps the change local and dependency-free.
+/// Once the cap is hit, the accept loop blocks (backpressure) until a worker
+/// finishes — this also prevents the single slow-client case from wedging
+/// everything, which was the original bug.
+const MAX_CONCURRENT_REQUESTS: usize = 32;
+
 pub fn start_http_server(port: u16, state: Arc<HttpState>) -> Result<()> {
     let addr = std::net::SocketAddr::from((Ipv4Addr::new(127, 0, 0, 1), port));
     let server = tiny_http::Server::http(addr)
@@ -149,11 +160,46 @@ pub fn start_http_server(port: u16, state: Arc<HttpState>) -> Result<()> {
 
     info!("HTTP server listening on 127.0.0.1:{}", port);
 
+    // rustnetec: W-fix — each request is handled on its own thread instead of
+    // serially inside the accept loop. The old single-threaded loop blocked on
+    // a slow SQLite query or a slow/stalled HTTP client (the browser opening
+    // the panel and not draining a response), which froze EVERY other request
+    // — including the tray helper's GET /live polling and POST
+    // /admin/shutdown. That shutdown request then timed out (800ms) on tray
+    // quit and the daemon was left running. A bounded counting semaphore caps
+    // concurrency so we can't spawn without limit under request floods.
+    let active: Arc<std::sync::atomic::AtomicUsize> =
+        Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
     thread::Builder::new()
         .name("http_server".to_string())
         .spawn(move || {
             for request in server.incoming_requests() {
-                handle_request(request, &state);
+                // Backpressure: if at the cap, block the accept loop until a
+                // worker exits. This is a spin with a short sleep rather than
+                // a Condvar to keep the change minimal; accept rate on
+                // loopback is low and the cap is generous.
+                while active.load(std::sync::atomic::Ordering::Acquire) >= MAX_CONCURRENT_REQUESTS {
+                    thread::sleep(std::time::Duration::from_millis(10));
+                }
+
+                let state = Arc::clone(&state);
+                active.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                // Clone for the worker closure; keep the outer `active`
+                // available for the spawn-failure decrement below.
+                let worker_active = Arc::clone(&active);
+
+                let builder = thread::Builder::new().name("http_req".to_string());
+                if builder
+                    .spawn(move || {
+                        handle_request(request, &state);
+                        worker_active.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+                    })
+                    .is_err()
+                {
+                    active.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+                    warn!("http_server: failed to spawn request handler thread");
+                }
             }
         })?;
 
@@ -590,7 +636,7 @@ fn handle_stats(request: tiny_http::Request, state: &HttpState) {
 /// 与 `query_stats` 的 `by_process` 维度逻辑同源,但本端点是 Activity 页专用,
 /// 返回扁平数组 + bytes_total 便于前端按字节降序排序展示。
 fn handle_processes(request: tiny_http::Request, state: &HttpState) {
-    use rusqlite::{params, OpenFlags};
+    use rusqlite::params;
 
     let path = &state.db_path;
     if !path.exists() {
@@ -607,7 +653,7 @@ fn handle_processes(request: tiny_http::Request, state: &HttpState) {
     let params = parse_query_params(url);
     let iface_filter = params.get("interface").filter(|s| !s.is_empty());
 
-    let conn = match rusqlite::Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY) {
+    let conn = match open_read_only(path) {
         Ok(c) => c,
         Err(e) => {
             let response = serde_json::json!({"error": format!("failed to open database: {}", e)});
@@ -803,7 +849,6 @@ fn handle_processes(request: tiny_http::Request, state: &HttpState) {
 /// 数据来源：直接查 `connection_events`（未走 aggregates 预聚合表，
 /// 因 scope 过滤需 Rust 侧判断 dest_ip，aggregates 表未存 dest_ip 维度）。
 fn handle_stats_range(request: tiny_http::Request, state: &HttpState) {
-    use rusqlite::OpenFlags;
 
     let path = &state.db_path;
     if !path.exists() {
@@ -888,7 +933,7 @@ fn handle_stats_range(request: tiny_http::Request, state: &HttpState) {
         where_clauses.join(" AND ")
     );
 
-    let conn = match rusqlite::Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY) {
+    let conn = match open_read_only(path) {
         Ok(c) => c,
         Err(e) => {
             let response = serde_json::json!({"error": format!("failed to open database: {}", e)});
@@ -1085,7 +1130,6 @@ fn handle_stats_range(request: tiny_http::Request, state: &HttpState) {
 ///
 /// 返回 `[{ts, p50, p95, p99, samples}, ...]`，按桶时间升序。
 fn handle_stats_rtt(request: tiny_http::Request, state: &HttpState) {
-    use rusqlite::OpenFlags;
 
     let path = &state.db_path;
     if !path.exists() {
@@ -1132,7 +1176,7 @@ fn handle_stats_rtt(request: tiny_http::Request, state: &HttpState) {
         where_clauses.join(" AND ")
     );
 
-    let conn = match rusqlite::Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY) {
+    let conn = match open_read_only(path) {
         Ok(c) => c,
         Err(e) => {
             let _ = respond_json(request, 500, &serde_json::json!({"error": format!("open: {}", e)}));
@@ -1257,7 +1301,6 @@ fn handle_stats_rtt(request: tiny_http::Request, state: &HttpState) {
 /// `available=true` 表示该桶内有匹配 scope 的 closed 事件（即有外网/局域网流量）。
 /// `ratio` = 该桶匹配 scope 的连接数 / 该桶总连接数（0.0-1.0）。
 fn handle_stats_availability(request: tiny_http::Request, state: &HttpState) {
-    use rusqlite::OpenFlags;
 
     let path = &state.db_path;
     if !path.exists() {
@@ -1303,7 +1346,7 @@ fn handle_stats_availability(request: tiny_http::Request, state: &HttpState) {
         where_clauses.join(" AND ")
     );
 
-    let conn = match rusqlite::Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY) {
+    let conn = match open_read_only(path) {
         Ok(c) => c,
         Err(e) => {
             let _ = respond_json(request, 500, &serde_json::json!({"error": format!("open: {}", e)}));
@@ -1438,7 +1481,6 @@ fn handle_stats_availability(request: tiny_http::Request, state: &HttpState) {
 /// 返回 `[{ts, avg, p95, max, samples}, ...]`，按桶时间升序。
 /// 用于「进程连接外网的持续时间」指标展示。
 fn handle_stats_duration(request: tiny_http::Request, state: &HttpState) {
-    use rusqlite::OpenFlags;
 
     let path = &state.db_path;
     if !path.exists() {
@@ -1498,7 +1540,7 @@ fn handle_stats_duration(request: tiny_http::Request, state: &HttpState) {
         where_clauses.join(" AND ")
     );
 
-    let conn = match rusqlite::Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY) {
+    let conn = match open_read_only(path) {
         Ok(c) => c,
         Err(e) => {
             let _ = respond_json(request, 500, &serde_json::json!({"error": format!("open: {}", e)}));
@@ -1615,7 +1657,6 @@ fn handle_stats_duration(request: tiny_http::Request, state: &HttpState) {
 /// 每桶返回 `ts`、`reachable_ratio`（0–1，可达样本占比）、
 /// `avg_latency_ms`、`min_latency_ms`、`samples`。
 fn handle_stats_reachability(request: tiny_http::Request, state: &HttpState) {
-    use rusqlite::OpenFlags;
 
     let path = &state.db_path;
     if !path.exists() {
@@ -1637,7 +1678,7 @@ fn handle_stats_reachability(request: tiny_http::Request, state: &HttpState) {
     );
     let bucket = params.get("bucket").map(String::as_str).unwrap_or("1min");
 
-    let conn = match rusqlite::Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY) {
+    let conn = match open_read_only(path) {
         Ok(c) => c,
         Err(e) => {
             let _ = respond_json(request, 500, &serde_json::json!({"error": format!("open: {}", e)}));
@@ -1871,8 +1912,6 @@ fn handle_restart_capture(mut request: tiny_http::Request, state: &HttpState) {
 
 /// Query aggregate statistics from the SQLite database.
 fn query_stats(db_path: &PathBuf) -> Result<serde_json::Value> {
-    use rusqlite::{Connection, OpenFlags};
-
     if !db_path.exists() {
         return Ok(serde_json::json!({
             "total_events": 0,
@@ -1881,7 +1920,7 @@ fn query_stats(db_path: &PathBuf) -> Result<serde_json::Value> {
         }));
     }
 
-    let conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let conn = open_read_only(db_path)?;
 
     let total_events: i64 = conn
         .query_row("SELECT COUNT(*) FROM connection_events", [], |row| {
@@ -2125,6 +2164,22 @@ fn respond_json(request: tiny_http::Request, status: u16, value: &serde_json::Va
     );
     request.respond(response)?;
     Ok(())
+}
+
+/// Open a read-only SQLite connection with a `busy_timeout`.
+///
+/// rustnetec: W-fix — the HTTP read endpoints (`/processes`, `/stats/*`,
+/// `/query`) open their own connection per request. The writer connection uses
+/// `busy_timeout=5000`, but these read connections previously set none, so a
+/// transient SQLite lock (e.g. during a WAL checkpoint) could make them fail or
+/// block immediately. With per-request threading now in place, a 2s busy
+/// timeout keeps a single locked query from holding a worker thread too long
+/// while still giving the writer room to finish.
+fn open_read_only(path: &std::path::Path) -> rusqlite::Result<rusqlite::Connection> {
+    use rusqlite::OpenFlags;
+    let conn = rusqlite::Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    conn.busy_timeout(std::time::Duration::from_secs(2))?;
+    Ok(conn)
 }
 
 /// Index page HTML.
