@@ -605,6 +605,21 @@ impl PersistentConfig {
             // Nothing to reject at runtime: both Daemon and Tray are valid
             // when the feature is enabled.
         }
+        // rustnetec: reachability probe validation — 探测间隔 (5,30] 秒（整数即 6-30），
+        // 探测目标 1-5 个且不允许空白项。
+        if self.reachability_interval_secs < 6 || self.reachability_interval_secs > 30 {
+            return Err(anyhow!("reachability_interval_secs must be 6-30 seconds"));
+        }
+        if self.reachability_targets.is_empty() || self.reachability_targets.len() > 5 {
+            return Err(anyhow!("reachability_targets must contain 1-5 targets"));
+        }
+        if self
+            .reachability_targets
+            .iter()
+            .any(|t| t.trim().is_empty())
+        {
+            return Err(anyhow!("reachability_targets must not contain empty entries"));
+        }
         Ok(())
     }
 
@@ -923,6 +938,68 @@ mod persistent_config_tests {
         };
         assert!(config.validate().is_err());
         config.upload_interval_secs = 4000;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_reach_interval_out_of_range() {
+        // 探测间隔区间 (5,30]：5 太低、31 太高均拒绝。
+        let mut config = PersistentConfig {
+            reachability_interval_secs: 5,
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+        config.reachability_interval_secs = 31;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validate_accepts_reach_interval_boundaries() {
+        // 边界值 6 与 30 均合法。
+        let mut config = PersistentConfig {
+            reachability_interval_secs: 6,
+            ..Default::default()
+        };
+        assert!(config.validate().is_ok());
+        config.reachability_interval_secs = 30;
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_reach_targets_count_out_of_range() {
+        // 探测目标 1-5 个：空列表与 6 个均拒绝。
+        let mut config = PersistentConfig {
+            reachability_targets: vec![],
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+        config.reachability_targets = (0..6)
+            .map(|i| format!("8.8.8.{i}:53"))
+            .collect();
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn validate_accepts_reach_targets_count_boundaries() {
+        // 1 个与 5 个目标均合法。
+        let mut config = PersistentConfig {
+            reachability_targets: vec!["8.8.8.8:53".to_string()],
+            ..Default::default()
+        };
+        assert!(config.validate().is_ok());
+        config.reachability_targets = (0..5)
+            .map(|i| format!("8.8.8.{i}:53"))
+            .collect();
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_reach_targets_empty_entry() {
+        // 含空白项的目标列表应拒绝。
+        let config = PersistentConfig {
+            reachability_targets: vec!["8.8.8.8:53".to_string(), "   ".to_string()],
+            ..Default::default()
+        };
         assert!(config.validate().is_err());
     }
 

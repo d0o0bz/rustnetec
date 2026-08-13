@@ -27,8 +27,6 @@ use rusqlite::{params, Connection, OpenFlags};
 
 use crate::config::PersistentConfig;
 
-/// 单个目标的 UDP 收发超时。
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 /// 探测目标解析失败/关闭时的兜底间隔。
 const DEFAULT_INTERVAL_SECS: u64 = 12;
 /// 「快」目标延迟阈值（毫秒）：命中即早退。
@@ -113,16 +111,25 @@ fn is_valid_dns_response(data: &[u8]) -> bool {
     qr == 1 && rcode == 0
 }
 
+/// 计算单个目标的 UDP 收发超时：`floor((探测间隔 - 1) / 探测目标数)` 秒，限 [1,10] 秒。
+///
+/// 目标数按至少 1 计（空列表由调用方提前拦截，这里仅防除零）；
+/// `saturating_sub` 防止间隔为 0 时下溢。
+fn probe_timeout_for(interval_secs: u64, target_count: usize) -> Duration {
+    let secs = (interval_secs.saturating_sub(1) / target_count.max(1) as u64).clamp(1, 10);
+    Duration::from_secs(secs)
+}
+
 /// 对单个 DNS 目标发起一次探测，返回往返耗时（毫秒）。
 ///
 /// 依次查询 `PROBE_DOMAINS` 中的域名，任一返回有效 DNS 响应即成功，
 /// 取该次往返耗时。
-fn probe_one(target: &str) -> Option<f64> {
+fn probe_one(target: &str, timeout: Duration) -> Option<f64> {
     let addr = parse_target(target)?;
     let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
     socket.connect(addr).ok()?;
-    socket.set_read_timeout(Some(CONNECT_TIMEOUT)).ok()?;
-    socket.set_write_timeout(Some(CONNECT_TIMEOUT)).ok()?;
+    socket.set_read_timeout(Some(timeout)).ok()?;
+    socket.set_write_timeout(Some(timeout)).ok()?;
 
     for domain in PROBE_DOMAINS {
         let req = build_dns_query(domain);
@@ -223,9 +230,9 @@ where
 ///
 /// 策略：随机起点 + 环形顺序 + 快速优先——优先返回 ≤150ms 的国内 DNS 结果，
 /// 慢目标（国外）仅作候选回退；全部失败才算不可达。
-pub fn run_probe_round(targets: &[String]) -> ProbeResult {
+pub fn run_probe_round(targets: &[String], timeout: Duration) -> ProbeResult {
     let start = random_start(targets.len());
-    probe_with_order(targets, start, probe_one)
+    probe_with_order(targets, start, |t| probe_one(t, timeout))
 }
 
 /// 把一轮探测结果写入 `reachability_probes` 表（INSERT OR REPLACE，按 ts 去重）。
@@ -278,7 +285,10 @@ pub fn start_reachability_probe(
                     continue;
                 }
 
-                let result = run_probe_round(&cfg.reachability_targets);
+                // rustnetec: 超时 = floor((探测间隔 - 1) / 探测目标数) 秒，限 [1,10] 秒。
+                let interval_secs = cfg.reachability_interval_secs.clamp(6, 30) as u64;
+                let timeout = probe_timeout_for(interval_secs, cfg.reachability_targets.len());
+                let result = run_probe_round(&cfg.reachability_targets, timeout);
                 match Connection::open_with_flags(&db_path, OpenFlags::SQLITE_OPEN_READ_WRITE) {
                     Ok(c) => {
                         if let Err(e) = persist_probe(&c, &result) {
@@ -288,7 +298,7 @@ pub fn start_reachability_probe(
                     Err(e) => warn!("reachability open db failed: {e}"),
                 }
 
-                let secs = cfg.reachability_interval_secs.max(5) as u64;
+                let secs = interval_secs;
                 // 分段 sleep，以便 should_stop 在 1s 粒度内响应。
                 let started = Instant::now();
                 while started.elapsed() < Duration::from_secs(secs)
@@ -309,11 +319,27 @@ mod tests {
 
     #[test]
     fn run_probe_round_empty_targets_is_unreachable() {
-        let r = run_probe_round(&[]);
+        let r = run_probe_round(&[], Duration::from_secs(3));
         assert!(!r.reachable);
         assert!(r.latency_ms.is_none());
         assert_eq!(r.targets_ok, 0);
         assert_eq!(r.targets_total, 0);
+    }
+
+    #[test]
+    fn probe_timeout_floor_division_and_clamp() {
+        // floor((60-1)/5)=floor(59/5)=11 → 截断到上限 10
+        assert_eq!(probe_timeout_for(60, 5), Duration::from_secs(10));
+        // floor((12-1)/4)=floor(11/4)=2
+        assert_eq!(probe_timeout_for(12, 4), Duration::from_secs(2));
+        // floor((6-1)/5)=1 → 下限 1
+        assert_eq!(probe_timeout_for(6, 5), Duration::from_secs(1));
+        // floor((6-1)/1)=5
+        assert_eq!(probe_timeout_for(6, 1), Duration::from_secs(5));
+        // floor((30-1)/1)=29 → 上限 10
+        assert_eq!(probe_timeout_for(30, 1), Duration::from_secs(10));
+        // 目标数为 0 时按 1 处理，避免除零
+        assert_eq!(probe_timeout_for(6, 0), Duration::from_secs(5));
     }
 
     #[test]

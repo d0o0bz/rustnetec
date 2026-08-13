@@ -425,6 +425,13 @@
   }
   .window-btns button:hover { color: var(--text); border-color: var(--accent); }
   .window-btns button.active { color: var(--accent); border-color: var(--accent); }
+  /* rustnetec: 历史导航禁用态（当前周期时「下一周期」置灰不可点） */
+  .window-btns button:disabled {
+    color: var(--muted);
+    opacity: 0.45;
+    cursor: default;
+  }
+  .window-btns button:disabled:hover { color: var(--muted); border-color: var(--border); }
   /* rustnetec: 外网可达率标题右侧状态标记（绿/黄/红） */
   .reach-status-dot {
     display: inline-block;
@@ -723,14 +730,17 @@
     <div id="sla-gauge"></div>
     -->
 
-    <!-- rustnetec: 外网可达率（DNS/UDP 探测 5 个公共 DNS，12s 轮询，双轴：可达率% + 延迟ms） -->
+    <!-- rustnetec: 外网可达率（DNS/UDP 探测 5 个公共 DNS，12s 轮询，双轴：可达率% + 延迟ms；
+         历史导航：上一周期/下一周期 按 12小时/1天/3天/7天/30天 步进翻页） -->
     <p class="chart-title">外网可达率
       <span class="window-btns" id="reach-window-btns">
-        <button data-secs="3600" class="active">1h</button>
-        <button data-secs="10800">3h</button>
-        <button data-secs="21600">6h</button>
-        <button data-secs="86400">1d</button>
-        <button data-secs="604800">7d</button>
+        <button id="reach-prev" type="button">◀ 上一周期</button>
+        <button data-secs="43200" class="active">12小时</button>
+        <button data-secs="86400">1天</button>
+        <button data-secs="259200">3天</button>
+        <button data-secs="604800">7天</button>
+        <button data-secs="2592000">30天</button>
+        <button id="reach-next" type="button" disabled>下一周期 ▶</button>
       </span>
       <span class="reach-status-dot" id="reach-status-dot"></span>
     </p>
@@ -978,8 +988,8 @@
       <fieldset>
         <legend>外网可达率探测 <span class="restart-hint">(重启进程生效)</span></legend>
         <label><input type="checkbox" data-cfg="reachability_enabled">启用探测</label>
-        <label>探测目标(逗号分隔)<input type="text" data-cfg-array="reachability_targets" data-cfg="reachability_targets" placeholder="114.114.115.115:53,8.8.8.8:53"></label>
-        <label>探测间隔(秒)<input type="number" data-cfg="reachability_interval_secs" min="1"></label>
+        <label>探测目标(逗号分隔,1-5个)<input type="text" data-cfg-array="reachability_targets" data-cfg="reachability_targets" placeholder="114.114.115.115:53,8.8.8.8:53"></label>
+        <label>探测间隔(秒)(5,30]<input type="number" data-cfg="reachability_interval_secs" min="6" max="30" step="1"></label>
       </fieldset>
       <fieldset>
         <legend>开机自启 <span class="restart-hint">(重启进程生效)</span></legend>
@@ -2385,7 +2395,10 @@
   // 数据：GET /stats/reachability?start=now-<sec>s&bucket=<auto>。
   var reachChart = null;
   var reachTimer = null;
-  var reachSecs = 3600;
+  // rustnetec: 历史导航状态 — reachSecs 周期长度（12小时/1天/3天/7天/30天），
+  // reachOffsetSecs 窗口结束时刻距 now 的秒数（0 = 当前周期）
+  var reachSecs = 43200;
+  var reachOffsetSecs = 0;
   var REACH_COLORS = { ok: "#3fb950", warn: "#d29922", bad: "#f85149", rtt: "#58a6ff" };
 
   // 可达率分档配色：=100% 绿、>50% 且 <100% 黄、<=50% 红
@@ -2406,6 +2419,12 @@
   function reachBucketFor(secs) {
     if (secs <= 86400) return "1min";
     return "1hour";
+  }
+
+  // rustnetec: 历史导航 — 更新「下一周期」可用态（当前周期时禁用）
+  function reachUpdateNav() {
+    var next = document.getElementById("reach-next");
+    if (next) next.disabled = reachOffsetSecs <= 0;
   }
 
   function initReachabilityChart() {
@@ -2430,7 +2449,13 @@
         },
       },
       legend: { data: ["可达率", "延时"], textStyle: { color: GRAPH_COLORS.axis } },
-      grid: { left: 56, right: 56, top: 32, bottom: 40 },
+      grid: { left: 56, right: 56, top: 32, bottom: 56 },
+      // rustnetec: X 轴缩放/平移 — 滚轮缩放 + 拖拽平移（inside），底部滑块条（slider）
+      dataZoom: [
+        { type: "inside", xAxisIndex: 0, zoomOnMouseWheel: true, moveOnMouseMove: true },
+        { type: "slider", xAxisIndex: 0, height: 14, bottom: 10,
+          textStyle: { color: GRAPH_COLORS.axis, fontSize: 10 } },
+      ],
       xAxis: {
         type: "time",
         axisLine: { lineStyle: { color: GRAPH_COLORS.axis } },
@@ -2483,16 +2508,34 @@
       ],
     });
 
-    // 时间窗按钮切换
-    var btns = document.querySelectorAll("#reach-window-btns button");
-    btns.forEach(function (b) {
+    // rustnetec: 周期切换（12小时/1天/3天/7天/30天）：切换时保持窗口结束时刻锚定不变
+    var periodBtns = document.querySelectorAll("#reach-window-btns button[data-secs]");
+    periodBtns.forEach(function (b) {
       b.addEventListener("click", function () {
-        btns.forEach(function (x) { x.classList.remove("active"); });
+        periodBtns.forEach(function (x) { x.classList.remove("active"); });
         b.classList.add("active");
-        reachSecs = parseInt(b.getAttribute("data-secs"), 10) || 3600;
-        pollReachability();
+        reachSecs = parseInt(b.getAttribute("data-secs"), 10) || 43200;
+        fetchReachability();
       });
     });
+    // rustnetec: 历史翻页 — 上一周期/下一周期 按当前周期长度步进
+    var reachPrevBtn = document.getElementById("reach-prev");
+    var reachNextBtn = document.getElementById("reach-next");
+    if (reachPrevBtn) {
+      reachPrevBtn.addEventListener("click", function () {
+        reachOffsetSecs += reachSecs;
+        reachUpdateNav();
+        fetchReachability();
+      });
+    }
+    if (reachNextBtn) {
+      reachNextBtn.addEventListener("click", function () {
+        reachOffsetSecs = Math.max(0, reachOffsetSecs - reachSecs);
+        reachUpdateNav();
+        fetchReachability();
+      });
+    }
+    reachUpdateNav();
 
     // 详情展开/收起切换（简短副标题 ↔ 完整说明）
     var reachToggle = document.getElementById("reach-detail-toggle");
@@ -2510,10 +2553,25 @@
     reachTimer = setInterval(function () { if (isPageVisible) pollReachability(); }, 10000);
   }
 
+  // rustnetec: 周期轮询入口 — 历史窗口（offset>0）为静态数据不自动刷新，
+  // 仅当前周期保持 10s 轮询；导航切换时改由 fetchReachability() 手动拉取。
   function pollReachability() {
+    if (!reachChart || reachOffsetSecs > 0) return;
+    fetchReachability();
+  }
+
+  function fetchReachability() {
     if (!reachChart) return;
     var bucket = reachBucketFor(reachSecs);
-    var url = "/stats/reachability?start=now-" + reachSecs + "s&bucket=" + bucket;
+    var url;
+    if (reachOffsetSecs > 0) {
+      // 历史窗口：[now-offset-secs, now-offset]
+      url = "/stats/reachability?start=now-" + (reachOffsetSecs + reachSecs) +
+            "s&end=now-" + reachOffsetSecs + "s&bucket=" + bucket;
+    } else {
+      // 当前周期：end 缺省即 now，与旧行为一致
+      url = "/stats/reachability?start=now-" + reachSecs + "s&bucket=" + bucket;
+    }
     fetch(url, { credentials: "same-origin" })
       .then(function (resp) { if (!resp.ok) throw new Error("HTTP " + resp.status); return resp.json(); })
       .then(function (data) {
@@ -3249,8 +3307,20 @@
   // PUT /config → 保存(YAML 序列化,后端 serde_yaml::from_str)
   function saveSettings() {
     var resultEl = document.getElementById("settings-result");
-    resultEl.textContent = "保存中…";
     var cfg = collectSettingsForm();
+    // rustnetec: 可达率探测前端校验 — 探测间隔 (5,60] 秒、探测目标 1-5 个。
+    // 字段留空时按既有约定交由后端 serde default 填充(默认值均合法)。
+    var iv = cfg.reachability_interval_secs;
+    if (iv != null && (iv < 6 || iv > 30)) {
+      resultEl.textContent = "保存失败: 探测间隔须在 (5,30] 秒区间(整数 6-30)";
+      return;
+    }
+    var targets = cfg.reachability_targets;
+    if (Array.isArray(targets) && (targets.length < 1 || targets.length > 5)) {
+      resultEl.textContent = "保存失败: 探测目标须为 1-5 个(逗号分隔)";
+      return;
+    }
+    resultEl.textContent = "保存中…";
     // serde_yaml 期望 YAML 文本;前端用 js-yaml 会引入依赖,违反零构建。
     // 折中:用 YAML 行格式手写(key: value),bool→true/false,null→空。
     var yaml = yamlEncode(cfg);
