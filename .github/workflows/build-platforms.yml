@@ -77,6 +77,20 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # Cache Cargo registry/git deps + per-target build artifacts to speed up
+      # repeated builds. Key includes the target triple, enabled features and the
+      # Cargo.lock hash so different matrix entries don't share a poisoned cache.
+      - name: Cache cargo & build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/${{ matrix.target }}
+          key: ${{ runner.os }}-cargo-${{ matrix.target }}-${{ matrix.features }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-${{ matrix.target }}-${{ matrix.features }}-
+
       - name: Setup Linux dependencies
         if: matrix.os == 'ubuntu-22.04'
         uses: ./.github/actions/setup-linux-deps
@@ -86,6 +100,13 @@ jobs:
         with:
           targets: ${{ matrix.target }}
           components: rustfmt
+
+      - name: Cache cross binary
+        if: matrix.cargo == 'cross'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cross
+          key: cross-0.2.5
 
       - name: Install cross
         if: matrix.cargo == 'cross'
