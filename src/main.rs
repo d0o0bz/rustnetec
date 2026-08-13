@@ -3302,7 +3302,12 @@ mod win_tray_refresh {
                 status_fields,
             });
             let ctx_ptr = Box::into_raw(ctx);
+            // On x64, SetWindowLongPtrW takes a LONG_PTR (isize). On x86 it is
+            // aliased to SetWindowLongW and takes an i32, so narrow the value.
+            #[cfg(target_pointer_width = "64")]
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, ctx_ptr as isize);
+            #[cfg(target_pointer_width = "32")]
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, ctx_ptr as i32);
 
             let interval_ms = interval_secs.max(1) * 1000;
             if SetTimer(Some(hwnd), REFRESH_TIMER_ID, interval_ms as u32, None) == 0 {
