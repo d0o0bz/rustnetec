@@ -744,10 +744,10 @@
       </span>
       <span class="reach-status-dot" id="reach-status-dot"></span>
     </p>
-    <p class="chart-caption">每 12 秒对 5 个公共 DNS 发起 UDP 查询，任一成功即可达
+    <p class="chart-caption">每 12 秒对公共 DNS 目标发起 UDP 查询，任一成功即可达
       <a href="javascript:void(0)" id="reach-detail-toggle">详情 ›</a>
     </p>
-    <p class="chart-caption chart-caption-detail" id="reach-detail" style="display:none;">每 12 秒对 5 个公共 DNS 服务器发起 UDP 查询（ntp.ntsc.ac.cn / ntp.sjtu.edu.cn），任一服务器成功响应即视为该轮可达；左轴可达率 = 每个统计桶（1h~1d 视图按分钟、7d 视图按小时）内成功轮次占比，右轴 = 延时（毫秒）</p>
+    <p class="chart-caption chart-caption-detail" id="reach-detail" style="display:none;">每 12 秒对公共 DNS 目标发起 UDP 查询（默认 5 个，可配 1-5 个；ntp.ntsc.ac.cn / ntp.sjtu.edu.cn），任一成功即视为该轮可达；左轴可达率 = 每个统计桶内成功轮次占比（12小时/1天 视图按分钟，3天/7天/30天 视图按小时），右轴 = 延时（毫秒）；支持 上一周期/下一周期 翻查历史</p>
     <div id="reachability-chart"></div>
 
     <!-- rustnetec: T-D2 — RTT 趋势折线（p50/p95/p99 双轴，最近 1h） -->
@@ -948,7 +948,7 @@
         <label>BPF 过滤<input type="text" data-cfg="bpf_filter" placeholder="(默认)"></label>
         <label><input type="checkbox" data-cfg="enable_dpi">启用 DPI</label>
         <label><input type="checkbox" data-cfg="filter_localhost">过滤本机回环(loopback)</label>
-        <label>刷新间隔(毫秒)<input type="number" data-cfg="refresh_interval" min="100" max="60000"></label>
+        <label>界面快照刷新间隔(毫秒)<input type="number" data-cfg="refresh_interval" min="100" max="60000" title="仅控制终端界面(TUI)连接表与统计的刷新节奏(默认 500ms);不影响数据包捕获频率,WebUI 实时数据固定 1s 轮询"></label>
       </fieldset>
       <fieldset>
         <legend>输出 <span class="restart-hint">(重启进程生效)</span></legend>
@@ -988,8 +988,9 @@
       <fieldset>
         <legend>外网可达率探测 <span class="restart-hint">(重启进程生效)</span></legend>
         <label><input type="checkbox" data-cfg="reachability_enabled">启用探测</label>
-        <label>探测目标(逗号分隔,1-5个)<input type="text" data-cfg-array="reachability_targets" data-cfg="reachability_targets" placeholder="114.114.115.115:53,8.8.8.8:53"></label>
-        <label>探测间隔(秒)(5,30]<input type="number" data-cfg="reachability_interval_secs" min="6" max="30" step="1"></label>
+        <label>探测目标(逗号分隔,1-5个)<input type="text" data-cfg-array="reachability_targets" data-cfg="reachability_targets" placeholder="114.114.115.115:53,8.8.8.8:53" title="格式 ip:port 或 host:port,逗号分隔;最少 1 个、最多 5 个,任一目标成功即视为该轮可达"></label>
+        <label>探测间隔(秒)(5,30] 即 6~30<input type="number" data-cfg="reachability_interval_secs" min="6" max="30" step="1" title="探测间隔区间 (5,30],整数即 6-30 秒"></label>
+        <div class="muted" style="font-size:12px;">探测超时 = (探测间隔-1) ÷ 目标数 取整(秒),限 1~10 秒</div>
       </fieldset>
       <fieldset>
         <legend>开机自启 <span class="restart-hint">(重启进程生效)</span></legend>
