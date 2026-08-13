@@ -8,6 +8,7 @@
 // - Kubernetes fields controlled by compile-time `kubernetes` feature
 
 use crate::config::RuntimeConfig;
+use crate::telemetry::netutil::classify_dest;
 use crate::telemetry::{ConnectionEventData, ConnectionEventSink};
 use anyhow::Result;
 use log::{error, info, warn};
@@ -118,6 +119,8 @@ impl SqliteSink {
     /// Initialize the database schema (idempotent).
     /// rustnetec: made `pub` for UploadSink integration tests (T2.6).
     pub fn init_schema(conn: &Connection) -> Result<()> {
+        // 分阶段执行：先建表 → 再迁移 → 最后建索引。
+        // 唯一索引必须建在迁移去重后的数据上，否则旧库的重复桶行会让 CREATE UNIQUE INDEX 失败。
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS connection_events (
                 id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -158,7 +161,10 @@ impl SqliteSink {
                 bytes_received      INTEGER,
                 duration_secs       INTEGER,
                 -- rustnetec: T-A1 捕获网口名如 en0，供按网口历史查询
-                interface           TEXT
+                interface           TEXT,
+                -- rustnetec: T-A5 — 目标 IP 分类（classify_dest 结果：external/lan/loopback/linklocal）。
+                -- 写入时算好落库，聚合表与 /stats/range 的 scope 过滤可 SQL 下推。
+                dest_class          TEXT
             );
 
             CREATE TABLE IF NOT EXISTS aggregates (
@@ -171,9 +177,13 @@ impl SqliteSink {
                 asn             INTEGER,
                 -- rustnetec: T-A3 — 网口维度，与 connection_events.interface 对齐。
                 interface       TEXT,
+                -- rustnetec: T-A5 — 目标分类维度（external/lan/loopback/linklocal）。
+                dest_class      TEXT,
                 bytes_rx        INTEGER NOT NULL DEFAULT 0,
                 bytes_tx        INTEGER NOT NULL DEFAULT 0,
-                conn_count      INTEGER NOT NULL DEFAULT 0
+                conn_count      INTEGER NOT NULL DEFAULT 0,
+                -- rustnetec: T-A5 — 连接时长合计，对应 /stats/range 的 active_seconds。
+                duration_secs   INTEGER NOT NULL DEFAULT 0
             );
 
             CREATE TABLE IF NOT EXISTS upload_cursor (
@@ -204,40 +214,68 @@ impl SqliteSink {
 
             -- Initialize schema_version
             INSERT OR IGNORE INTO schema_version (id, version) VALUES (1, 1);
-
-            -- Indexes for common query patterns
-            CREATE INDEX IF NOT EXISTS idx_events_ts ON connection_events (ts);
-            CREATE INDEX IF NOT EXISTS idx_events_type ON connection_events (event_type);
-            CREATE INDEX IF NOT EXISTS idx_events_protocol ON connection_events (protocol);
-            CREATE INDEX IF NOT EXISTS idx_events_source_ip ON connection_events (source_ip);
-            CREATE INDEX IF NOT EXISTS idx_events_dest_ip ON connection_events (dest_ip);
-            CREATE INDEX IF NOT EXISTS idx_events_dest_port ON connection_events (dest_port);
-            CREATE INDEX IF NOT EXISTS idx_events_pid ON connection_events (pid);
-            CREATE INDEX IF NOT EXISTS idx_events_process_name ON connection_events (process_name);
-            CREATE INDEX IF NOT EXISTS idx_events_dpi_protocol ON connection_events (dpi_protocol);
-            CREATE INDEX IF NOT EXISTS idx_events_dpi_domain ON connection_events (dpi_domain);
-            CREATE INDEX IF NOT EXISTS idx_events_country ON connection_events (geoip_country_code);
-            CREATE INDEX IF NOT EXISTS idx_events_direction ON connection_events (direction);
-            CREATE INDEX IF NOT EXISTS idx_events_ts_id ON connection_events (ts, id);
-            CREATE INDEX IF NOT EXISTS idx_events_id_ts ON connection_events (id, ts);
-            -- rustnetec: T-A1 — 按网口历史查询的索引。
-            CREATE INDEX IF NOT EXISTS idx_events_interface ON connection_events (interface);
-            CREATE INDEX IF NOT EXISTS idx_aggs_bucket ON aggregates (bucket_ts, bucket_width);
-            CREATE INDEX IF NOT EXISTS idx_aggs_protocol ON aggregates (bucket_ts, protocol);
-            CREATE INDEX IF NOT EXISTS idx_aggs_process ON aggregates (bucket_ts, process_name);
-            CREATE INDEX IF NOT EXISTS idx_aggs_country ON aggregates (bucket_ts, country_code);
-            -- rustnetec: T-A3 — 网口维度聚合查询的索引。
-            CREATE INDEX IF NOT EXISTS idx_aggs_interface ON aggregates (bucket_ts, interface);
             ",
         )?;
 
-        // rustnetec: T-fix1 — 幂等迁移：为旧库追加新增列。
-        // 旧库在 T-A1/T-A3 前已建，`CREATE TABLE IF NOT EXISTS` 不会补列，
-        // 导致引用 `interface` 列的 SQL（/processes、/stats/*）prepare 失败 → HTTP 500。
-        // SQLite 的 `ALTER TABLE ADD COLUMN` 无 `IF NOT EXISTS`，列已存在时报错，
-        // 故用 Rust 侧检测 `PRAGMA table_info` 后跳过。
+        // ---- 迁移（幂等）----
+        // rustnetec: T-fix1 — 旧库补 interface 列（T-A1/T-A3 新增列）。
         Self::migrate_add_column_if_missing(conn, "connection_events", "interface", "TEXT")?;
         Self::migrate_add_column_if_missing(conn, "aggregates", "interface", "TEXT")?;
+
+        // rustnetec: T-A5 — connection_events 补 dest_class 列并回填存量行。
+        Self::migrate_add_column_if_missing(conn, "connection_events", "dest_class", "TEXT")?;
+        Self::backfill_dest_class(conn)?;
+
+        // rustnetec: T-A5 — aggregates 旧结构（无 dest_class 列）→ 重建 + 全量回填。
+        // 旧库因缺唯一约束积累海量重复桶行，重建即去重回收空间；新库列齐全则跳过。
+        if !Self::column_exists(conn, "aggregates", "dest_class")? {
+            Self::rebuild_aggregates(conn)?;
+        } else {
+            Self::migrate_add_column_if_missing(
+                conn,
+                "aggregates",
+                "duration_secs",
+                "INTEGER NOT NULL DEFAULT 0",
+            )?;
+        }
+
+        // ---- 索引（必须在迁移之后）----
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_events_ts ON connection_events (ts);
+             CREATE INDEX IF NOT EXISTS idx_events_type ON connection_events (event_type);
+             CREATE INDEX IF NOT EXISTS idx_events_protocol ON connection_events (protocol);
+             CREATE INDEX IF NOT EXISTS idx_events_source_ip ON connection_events (source_ip);
+             CREATE INDEX IF NOT EXISTS idx_events_dest_ip ON connection_events (dest_ip);
+             CREATE INDEX IF NOT EXISTS idx_events_dest_port ON connection_events (dest_port);
+             CREATE INDEX IF NOT EXISTS idx_events_pid ON connection_events (pid);
+             CREATE INDEX IF NOT EXISTS idx_events_process_name ON connection_events (process_name);
+             CREATE INDEX IF NOT EXISTS idx_events_dpi_protocol ON connection_events (dpi_protocol);
+             CREATE INDEX IF NOT EXISTS idx_events_dpi_domain ON connection_events (dpi_domain);
+             CREATE INDEX IF NOT EXISTS idx_events_country ON connection_events (geoip_country_code);
+             CREATE INDEX IF NOT EXISTS idx_events_direction ON connection_events (direction);
+             CREATE INDEX IF NOT EXISTS idx_events_ts_id ON connection_events (ts, id);
+             CREATE INDEX IF NOT EXISTS idx_events_id_ts ON connection_events (id, ts);
+             -- rustnetec: T-A1 — 按网口历史查询的索引。
+             CREATE INDEX IF NOT EXISTS idx_events_interface ON connection_events (interface);
+             CREATE INDEX IF NOT EXISTS idx_aggs_bucket ON aggregates (bucket_ts, bucket_width);
+             CREATE INDEX IF NOT EXISTS idx_aggs_protocol ON aggregates (bucket_ts, protocol);
+             CREATE INDEX IF NOT EXISTS idx_aggs_process ON aggregates (bucket_ts, process_name);
+             CREATE INDEX IF NOT EXISTS idx_aggs_country ON aggregates (bucket_ts, country_code);
+             -- rustnetec: T-A3 — 网口维度聚合查询的索引。
+             CREATE INDEX IF NOT EXISTS idx_aggs_interface ON aggregates (bucket_ts, interface);
+             -- rustnetec: T-A5 — 聚合唯一键（可空维度用 COALESCE 表达式归一化），
+             -- 让 run_aggregation 的 INSERT OR REPLACE 真正幂等，杜绝重复桶行无限膨胀。
+             CREATE UNIQUE INDEX IF NOT EXISTS idx_aggs_unique ON aggregates (
+                 bucket_ts, bucket_width,
+                 COALESCE(protocol, ''),
+                 COALESCE(process_name, ''),
+                 COALESCE(country_code, ''),
+                 COALESCE(asn, -1),
+                 COALESCE(interface, ''),
+                 COALESCE(dest_class, '')
+             );
+             ",
+        )?;
 
         Ok(())
     }
@@ -269,6 +307,153 @@ impl SqliteSink {
             col_type
         );
         conn.execute_batch(&sql)?;
+        Ok(())
+    }
+
+    /// 检测表中是否存在指定列（幂等迁移用）。
+    fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
+        let n: i64 = conn.query_row(
+            &format!(
+                "SELECT COUNT(*) FROM pragma_table_info('{}') WHERE name = ?",
+                table.replace('\'', "''")
+            ),
+            [column],
+            |row| row.get(0),
+        )?;
+        Ok(n > 0)
+    }
+
+    /// rustnetec: T-A5 — 迁移：为存量 connection_events 回填 dest_class。
+    ///
+    /// 新事件在 insert_event 写入时即算好 dest_class，此处只补旧行
+    /// （dest_class IS NULL）。classify_dest 是 Rust 函数，SQLite 无法调用，
+    /// 故逐行读取 dest_ip 在 Rust 侧计算后 UPDATE。
+    fn backfill_dest_class(conn: &Connection) -> Result<()> {
+        use crate::telemetry::netutil::classify_dest;
+
+        let pending: Vec<(i64, String)> = conn
+            .prepare("SELECT id, dest_ip FROM connection_events WHERE dest_class IS NULL")?
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+
+        if pending.is_empty() {
+            return Ok(());
+        }
+        info!("Backfilling dest_class for {} events", pending.len());
+
+        let tx = conn.unchecked_transaction()?;
+        {
+            let mut upd = tx.prepare("UPDATE connection_events SET dest_class = ?1 WHERE id = ?2")?;
+            for (id, dest_ip) in &pending {
+                upd.execute(params![classify_dest(dest_ip).as_str(), id])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// rustnetec: T-A5 — 迁移：旧结构 aggregates 表重建 + 全量回填。
+    ///
+    /// 旧库 aggregates 无 dest_class/duration_secs 列且缺唯一索引，积累了海量
+    /// 重复桶行（每 60s 聚合把同一桶重插一遍）。重建 = 删表重建 + 从
+    /// connection_events 全量重算分钟/小时桶，顺带回收磁盘空间。
+    /// 回填的 bucket_ts 格式必须与 run_aggregation 一致（UTC，分钟 `%H:%M:00`）。
+    fn rebuild_aggregates(conn: &Connection) -> Result<()> {
+        info!("Rebuilding aggregates table (legacy schema without dest_class)");
+
+        conn.execute_batch(
+            "DROP TABLE IF EXISTS aggregates;
+             CREATE TABLE aggregates (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                bucket_ts       TEXT    NOT NULL,
+                bucket_width    TEXT    NOT NULL,
+                protocol        TEXT,
+                process_name    TEXT,
+                country_code    TEXT,
+                asn             INTEGER,
+                interface       TEXT,
+                dest_class      TEXT,
+                bytes_rx        INTEGER NOT NULL DEFAULT 0,
+                bytes_tx        INTEGER NOT NULL DEFAULT 0,
+                conn_count      INTEGER NOT NULL DEFAULT 0,
+                duration_secs   INTEGER NOT NULL DEFAULT 0
+             );",
+        )?;
+
+        // 分钟桶：全量回填（与 run_aggregation 同格式）。
+        conn.execute_batch(
+            "INSERT INTO aggregates (
+                bucket_ts, bucket_width,
+                protocol, process_name, country_code, asn, interface, dest_class,
+                bytes_rx, bytes_tx, conn_count, duration_secs
+             )
+             SELECT
+                strftime('%Y-%m-%dT%H:%M:00', ts) AS bucket_ts,
+                'minute' AS bucket_width,
+                protocol,
+                process_name,
+                geoip_country_code,
+                geoip_asn,
+                interface,
+                dest_class,
+                COALESCE(SUM(bytes_received), 0),
+                COALESCE(SUM(bytes_sent), 0),
+                COUNT(*),
+                COALESCE(SUM(duration_secs), 0)
+             FROM connection_events
+             WHERE event_type = 'connection_closed'
+             GROUP BY bucket_ts, protocol, process_name, geoip_country_code, geoip_asn, interface, dest_class;",
+        )?;
+
+        // 小时桶：从分钟桶合并（与 run_aggregation 同格式）。
+        conn.execute_batch(
+            "INSERT INTO aggregates (
+                bucket_ts, bucket_width,
+                protocol, process_name, country_code, asn, interface, dest_class,
+                bytes_rx, bytes_tx, conn_count, duration_secs
+             )
+             SELECT
+                strftime('%Y-%m-%dT%H:00:00', bucket_ts) AS hour_ts,
+                'hour' AS bucket_width,
+                protocol,
+                process_name,
+                country_code,
+                asn,
+                interface,
+                dest_class,
+                SUM(bytes_rx),
+                SUM(bytes_tx),
+                SUM(conn_count),
+                SUM(duration_secs)
+             FROM aggregates
+             WHERE bucket_width = 'minute'
+             GROUP BY hour_ts, protocol, process_name, country_code, asn, interface, dest_class;",
+        )?;
+
+        // 日桶：从小时桶合并（与 run_aggregation 同格式）。
+        conn.execute_batch(
+            "INSERT INTO aggregates (
+                bucket_ts, bucket_width,
+                protocol, process_name, country_code, asn, interface, dest_class,
+                bytes_rx, bytes_tx, conn_count, duration_secs
+             )
+             SELECT
+                strftime('%Y-%m-%dT00:00:00', bucket_ts) AS day_ts,
+                'day' AS bucket_width,
+                protocol,
+                process_name,
+                country_code,
+                asn,
+                interface,
+                dest_class,
+                SUM(bytes_rx),
+                SUM(bytes_tx),
+                SUM(conn_count),
+                SUM(duration_secs)
+             FROM aggregates
+             WHERE bucket_width = 'hour'
+             GROUP BY day_ts, protocol, process_name, country_code, asn, interface, dest_class;",
+        )?;
         Ok(())
     }
 
@@ -336,11 +521,11 @@ impl SqliteSink {
 
             // Cleanup check
             if last_cleanup.elapsed() >= cleanup_interval {
-                let retention_days = runtime_config
+                let (retention_days, upload_enabled) = runtime_config
                     .read()
-                    .map(|r| r.retention_days)
-                    .unwrap_or(90);
-                if let Err(e) = Self::run_cleanup(&conn, retention_days) {
+                    .map(|r| (r.retention_days, r.server_url.is_some()))
+                    .unwrap_or((90, false));
+                if let Err(e) = Self::run_cleanup(&conn, retention_days, upload_enabled) {
                     warn!("Cleanup failed: {}", e);
                 }
                 last_cleanup = Instant::now();
@@ -400,8 +585,9 @@ impl SqliteSink {
             "source_port",
             "dest_ip",
             "dest_port",
+            "dest_class",
         ]);
-        placeholders.extend_from_slice(&["?", "?", "?", "?", "?", "?", "?"]);
+        placeholders.extend_from_slice(&["?", "?", "?", "?", "?", "?", "?", "?"]);
         param_values.push(Box::new(event.timestamp.clone()));
         param_values.push(Box::new(event.event.clone()));
         param_values.push(Box::new(event.protocol.clone()));
@@ -409,6 +595,9 @@ impl SqliteSink {
         param_values.push(Box::new(event.source_port as i64));
         param_values.push(Box::new(event.destination_ip.clone()));
         param_values.push(Box::new(event.destination_port as i64));
+        // rustnetec: T-A5 — dest_ip 的 classify_dest 分类，写入时算好落库，
+        // 供聚合表与 /stats/range 的 scope 过滤做 SQL 下推。
+        param_values.push(Box::new(classify_dest(&event.destination_ip).as_str().to_string()));
 
         // DNS fields (conditional)
         if rc.record_dns {
@@ -564,24 +753,24 @@ impl SqliteSink {
     ///
     /// rustnetec: T-A4 — 补实现预聚合逻辑：
     /// 1. 每分钟桶：聚合最近 2 分钟的 `connection_closed` 事件，按
-    ///    (minute, protocol, process_name, country_code, asn, interface) 写入
+    ///    (minute, protocol, process_name, country_code, asn, interface, dest_class) 写入
     ///    `aggregates`，`INSERT OR REPLACE` 幂等（同一桶+维度组合重写覆盖）。
     /// 2. 每小时桶：把分钟桶合并为小时桶，写入 `aggregates` 的 `bucket_width='hour'` 行。
     ///    合并窗口为最近 2 小时，幂等同上。
+    /// 3. 每日桶：把小时桶合并为日桶，写入 `aggregates` 的 `bucket_width='day'` 行，
+    ///    窗口最近 2 天，幂等同上。
     ///
     /// 设计权衡：
     /// - 2 分钟窗口兼顾「事件延迟写入漏数据」与「重复聚合开销」。
-    /// - `INSERT OR REPLACE` 而非 `ON CONFLICT DO UPDATE`：本表 `id AUTOINCREMENT`
-    ///   不适合做冲突键，改用 `OR REPLACE` 在主键冲突时先删后插，简单可靠。
-    ///   若后续加唯一索引 `(bucket_ts, bucket_width, protocol, ...)`，
-    ///   `OR REPLACE` 可精确触发该约束。
+    /// - `INSERT OR REPLACE` 依赖 `idx_aggs_unique` 唯一索引（T-A5）实现真正的
+    ///   幂等替换：无唯一约束时 REPLACE 退化为普通 INSERT，导致同桶重复行无限膨胀。
     fn run_aggregation(conn: &Connection) -> Result<()> {
         // Per-minute aggregation: 聚合最近 2 分钟的 closed 事件。
         conn.execute_batch(
             "INSERT OR REPLACE INTO aggregates (
                 bucket_ts, bucket_width,
-                protocol, process_name, country_code, asn, interface,
-                bytes_rx, bytes_tx, conn_count
+                protocol, process_name, country_code, asn, interface, dest_class,
+                bytes_rx, bytes_tx, conn_count, duration_secs
              )
              SELECT
                 strftime('%Y-%m-%dT%H:%M:00', ts) AS bucket_ts,
@@ -591,21 +780,23 @@ impl SqliteSink {
                 geoip_country_code,
                 geoip_asn,
                 interface,
+                dest_class,
                 COALESCE(SUM(bytes_received), 0),
                 COALESCE(SUM(bytes_sent), 0),
-                COUNT(*)
+                COUNT(*),
+                COALESCE(SUM(duration_secs), 0)
              FROM connection_events
              WHERE event_type = 'connection_closed'
                AND ts >= datetime('now', '-2 minutes')
-             GROUP BY bucket_ts, protocol, process_name, geoip_country_code, geoip_asn, interface;",
+             GROUP BY bucket_ts, protocol, process_name, geoip_country_code, geoip_asn, interface, dest_class;",
         )?;
 
         // Per-hour aggregation: 合并分钟桶为小时桶，窗口最近 2 小时。
         conn.execute_batch(
             "INSERT OR REPLACE INTO aggregates (
                 bucket_ts, bucket_width,
-                protocol, process_name, country_code, asn, interface,
-                bytes_rx, bytes_tx, conn_count
+                protocol, process_name, country_code, asn, interface, dest_class,
+                bytes_rx, bytes_tx, conn_count, duration_secs
              )
              SELECT
                 strftime('%Y-%m-%dT%H:00:00', bucket_ts) AS hour_ts,
@@ -615,27 +806,60 @@ impl SqliteSink {
                 country_code,
                 asn,
                 interface,
+                dest_class,
                 SUM(bytes_rx),
                 SUM(bytes_tx),
-                SUM(conn_count)
+                SUM(conn_count),
+                SUM(duration_secs)
              FROM aggregates
              WHERE bucket_width = 'minute'
                AND bucket_ts >= datetime('now', '-2 hours')
-             GROUP BY hour_ts, protocol, process_name, country_code, asn, interface;",
+             GROUP BY hour_ts, protocol, process_name, country_code, asn, interface, dest_class;",
+        )?;
+
+        // Per-day aggregation: 合并小时桶为日桶，窗口最近 2 天。
+        conn.execute_batch(
+            "INSERT OR REPLACE INTO aggregates (
+                bucket_ts, bucket_width,
+                protocol, process_name, country_code, asn, interface, dest_class,
+                bytes_rx, bytes_tx, conn_count, duration_secs
+             )
+             SELECT
+                strftime('%Y-%m-%dT00:00:00', bucket_ts) AS day_ts,
+                'day' AS bucket_width,
+                protocol,
+                process_name,
+                country_code,
+                asn,
+                interface,
+                dest_class,
+                SUM(bytes_rx),
+                SUM(bytes_tx),
+                SUM(conn_count),
+                SUM(duration_secs)
+             FROM aggregates
+             WHERE bucket_width = 'hour'
+               AND bucket_ts >= datetime('now', '-2 days')
+             GROUP BY day_ts, protocol, process_name, country_code, asn, interface, dest_class;",
         )?;
         Ok(())
     }
 
     /// Run cleanup: delete expired events that have already been uploaded.
-    fn run_cleanup(conn: &Connection, retention_days: u32) -> Result<()> {
+    ///
+    /// rustnetec: T-A5 — 修复未配置上传时旧事件永不清理的问题：
+    /// 原条件要求 `id <= last_uploaded_event_id`，而 `server_url` 为空（未配置上传）
+    /// 时 upload_cursor 恒为 0，90 天保留期形同虚设。现在显式传入 `upload_enabled`：
+    /// 未启用上传时按 ts 直接删除；启用时才保留尚未上传的事件。
+    fn run_cleanup(conn: &Connection, retention_days: u32, upload_enabled: bool) -> Result<()> {
         let days_str = format!("-{} days", retention_days);
 
         // Delete uploaded events older than retention period
         let deleted_events = conn.execute(
             "DELETE FROM connection_events
              WHERE ts < datetime('now', ?1)
-               AND id <= (SELECT COALESCE(last_uploaded_event_id, 0) FROM upload_cursor WHERE id = 1)",
-            params![days_str],
+               AND (?2 = 0 OR id <= (SELECT COALESCE(last_uploaded_event_id, 0) FROM upload_cursor WHERE id = 1))",
+            params![days_str, upload_enabled as i64],
         )?;
 
         // Delete expired aggregates
@@ -670,8 +894,9 @@ impl SqliteSink {
 
     /// 测试辅助：直接对给定连接执行清理逻辑（偏差4 / T1.9 集成测试用）。
     /// 生产代码通过 write_loop 内部调用私有的 run_cleanup。
-    pub fn run_cleanup_for_test(conn: &Connection, retention_days: u32) -> Result<()> {
-        Self::run_cleanup(conn, retention_days)
+    /// `upload_enabled=false` 表示未配置上传：按 ts 直接删旧事件（T-A5 新语义）。
+    pub fn run_cleanup_for_test(conn: &Connection, retention_days: u32, upload_enabled: bool) -> Result<()> {
+        Self::run_cleanup(conn, retention_days, upload_enabled)
     }
 
     // ---- rustnetec: UploadSink 支持接口 (T2.6) ----
@@ -1030,5 +1255,276 @@ mod tests {
             .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
             .unwrap();
         assert_eq!(busy_timeout, 5000);
+    }
+
+    // ---- rustnetec: T-A5 — dest_class / 聚合幂等 / 迁移 / 清理修复 ----
+
+    #[test]
+    fn insert_writes_dest_class() {
+        let conn = open_test_connection();
+        SqliteSink::init_schema(&conn).unwrap();
+        let rc = test_runtime_config();
+        let rc_guard = rc.read().unwrap();
+
+        // 外网 IP → external
+        let event_ext = ConnectionEventData {
+            timestamp: "2026-08-13T10:00:00.000+08:00".to_string(),
+            event: "connection_closed".to_string(),
+            protocol: "TCP".to_string(),
+            source_ip: "192.168.1.5".to_string(),
+            source_port: 12345,
+            destination_ip: "8.8.8.8".to_string(),
+            destination_port: 443,
+            destination_hostname: None,
+            source_hostname: None,
+            pid: None,
+            process_ppid: None,
+            process_name: Some("curl".to_string()),
+            process_executable: None,
+            process_uid: None,
+            process_gid: None,
+            attribution_match: None,
+            rtt_ms: None,
+            #[cfg(feature = "kubernetes")]
+            kubernetes: None,
+            service_name: None,
+            direction: Some("outgoing".to_string()),
+            dpi_protocol: None,
+            dpi_domain: None,
+            geoip_country_code: None,
+            geoip_country_name: None,
+            geoip_asn: None,
+            geoip_as_org: None,
+            geoip_city: None,
+            geoip_postal_code: None,
+            bytes_sent: Some(100),
+            bytes_received: Some(200),
+            duration_secs: Some(5),
+            interface: Some("en0".to_string()),
+        };
+        let tx = conn.unchecked_transaction().unwrap();
+        SqliteSink::insert_event(&tx, &event_ext, &rc_guard).unwrap();
+        tx.commit().unwrap();
+
+        let dc: String = conn
+            .query_row("SELECT dest_class FROM connection_events", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(dc, "external");
+
+        // 局域网 IP → lan
+        let event_lan = ConnectionEventData {
+            destination_ip: "10.0.0.1".to_string(),
+            ..event_ext.clone()
+        };
+        let tx = conn.unchecked_transaction().unwrap();
+        SqliteSink::insert_event(&tx, &event_lan, &rc_guard).unwrap();
+        tx.commit().unwrap();
+        let dcs: Vec<String> = conn
+            .prepare("SELECT dest_class FROM connection_events ORDER BY id")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(dcs, vec!["external".to_string(), "lan".to_string()]);
+    }
+
+    #[test]
+    fn aggregation_is_idempotent_with_unique_index() {
+        let conn = open_test_connection();
+        SqliteSink::init_schema(&conn).unwrap();
+        let rc = test_runtime_config();
+        let rc_guard = rc.read().unwrap();
+
+        // 插入同一分钟桶、同一维度组合的 3 条 closed 事件（dest 同为外网）。
+        let event = ConnectionEventData {
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            event: "connection_closed".to_string(),
+            protocol: "TCP".to_string(),
+            source_ip: "192.168.1.5".to_string(),
+            source_port: 12345,
+            destination_ip: "8.8.8.8".to_string(),
+            destination_port: 443,
+            destination_hostname: None,
+            source_hostname: None,
+            pid: None,
+            process_ppid: None,
+            process_name: Some("curl".to_string()),
+            process_executable: None,
+            process_uid: None,
+            process_gid: None,
+            attribution_match: None,
+            rtt_ms: None,
+            #[cfg(feature = "kubernetes")]
+            kubernetes: None,
+            service_name: None,
+            direction: Some("outgoing".to_string()),
+            dpi_protocol: None,
+            dpi_domain: None,
+            geoip_country_code: Some("US".to_string()),
+            geoip_country_name: None,
+            geoip_asn: Some(15169),
+            geoip_as_org: None,
+            geoip_city: None,
+            geoip_postal_code: None,
+            bytes_sent: Some(100),
+            bytes_received: Some(200),
+            duration_secs: Some(5),
+            interface: Some("en0".to_string()),
+        };
+        for _ in 0..3 {
+            let tx = conn.unchecked_transaction().unwrap();
+            SqliteSink::insert_event(&tx, &event, &rc_guard).unwrap();
+            tx.commit().unwrap();
+        }
+
+        // 聚合两次：唯一索引生效后行数应保持不变（INSERT OR REPLACE 真正幂等）。
+        SqliteSink::run_aggregation(&conn).unwrap();
+        let n1: i64 = conn
+            .query_row("SELECT COUNT(*) FROM aggregates", [], |row| row.get(0))
+            .unwrap();
+        assert!(n1 > 0, "aggregation should produce rows");
+
+        SqliteSink::run_aggregation(&conn).unwrap();
+        let n2: i64 = conn
+            .query_row("SELECT COUNT(*) FROM aggregates", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            n1, n2,
+            "second aggregation must not duplicate bucket rows (unique index)"
+        );
+
+        // 聚合值正确：3 条事件合计。
+        let (rx, tx, cnt, dur): (i64, i64, i64, i64) = conn
+            .query_row(
+                "SELECT SUM(bytes_rx), SUM(bytes_tx), SUM(conn_count), SUM(duration_secs) \
+                 FROM aggregates WHERE bucket_width='minute'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!((rx, tx, cnt, dur), (600, 300, 3, 15));
+    }
+
+    #[test]
+    fn backfill_dest_class_fills_legacy_rows() {
+        let conn = open_test_connection();
+        SqliteSink::init_schema(&conn).unwrap();
+
+        // 模拟旧库：dest_class 为 NULL 的存量行。
+        conn.execute(
+            "INSERT INTO connection_events
+                (ts, event_type, protocol, source_ip, source_port, dest_ip, dest_port)
+             VALUES
+                ('2026-08-01T10:00:00+08:00', 'connection_closed', 'TCP', '192.168.1.5', 1, '8.8.8.8', 443),
+                ('2026-08-01T10:00:00+08:00', 'connection_closed', 'UDP', '192.168.1.5', 2, '10.0.0.1', 53)",
+            [],
+        )
+        .unwrap();
+
+        SqliteSink::backfill_dest_class(&conn).unwrap();
+
+        let dcs: Vec<String> = conn
+            .prepare("SELECT dest_class FROM connection_events ORDER BY id")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(dcs, vec!["external".to_string(), "lan".to_string()]);
+    }
+
+    #[test]
+    fn rebuild_aggregates_recreates_and_backfills() {
+        let conn = open_test_connection();
+        SqliteSink::init_schema(&conn).unwrap();
+
+        // 造 2 条 closed 事件（同一分钟桶，不同 dest_class），模拟重建前的数据源。
+        conn.execute(
+            "INSERT INTO connection_events
+                (ts, event_type, protocol, source_ip, source_port, dest_ip, dest_port, dest_class,
+                 bytes_sent, bytes_received, duration_secs, interface)
+             VALUES
+                ('2026-08-01T10:05:00+08:00', 'connection_closed', 'TCP', '192.168.1.5', 1, '8.8.8.8', 443, 'external', 100, 200, 5, 'en0'),
+                ('2026-08-01T10:05:30+08:00', 'connection_closed', 'TCP', '192.168.1.5', 2, '10.0.0.1', 53, 'lan', 50, 80, 3, 'en0')",
+            [],
+        )
+        .unwrap();
+
+        // 模拟旧库：先塞满重复桶行再重建。
+        conn.execute(
+            "INSERT INTO aggregates (bucket_ts, bucket_width, bytes_rx, bytes_tx, conn_count)
+             VALUES ('2026-08-01T10:05:00', 'minute', 999, 999, 999)",
+            [],
+        )
+        .unwrap();
+
+        SqliteSink::rebuild_aggregates(&conn).unwrap();
+
+        // 重建后：旧重复行消失，回填出新行（含 dest_class/duration_secs）。
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM aggregates", [], |row| row.get(0))
+            .unwrap();
+        assert!(n > 0, "rebuild should backfill aggregates");
+
+        let (rx, tx, cnt, dur): (i64, i64, i64, i64) = conn
+            .query_row(
+                "SELECT SUM(bytes_rx), SUM(bytes_tx), SUM(conn_count), SUM(duration_secs) \
+                 FROM aggregates WHERE bucket_width='minute'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!((rx, tx, cnt, dur), (280, 150, 2, 8));
+
+        // dest_class 维度保留（external 桶存在）。
+        let ext: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM aggregates WHERE dest_class='external'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(ext > 0);
+    }
+
+    #[test]
+    fn cleanup_without_upload_deletes_expired() {
+        let conn = open_test_connection();
+        SqliteSink::init_schema(&conn).unwrap();
+
+        // 200 天前的事件（超过默认 90 天 retention），upload_cursor 保持 0（未上传）。
+        let old_ts = chrono::Local::now()
+            .checked_sub_signed(chrono::Duration::days(200))
+            .unwrap()
+            .to_rfc3339();
+        conn.execute(
+            "INSERT INTO connection_events
+                (ts, event_type, protocol, source_ip, source_port, dest_ip, dest_port)
+             VALUES (?1, 'connection_closed', 'TCP', '192.168.1.5', 1, '8.8.8.8', 443)",
+            rusqlite::params![old_ts],
+        )
+        .unwrap();
+
+        // 未配置上传（upload_enabled=false）：按 ts 直接删除 → 旧事件被清。
+        SqliteSink::run_cleanup_for_test(&conn, 90, false).unwrap();
+        let remaining: i64 = conn
+            .query_row("SELECT COUNT(*) FROM connection_events", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(remaining, 0, "no-upload mode must delete expired events");
+
+        // 配置上传且未上传（upload_enabled=true, cursor=0）：保留。
+        conn.execute(
+            "INSERT INTO connection_events
+                (ts, event_type, protocol, source_ip, source_port, dest_ip, dest_port)
+             VALUES (?1, 'connection_closed', 'TCP', '192.168.1.5', 1, '8.8.8.8', 443)",
+            rusqlite::params![old_ts],
+        )
+        .unwrap();
+        SqliteSink::run_cleanup_for_test(&conn, 90, true).unwrap();
+        let remaining: i64 = conn
+            .query_row("SELECT COUNT(*) FROM connection_events", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(remaining, 1, "unuploaded expired events must be retained");
     }
 }

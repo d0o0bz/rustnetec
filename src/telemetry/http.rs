@@ -880,6 +880,14 @@ fn handle_stats_range(request: tiny_http::Request, state: &HttpState) {
         _ => "1min",
     };
 
+    // rustnetec: T-A5 — 1min/1hour/1day 读 aggregates 预聚合表（scope 过滤 SQL 下推）；
+    // 仅 5s 粒度无法由分钟桶还原，保留直查 connection_events。
+    if bucket != "5s" {
+        let scope = params.get("scope").map(String::as_str).unwrap_or("all");
+        handle_stats_range_aggregated(request, state, &params, &start, &end, bucket, scope);
+        return;
+    }
+
     // 构造 WHERE 子句。
     let mut where_clauses: Vec<String> = vec![
         "ts >= ?1".to_string(),
@@ -1114,6 +1122,235 @@ fn handle_stats_range(request: tiny_http::Request, state: &HttpState) {
         "buckets": result,
         "series": series,
         "count": result.len(),
+        "bucket": bucket,
+        "scope": scope,
+    });
+    let _ = respond_json(request, 200, &response);
+}
+
+/// rustnetec: T-A5 — /stats/range 的预聚合路径（1min/1hour/1day）。
+///
+/// 数据来源：`aggregates` 表（分钟/小时/日桶，含 dest_class 维度）。
+/// 相比直查 connection_events：
+/// - 查询量从几十万行降到几百行；
+/// - scope 过滤由 Rust 侧 `classify_dest(dest_ip)` 改为 SQL 下推 `dest_class = ?`；
+/// - 返回结构与原直查路径完全一致（buckets + series + active_seconds）。
+///
+/// 边界说明：桶为预聚合行，`end` 所在桶可能比直查路径多计入该桶内
+/// `end` 之后至桶尾的数据（≤1 个桶粒度），与"按 end 截断"的语义略有偏差。
+fn handle_stats_range_aggregated(
+    request: tiny_http::Request,
+    state: &HttpState,
+    params: &std::collections::HashMap<String, String>,
+    start: &str,
+    end: &str,
+    bucket: &str,
+    scope: &str,
+) {
+    // 桶宽度 → aggregates.bucket_width、bucket_ts 边界格式、输出 key 截取长度。
+    let (width, bound_pattern, key_len) = match bucket {
+        "1hour" => ("hour", "%Y-%m-%dT%H:00:00", 13),
+        "1day" => ("day", "%Y-%m-%dT00:00:00", 10),
+        _ => ("minute", "%Y-%m-%dT%H:%M:00", 16),
+    };
+
+    // start/end 转 UTC 桶边界（与 run_aggregation 的 bucket_ts 存储格式一致）。
+    // 解析失败时原样返回，避免脏字符串破坏字典序比较。
+    let fmt_bound = |ts: &str| -> String {
+        chrono::DateTime::parse_from_rfc3339(ts)
+            .ok()
+            .map(|dt| dt.with_timezone(&chrono::Utc).format(bound_pattern).to_string())
+            .unwrap_or_else(|| ts.to_string())
+    };
+    let start_bound = fmt_bound(start);
+    let end_bound = fmt_bound(end);
+
+    // WHERE 子句。
+    let mut where_clauses: Vec<String> = vec![
+        "bucket_width = ?1".to_string(),
+        "bucket_ts >= ?2".to_string(),
+        "bucket_ts <= ?3".to_string(),
+    ];
+    let mut bind_values: Vec<Box<dyn rusqlite::ToSql>> = vec![
+        Box::new(width.to_string()),
+        Box::new(start_bound),
+        Box::new(end_bound),
+    ];
+    let mut bind_idx = 4;
+
+    // process 过滤（逗号分隔 → IN (?, ?, ...)）。
+    if let Some(proc_list) = params.get("process") {
+        let names: Vec<&str> = proc_list.split(',').filter(|s| !s.is_empty()).collect();
+        if !names.is_empty() {
+            let n = names.len();
+            let placeholders: Vec<String> = names
+                .iter()
+                .enumerate()
+                .map(|(i, _)| format!("?{}", bind_idx + i))
+                .collect();
+            where_clauses.push(format!("process_name IN ({})", placeholders.join(", ")));
+            for name in names {
+                bind_values.push(Box::new(name.to_string()));
+            }
+            bind_idx += n;
+        }
+    }
+
+    // interface 过滤（精确匹配）。
+    if let Some(iface) = params.get("interface") {
+        if !iface.is_empty() {
+            where_clauses.push(format!("interface = ?{}", bind_idx));
+            bind_values.push(Box::new(iface.clone()));
+            bind_idx += 1;
+        }
+    }
+
+    // scope 过滤：SQL 下推 dest_class（external/lan/all）。
+    if scope == "external" || scope == "lan" {
+        where_clauses.push(format!("dest_class = ?{}", bind_idx));
+        bind_values.push(Box::new(scope.to_string()));
+    }
+
+    let where_sql = where_clauses.join(" AND ");
+
+    let conn = match open_read_only(&state.db_path) {
+        Ok(c) => c,
+        Err(e) => {
+            let response = serde_json::json!({"error": format!("failed to open database: {}", e)});
+            let _ = respond_json(request, 500, &response);
+            return;
+        }
+    };
+
+    let bind_refs: Vec<&dyn rusqlite::ToSql> = bind_values.iter().map(|b| b.as_ref()).collect();
+
+    // 总计桶：按 bucket_ts 聚合（aggregates 已按维度分组，这里直接 SUM 各列）。
+    let totals_sql = format!(
+        "SELECT bucket_ts, \
+                SUM(bytes_rx), SUM(bytes_tx), SUM(conn_count), SUM(duration_secs) \
+         FROM aggregates \
+         WHERE {} \
+         GROUP BY bucket_ts \
+         ORDER BY bucket_ts ASC",
+        where_sql
+    );
+    let mut totals_stmt = match conn.prepare(&totals_sql) {
+        Ok(s) => s,
+        Err(e) => {
+            let response = serde_json::json!({"error": format!("prepare failed: {}", e)});
+            let _ = respond_json(request, 500, &response);
+            return;
+        }
+    };
+    let totals_rows = totals_stmt.query_map(bind_refs.as_slice(), |row| {
+        Ok((
+            row.get::<_, String>(0)?, // bucket_ts
+            row.get::<_, i64>(1)?,    // bytes_rx
+            row.get::<_, i64>(2)?,    // bytes_tx
+            row.get::<_, i64>(3)?,    // conn_count
+            row.get::<_, i64>(4)?,    // duration_secs
+        ))
+    });
+    let totals_rows = match totals_rows {
+        Ok(r) => r,
+        Err(e) => {
+            let response = serde_json::json!({"error": format!("query failed: {}", e)});
+            let _ = respond_json(request, 500, &response);
+            return;
+        }
+    };
+
+    // 按进程 series：COALESCE NULL process_name → "_unknown"，与原直查路径对齐。
+    let series_sql = format!(
+        "SELECT bucket_ts, COALESCE(process_name, '_unknown'), \
+                SUM(bytes_rx), SUM(bytes_tx) \
+         FROM aggregates \
+         WHERE {} \
+         GROUP BY bucket_ts, process_name \
+         ORDER BY bucket_ts ASC",
+        where_sql
+    );
+    let mut series_stmt = match conn.prepare(&series_sql) {
+        Ok(s) => s,
+        Err(e) => {
+            let response = serde_json::json!({"error": format!("prepare failed: {}", e)});
+            let _ = respond_json(request, 500, &response);
+            return;
+        }
+    };
+    let series_rows = series_stmt.query_map(bind_refs.as_slice(), |row| {
+        Ok((
+            row.get::<_, String>(0)?, // bucket_ts
+            row.get::<_, String>(1)?, // process_name / _unknown
+            row.get::<_, i64>(2)?,    // bytes_rx
+            row.get::<_, i64>(3)?,    // bytes_tx
+        ))
+    });
+    let series_rows = match series_rows {
+        Ok(r) => r,
+        Err(e) => {
+            let response = serde_json::json!({"error": format!("query failed: {}", e)});
+            let _ = respond_json(request, 500, &response);
+            return;
+        }
+    };
+
+    // 组装响应（结构与原直查路径一致：buckets + series）。
+    use std::collections::BTreeMap;
+
+    let mut buckets: Vec<serde_json::Value> = Vec::new();
+    for row in totals_rows.flatten() {
+        let (bucket_ts, bytes_rx, bytes_tx, conn_count, duration_secs) = row;
+        let key = bucket_ts.get(..key_len).unwrap_or(&bucket_ts).to_string();
+        buckets.push(serde_json::json!({
+            "ts": key,
+            "bytes_rx": bytes_rx,
+            "bytes_tx": bytes_tx,
+            "conn_count": conn_count,
+            "active_seconds": duration_secs,
+        }));
+    }
+
+    // by_process: 外层 key=ts，内层 key=process_name → 稳定顺序输出。
+    let mut by_process: BTreeMap<String, BTreeMap<String, (i64, i64)>> = BTreeMap::new();
+    for row in series_rows.flatten() {
+        let (bucket_ts, pname, bytes_rx, bytes_tx) = row;
+        let key = bucket_ts.get(..key_len).unwrap_or(&bucket_ts).to_string();
+        by_process
+            .entry(key)
+            .or_default()
+            .insert(pname, (bytes_rx, bytes_tx));
+    }
+    let mut proc_order: Vec<String> = Vec::new();
+    for (_ts, proc_map) in &by_process {
+        for pname in proc_map.keys() {
+            if !proc_order.contains(pname) {
+                proc_order.push(pname.clone());
+            }
+        }
+    }
+    let series: Vec<serde_json::Value> = proc_order
+        .iter()
+        .map(|pname| {
+            let points: Vec<serde_json::Value> = by_process
+                .iter()
+                .filter_map(|(ts, proc_map)| {
+                    proc_map.get(pname).map(|(rx, tx)| {
+                        serde_json::json!([ts, rx + tx])
+                    })
+                })
+                .collect();
+            serde_json::json!({
+                "name": pname,
+                "points": points,
+            })
+        })
+        .collect();
+
+    let response = serde_json::json!({
+        "buckets": buckets,
+        "series": series,
+        "count": buckets.len(),
         "bucket": bucket,
         "scope": scope,
     });

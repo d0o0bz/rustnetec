@@ -29,6 +29,19 @@ pub enum DestClass {
     LinkLocal,
 }
 
+impl DestClass {
+    /// 分类的稳定字符串标识，用于持久化到 SQLite。
+    /// 与 `/stats/range` 的 `scope` 参数取值（external/lan）对齐。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DestClass::External => "external",
+            DestClass::Lan => "lan",
+            DestClass::Loopback => "loopback",
+            DestClass::LinkLocal => "linklocal",
+        }
+    }
+}
+
 /// 判定目标 IP 是否为「外部网络」（公网）。
 ///
 /// 排除：RFC1918 私网段、loopback、link-local、CGNAT（100.64.0.0/10）。

@@ -185,8 +185,8 @@ fn cleanup_retains_unuploaded_expired_events() {
         .unwrap();
     assert_eq!(cursor, 2, "upload_cursor should be advanced to 2");
 
-    // 执行清理（retention_days=90，所有事件都超过 90 天）
-    rustnet_monitor::telemetry::db::SqliteSink::run_cleanup_for_test(&conn, 90).unwrap();
+    // 执行清理（retention_days=90，所有事件都超过 90 天；upload_enabled=true 模拟已配置上传）
+    rustnet_monitor::telemetry::db::SqliteSink::run_cleanup_for_test(&conn, 90, true).unwrap();
 
     let remaining: i64 = conn
         .query_row("SELECT COUNT(*) FROM connection_events", [], |r| r.get(0))
@@ -420,6 +420,7 @@ fn w05_run_query_paged_returns_rows_and_respects_pagination() {
         Some(2),
         None,
         None,
+        None,
     )
     .expect("paged query should succeed");
     assert_eq!(rows.len(), 2, "limit=2 should return 2 rows");
@@ -432,6 +433,7 @@ fn w05_run_query_paged_returns_rows_and_respects_pagination() {
         false,
         Some(2),
         Some(2),
+        None,
         None,
     )
     .expect("offset query should succeed");
@@ -446,6 +448,7 @@ fn w05_run_query_paged_returns_rows_and_respects_pagination() {
         Some(5),
         None,
         Some("ts ASC"),
+        None,
     )
     .expect("ts ASC query should succeed");
     assert_eq!(rows_asc.len(), 5);
@@ -459,6 +462,7 @@ fn w05_run_query_paged_returns_rows_and_respects_pagination() {
         None,
         None,
         Some("bytes_sent DESC; DROP TABLE--"),
+        None,
     );
     assert!(
         bad_order.is_err(),
@@ -532,6 +536,7 @@ fn w02_run_query_paged_default_returns_recent_events() {
         None,
         None,
         None,
+        None,
     )
     .expect("default query should succeed");
     assert_eq!(rows.len(), 1, "should return the 1 inserted event");
@@ -602,6 +607,7 @@ fn w04_stats_new_dimensions_present_in_schema() {
         None,
         Some("SELECT process_name, geoip_country_code FROM connection_events WHERE process_name = 'firefox'"),
         false,
+        None,
         None,
         None,
         None,
