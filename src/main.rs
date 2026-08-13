@@ -3191,8 +3191,8 @@ mod win_tray_refresh {
         HICON, HWND_MESSAGE, WINDOW_EX_STYLE, WINDOW_STYLE, WNDCLASSW, WNDCLASS_STYLES, WM_TIMER,
     };
 
+    use crate::ui::TrayController;
     use rustnet_monitor::config::TrayStatusField;
-    use ui::TrayController;
 
     const REFRESH_TIMER_ID: usize = 0x52_55_53_54; // "RUST"
 
@@ -3223,7 +3223,7 @@ mod win_tray_refresh {
         hwnd: HWND,
         msg: u32,
         wparam: WPARAM,
-        _lparam: LPARAM,
+        lparam: LPARAM,
     ) -> LRESULT {
         if msg == WM_TIMER && wparam.0 == REFRESH_TIMER_ID {
             let ctx = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut RefreshCtx };
@@ -3291,7 +3291,7 @@ mod win_tray_refresh {
                 CW_USEDEFAULT,
                 Some(HWND_MESSAGE),
                 None,
-                Some(hinstance),
+                Some(hinstance.into()),
                 None,
             )
             .ok()?;
