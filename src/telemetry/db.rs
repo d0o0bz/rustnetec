@@ -228,8 +228,9 @@ impl SqliteSink {
 
         // rustnetec: T-A5 — aggregates 旧结构（无 dest_class 列）→ 重建 + 全量回填。
         // 旧库因缺唯一约束积累海量重复桶行，重建即去重回收空间；新库列齐全则跳过。
-        if !Self::column_exists(conn, "aggregates", "dest_class")? {
-            Self::rebuild_aggregates(conn)?;
+        // aggregates_rebuilt 标记真实发生重建，供下方决定是否执行全量 VACUUM。
+        let aggregates_rebuilt = if !Self::column_exists(conn, "aggregates", "dest_class")? {
+            Self::rebuild_aggregates(conn)?
         } else {
             Self::migrate_add_column_if_missing(
                 conn,
@@ -237,6 +238,28 @@ impl SqliteSink {
                 "duration_secs",
                 "INTEGER NOT NULL DEFAULT 0",
             )?;
+            false
+        };
+
+        // rustnetec: T-A5 — 旧库重建后执行一次全量 VACUUM：
+        // 1. 合并 WAL（VACUUM 前置）；
+        // 2. 固化 auto_vacuum=INCREMENTAL——对已存在的库，该 PRAGMA 只有随 VACUUM
+        //    执行才会写入文件头，之后 run_cleanup 的 incremental_vacuum 才真正生效；
+        // 3. VACUUM 回收重建释放的全部空闲页（旧库可能高达数 GB）。
+        // 失败（典型：磁盘空间不足）仅告警不阻断启动——迁移本身已完成，回收是锦上添花。
+        if aggregates_rebuilt {
+            if let Err(e) = conn.execute_batch(
+                "PRAGMA wal_checkpoint(TRUNCATE);
+                 PRAGMA auto_vacuum = INCREMENTAL;
+                 VACUUM;",
+            ) {
+                warn!(
+                    "Post-migration VACUUM failed ({}); run manually: PRAGMA auto_vacuum = INCREMENTAL; VACUUM;",
+                    e
+                );
+            } else {
+                info!("Post-migration VACUUM done; auto_vacuum now INCREMENTAL");
+            }
         }
 
         // ---- 索引（必须在迁移之后）----
@@ -356,9 +379,12 @@ impl SqliteSink {
     ///
     /// 旧库 aggregates 无 dest_class/duration_secs 列且缺唯一索引，积累了海量
     /// 重复桶行（每 60s 聚合把同一桶重插一遍）。重建 = 删表重建 + 从
-    /// connection_events 全量重算分钟/小时桶，顺带回收磁盘空间。
+    /// connection_events 全量重算分钟/小时/日桶，顺带回收磁盘空间。
     /// 回填的 bucket_ts 格式必须与 run_aggregation 一致（UTC，分钟 `%H:%M:00`）。
-    fn rebuild_aggregates(conn: &Connection) -> Result<()> {
+    ///
+    /// 返回 `true` 表示确实发生了旧库重建（调用方据此决定是否执行一次
+    /// 全量 VACUUM 回收空闲页）；`false` 表示表结构无需重建。
+    fn rebuild_aggregates(conn: &Connection) -> Result<bool> {
         info!("Rebuilding aggregates table (legacy schema without dest_class)");
 
         conn.execute_batch(
@@ -454,7 +480,7 @@ impl SqliteSink {
              WHERE bucket_width = 'hour'
              GROUP BY day_ts, protocol, process_name, country_code, asn, interface, dest_class;",
         )?;
-        Ok(())
+        Ok(true)
     }
 
     /// Main write loop: batch events from the channel and commit periodically.
@@ -1526,5 +1552,120 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM connection_events", [], |row| row.get(0))
             .unwrap();
         assert_eq!(remaining, 1, "unuploaded expired events must be retained");
+    }
+
+    #[test]
+    fn legacy_db_migration_sets_auto_vacuum_incremental() {
+        // 用文件库（in-memory 无文件头，PRAGMA auto_vacuum 语义与真实环境不一致）。
+        let tmp = std::env::temp_dir().join("rustnetec-it-vacuum-migrate");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let db_path = tmp.join("data.db");
+
+        // 先建旧结构库（完整旧列，仅缺 dest_class / duration_secs 与唯一索引），塞点数据。
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE connection_events (
+                    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts                  TEXT    NOT NULL,
+                    event_type          TEXT    NOT NULL,
+                    protocol            TEXT    NOT NULL,
+                    source_ip           TEXT    NOT NULL,
+                    source_port         INTEGER NOT NULL,
+                    dest_ip             TEXT    NOT NULL,
+                    dest_port           INTEGER NOT NULL,
+                    dest_hostname       TEXT,
+                    source_hostname     TEXT,
+                    pid                 INTEGER,
+                    process_ppid        INTEGER,
+                    process_name        TEXT,
+                    process_executable  TEXT,
+                    process_uid         INTEGER,
+                    process_gid         INTEGER,
+                    attribution_match   TEXT,
+                    rtt_ms              REAL,
+                    service_name        TEXT,
+                    direction           TEXT,
+                    dpi_protocol        TEXT,
+                    dpi_domain          TEXT,
+                    geoip_country_code  TEXT,
+                    geoip_country_name  TEXT,
+                    geoip_asn           INTEGER,
+                    geoip_as_org        TEXT,
+                    geoip_city          TEXT,
+                    geoip_postal_code   TEXT,
+                    bytes_sent          INTEGER,
+                    bytes_received      INTEGER,
+                    duration_secs       INTEGER,
+                    interface           TEXT
+                 );
+                 CREATE TABLE aggregates (
+                    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                    bucket_ts       TEXT    NOT NULL,
+                    bucket_width    TEXT    NOT NULL,
+                    protocol        TEXT,
+                    process_name    TEXT,
+                    country_code    TEXT,
+                    asn             INTEGER,
+                    interface       TEXT,
+                    bytes_rx        INTEGER NOT NULL DEFAULT 0,
+                    bytes_tx        INTEGER NOT NULL DEFAULT 0,
+                    conn_count      INTEGER NOT NULL DEFAULT 0
+                 );
+                 INSERT INTO aggregates (bucket_ts, bucket_width, bytes_rx, bytes_tx, conn_count)
+                 VALUES ('2026-08-01T10:05:00', 'minute', 999, 999, 999);",
+            )
+            .unwrap();
+        }
+
+        // 跑 init_schema → 触发旧库重建 + 全量 VACUUM。
+        let conn = Connection::open(&db_path).unwrap();
+        SqliteSink::init_schema(&conn).unwrap();
+
+        // VACUUM 应把 auto_vacuum 固化为 INCREMENTAL（2）。
+        let auto_vacuum: i64 = conn
+            .query_row("PRAGMA auto_vacuum", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            auto_vacuum, 2,
+            "legacy migration must run VACUUM and set auto_vacuum=INCREMENTAL"
+        );
+
+        // 重建后唯一索引存在。
+        let idx: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_aggs_unique'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(idx, 1, "unique index must exist after migration");
+
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn fresh_db_skips_vacuum() {
+        let tmp = std::env::temp_dir().join("rustnetec-it-vacuum-fresh");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let db_path = tmp.join("data.db");
+
+        let conn = Connection::open(&db_path).unwrap();
+        SqliteSink::init_schema(&conn).unwrap();
+
+        // 新库列齐全、无需重建 → 不执行 VACUUM → auto_vacuum 保持默认 NONE(0)。
+        let auto_vacuum: i64 = conn
+            .query_row("PRAGMA auto_vacuum", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            auto_vacuum, 0,
+            "fresh db must not run VACUUM (auto_vacuum stays default NONE)"
+        );
+
+        drop(conn);
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
