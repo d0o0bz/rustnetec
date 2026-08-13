@@ -246,6 +246,42 @@ impl TrayController {
         let _ = self.remote_item.set_enabled(enabled);
     }
 
+    /// Set the tray tooltip from the live status text, keeping it in sync with
+    /// the status menu line.
+    ///
+    /// Two Windows-specific quirks are worked around here so the tooltip stays
+    /// live instead of freezing on the initial value:
+    ///
+    /// 1. `szTip` is rendered by a single-line tooltip control: an embedded
+    ///    `\n` causes only the text before the break ("Rustnetec") to be
+    ///    drawn, so the trailing status never appears and the tooltip looks
+    ///    stuck. We join brand + status on one line on Windows.
+    ///
+    /// 2. `Shell_NotifyIconW(NIM_MODIFY, NIF_TIP)` alone does not redraw a
+    ///    *currently visible* tooltip — explorer.exe caches the tooltip
+    ///    window, so re-hovering (or even keeping the mouse still) shows a
+    ///    stale string. Workaround: clear the tip first, then re-set it; the
+    ///    shell tears down and rebuilds the tooltip window with the fresh
+    ///    text. macOS/Linux update in place and need no extra round-trip.
+    fn set_tooltip_dynamic(&self, status_text: &str) {
+        #[cfg(target_os = "windows")]
+        let tooltip = format!("Rustnetec · {status_text}");
+        #[cfg(not(target_os = "windows"))]
+        let tooltip = format!("Rustnetec\n{status_text}");
+
+        #[cfg(target_os = "windows")]
+        {
+            // Clear then re-set forces explorer to rebuild the tooltip window,
+            // so the status keeps updating even while the mouse is hovering.
+            let _ = self._tray_icon.set_tooltip(None::<&str>);
+            let _ = self._tray_icon.set_tooltip(Some(&tooltip));
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = self._tray_icon.set_tooltip(Some(&tooltip));
+        }
+    }
+
     /// Refresh the dynamic status line + tooltip from App state.
     ///
     /// Renders fields in `tray_status_fields` order. In/out rates use ↓/↑
@@ -257,9 +293,10 @@ impl TrayController {
 
         let status_text = Self::render_status_line(&ctx, &runtime_config.tray_status_fields);
 
-        // Update tooltip — brand name "Rustnetec" prefix per T3.2 revision
-        let tooltip = format!("Rustnetec\n{}", status_text);
-        let _ = self._tray_icon.set_tooltip(Some(&tooltip));
+        // Update tooltip — brand name "Rustnetec" prefix per T3.2 revision.
+        // set_tooltip_dynamic keeps it live on Windows (single-line + force
+        // rebuild) while staying multi-line elsewhere.
+        self.set_tooltip_dynamic(&status_text);
 
         // Update status menu item text
         let menu_label = if ctx.is_paused {
@@ -296,9 +333,10 @@ impl TrayController {
 
         let status_text = Self::render_status_line(&ctx, fields);
 
-        // Update tooltip — brand name "Rustnetec" prefix per T3.2 revision
-        let tooltip = format!("Rustnetec\n{}", status_text);
-        let _ = self._tray_icon.set_tooltip(Some(&tooltip));
+        // Update tooltip — brand name "Rustnetec" prefix per T3.2 revision.
+        // set_tooltip_dynamic keeps it live on Windows (single-line + force
+        // rebuild) while staying multi-line elsewhere.
+        self.set_tooltip_dynamic(&status_text);
 
         // Update status menu item text
         let menu_label = if ctx.is_paused {
