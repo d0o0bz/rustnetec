@@ -70,8 +70,10 @@ pub fn open_terminal_monitor() {
     #[cfg(unix)]
     let quoted = format!("'{}'", exe.replace('\'', "'\\''"));
     // rustnetec: 前台 TUI 抓包需要 root（BPF 设备），unix 下用 sudo 启动；
-    // 密码由用户在打开的 Terminal 窗口输入（sudo 会提示）。Windows 无 sudo，
-    // Npcap 抓包靠管理员权限，保持原样。
+    // 密码由用户在打开的 Terminal 窗口输入（sudo 会提示）。Windows 无 sudo：
+    // Npcap 以 admin_only=no（安装向导里取消勾选 "Restrict Npcap driver's
+    // access to Administrators only"）安装后，普通用户即可直接抓包，无需提权，
+    // 保持原样。
     // 注意：
     // 1. macOS sudo 默认 env_reset 会把 HOME 重置为 /var/root，导致 TUI 的
     //    data_dir()/config.yml 错位到 root 的 HOME（tui.pid 写进 /var/root，

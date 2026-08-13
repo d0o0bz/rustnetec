@@ -3009,9 +3009,15 @@ fn check_windows_dependencies() -> Result<()> {
         eprintln!("To fix this:");
         eprintln!();
         eprintln!("  1. Download Npcap from: https://npcap.com/dist/");
+        eprintln!("     (e.g. https://npcap.com/dist/npcap-1.88.exe)");
         eprintln!("  2. Run the installer");
         eprintln!("  3. IMPORTANT: Check \"Install Npcap in WinPcap API-compatible Mode\"");
-        eprintln!("  4. Complete the installation");
+        eprintln!("  4. IMPORTANT: Uncheck \"Restrict Npcap driver's access to");
+        eprintln!("     Administrators only\" so standard users can capture packets");
+        eprintln!("  5. Complete the installation");
+        eprintln!();
+        eprintln!("Only the driver installation needs one-time elevation; after that,");
+        eprintln!("packet capture works without Administrator privileges.");
         eprintln!();
         eprintln!("After installation, restart your terminal and try again.");
         eprintln!();

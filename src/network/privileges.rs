@@ -82,6 +82,43 @@ impl PrivilegeStatus {
     }
 }
 
+/// rustnetec: Windows 抓包问题的分类结果（方案 C 运行时引导）。
+///
+/// 由 [`classify_windows_npcap_error`] 从 pcap 错误串得出，供两处复用：
+/// - `check_windows_privileges` 生成启动横幅里的 instructions；
+/// - overview 页在抓包线程失败后显示对应提示（覆盖托盘场景）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowsNpcapIssue {
+    /// Npcap 未安装（或未以 WinPcap API 兼容模式安装）。
+    NotInstalled,
+    /// Npcap 已安装，但限制为仅管理员可打开抓包设备（admin_only）。
+    AdminOnly,
+}
+
+/// rustnetec: 按关键字把 pcap 错误串分类为可引导的 Windows 抓包问题；
+/// 无法归类的返回 `None`。纯字符串函数，不依赖平台 API，可在任意平台单测。
+pub fn classify_windows_npcap_error(error: &str) -> Option<WindowsNpcapIssue> {
+    let lower = error.to_lowercase();
+    if lower.contains("wpcap")
+        || lower.contains("npcap")
+        || lower.contains("not installed")
+        || lower.contains("cannot load")
+        || lower.contains("no such file")
+        || lower.contains(".dll")
+    {
+        Some(WindowsNpcapIssue::NotInstalled)
+    } else if lower.contains("access")
+        || lower.contains("denied")
+        || lower.contains("permission")
+        || lower.contains("not allowed")
+        || lower.contains("insufficient")
+    {
+        Some(WindowsNpcapIssue::AdminOnly)
+    } else {
+        None
+    }
+}
+
 /// Check if the current process has sufficient privileges for packet capture
 pub fn check_packet_capture_privileges() -> Result<PrivilegeStatus> {
     #[cfg(target_os = "linux")]
@@ -276,27 +313,38 @@ fn check_windows_privileges() -> Result<PrivilegeStatus> {
         Err(e) => {
             debug!("Failed to list network devices: {}", e);
 
-            // Check if the error indicates a permissions issue
-            let error_str = e.to_string().to_lowercase();
-            if error_str.contains("access")
-                || error_str.contains("denied")
-                || error_str.contains("permission")
-            {
-                let missing = vec!["Administrator privileges".to_string()];
+            // rustnetec: 方案 C — 按 Npcap 状态分类错误，给出可操作的引导
+            // （下载页 + 取消勾选 admin_only，使普通用户也能抓包）。
+            match classify_windows_npcap_error(&e.to_string()) {
+                Some(WindowsNpcapIssue::NotInstalled) => {
+                    let missing = vec!["Npcap runtime (packet capture driver)".to_string()];
 
-                let instructions = vec![
-                    "Run as Administrator: Right-click the terminal and select 'Run as Administrator'".to_string(),
-                    "If using Npcap: Ensure it was installed with 'WinPcap API-compatible Mode' enabled".to_string(),
-                ];
+                    let instructions = vec![
+                        "Download and install Npcap from: https://npcap.com/dist/".to_string(),
+                        "Check \"Install Npcap in WinPcap API-compatible Mode\"".to_string(),
+                        "Uncheck \"Restrict Npcap driver's access to Administrators only\" so standard users can capture".to_string(),
+                    ];
 
-                Ok(PrivilegeStatus::insufficient(missing, instructions))
-            } else {
-                // Some other error - assume it's not a privilege issue
-                warn!(
-                    "Network device enumeration failed but error doesn't indicate privilege issue: {}",
-                    e
-                );
-                Ok(PrivilegeStatus::sufficient())
+                    Ok(PrivilegeStatus::insufficient(missing, instructions))
+                }
+                Some(WindowsNpcapIssue::AdminOnly) => {
+                    let missing = vec!["Packet capture device access".to_string()];
+
+                    let instructions = vec![
+                        "Run as Administrator: Right-click the terminal and select 'Run as Administrator'".to_string(),
+                        "Or reinstall Npcap and uncheck \"Restrict Npcap driver's access to Administrators only\" (equivalent to /admin_only=no) so standard users can capture".to_string(),
+                    ];
+
+                    Ok(PrivilegeStatus::insufficient(missing, instructions))
+                }
+                None => {
+                    // Some other error - assume it's not a privilege issue
+                    warn!(
+                        "Network device enumeration failed but error doesn't indicate privilege issue: {}",
+                        e
+                    );
+                    Ok(PrivilegeStatus::sufficient())
+                }
             }
         }
     }
@@ -396,5 +444,52 @@ mod tests {
         let status = PrivilegeStatus::sufficient();
         assert!(status.has_privileges);
         assert!(status.error_message().is_empty());
+    }
+
+    #[test]
+    fn test_classify_windows_npcap_error_not_installed() {
+        assert_eq!(
+            classify_windows_npcap_error(
+                "failed to load wpcap.dll: The specified module could not be found"
+            ),
+            Some(WindowsNpcapIssue::NotInstalled)
+        );
+        assert_eq!(
+            classify_windows_npcap_error("npcap is not installed"),
+            Some(WindowsNpcapIssue::NotInstalled)
+        );
+        assert_eq!(
+            classify_windows_npcap_error("cannot load Packet.dll"),
+            Some(WindowsNpcapIssue::NotInstalled)
+        );
+    }
+
+    #[test]
+    fn test_classify_windows_npcap_error_admin_only() {
+        assert_eq!(
+            classify_windows_npcap_error("Error opening adapter: Access is denied"),
+            Some(WindowsNpcapIssue::AdminOnly)
+        );
+        assert_eq!(
+            classify_windows_npcap_error(
+                "you don't have permission to capture on that device"
+            ),
+            Some(WindowsNpcapIssue::AdminOnly)
+        );
+        assert_eq!(
+            classify_windows_npcap_error("insufficient privileges for packet capture"),
+            Some(WindowsNpcapIssue::AdminOnly)
+        );
+    }
+
+    #[test]
+    fn test_classify_windows_npcap_error_unknown() {
+        assert_eq!(classify_windows_npcap_error("the interface disappeared"), None);
+        assert_eq!(classify_windows_npcap_error(""), None);
+        // 大小写不敏感
+        assert_eq!(
+            classify_windows_npcap_error("ACCESS DENIED"),
+            Some(WindowsNpcapIssue::AdminOnly)
+        );
     }
 }

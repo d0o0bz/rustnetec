@@ -160,7 +160,9 @@ cargo install rustnet-monitor
 **Windows(Chocolatey):**
 ```powershell
 # 需在管理员权限的 PowerShell 中执行
-# 需要先安装 Npcap(https://npcap.com)，并启用 "WinPcap API-compatible Mode"
+# 需要先安装 Npcap(https://npcap.com/dist/)，并启用 "WinPcap API-compatible Mode"
+# 安装时可取消勾选 "Restrict Npcap driver's access to Administrators only"，
+# 普通用户即可直接抓包（仅驱动安装需要一次性管理员提权）
 choco install rustnet
 ```
 

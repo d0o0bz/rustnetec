@@ -974,6 +974,38 @@ fn draw_stats_panel(
             }
         }
         lines.push(Line::from(Span::styled(priv_label, priv_style)));
+
+        // rustnetec: 方案 C — 抓包线程失败后按 Npcap 问题分类，在 Process 行
+        // 下给出可操作提示（覆盖直接启动与托盘"open terminal"打开的 TUI 实例）。
+        if !is_elevated
+            && let Some(issue) = app
+                .get_capture_error()
+                .as_deref()
+                .and_then(crate::network::privileges::classify_windows_npcap_error)
+        {
+            match issue {
+                crate::network::privileges::WindowsNpcapIssue::AdminOnly => {
+                    lines.push(Line::from(Span::styled(
+                        "Npcap: capture restricted to Administrators",
+                        theme::fg(theme::warn()),
+                    )));
+                    lines.push(Line::from(Span::styled(
+                        "Reinstall: uncheck \"Restrict...Administrators only\"",
+                        theme::fg(theme::warn()),
+                    )));
+                }
+                crate::network::privileges::WindowsNpcapIssue::NotInstalled => {
+                    lines.push(Line::from(Span::styled(
+                        "Npcap: not installed",
+                        theme::fg(theme::warn()),
+                    )));
+                    lines.push(Line::from(Span::styled(
+                        "Install: https://npcap.com/dist/",
+                        theme::fg(theme::warn()),
+                    )));
+                }
+            }
+        }
         lines
     };
 

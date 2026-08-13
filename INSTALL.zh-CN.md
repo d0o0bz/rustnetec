@@ -65,8 +65,9 @@
 ### Windows MSI 安装<a id="windows-msi-installation"></a>
 
 1. **安装 Npcap Runtime**（包捕获必需）：
-   - 从 https://npcap.com/dist/ 下载
+   - 从 https://npcap.com/dist/ 下载（例如 https://npcap.com/dist/npcap-1.88.exe）
    - 运行安装程序并选择 **"WinPcap API compatible mode"**
+   - **可取消勾选 "Restrict Npcap driver's access to Administrators only"**（等价于命令行 `/admin_only=no`）：勾选状态下只有管理员能抓包，取消后**普通用户即可抓包**。仅驱动安装需要一次性管理员提权，之后日常抓包无需管理员权限。
 
 2. **下载并安装**适合的 MSI 包：
    - 64 位 Windows 使用 `Rustnet_Windows_64-bit.msi`
@@ -78,7 +79,7 @@
    - 打开命令提示符或 PowerShell
    - 运行：`rustnet.exe`
    - 如果未安装 Npcap 或未处于 WinPcap 兼容模式，RustNet 会显示一条有用的错误消息及安装说明
-   - 注意：根据你的 Npcap 安装设置，你可能需要或不需要 Administrator 特权
+   - 如果 Npcap 限制了仅管理员可抓包，RustNet 会提示重新安装并取消勾选 "Restrict Npcap driver's access to Administrators only"；概览页也会在抓包失败时显示同样的引导
 
 ### Windows Chocolatey 安装<a id="windows-chocolatey-installation"></a>
 
