@@ -2,7 +2,7 @@ use anyhow::Result;
 use log::{LevelFilter, error, info, warn};
 use ratatui::prelude::CrosstermBackend;
 use rustnet_monitor::{app, cli, network, telemetry, ui};
-use simplelog::{ConfigBuilder, WriteLogger};
+use simplelog::{ConfigBuilder, WriteLogger, format_description};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -1136,9 +1136,18 @@ fn setup_logging(level: LevelFilter) -> Result<()> {
     // the startup-banner lines below, this addresses #310 — users now
     // see both the program identity (name/version/pid) at the top of
     // the file and which subsystem emitted each subsequent line.
-    let config = ConfigBuilder::new()
+    let mut config_builder = ConfigBuilder::new();
+    config_builder
         .set_target_level(LevelFilter::Error)
-        .build();
+        // rustnetec: 日志时间改为本地时区并带日期前缀(YYYY-MM-DD HH:MM:SS),
+        // 与 autostart.log 保持一致, 便于跨天排查; simplelog 默认是 UTC。
+        .set_time_format_custom(format_description!(
+            "[year]-[month]-[day] [hour]:[minute]:[second]"
+        ));
+    // set_time_offset_to_local 在无法确定本地偏移时返回 Err(保持 UTC 回退),
+    // 忽略该失败即可 — 日期前缀仍会写入, 只是时区可能回退为 UTC。
+    let _ = config_builder.set_time_offset_to_local();
+    let config = config_builder.build();
 
     WriteLogger::init(level, config, log_file)?;
 
@@ -1189,9 +1198,18 @@ fn setup_autostart_log() -> Result<()> {
         .append(true)
         .open(&log_path)?;
 
-    let config = ConfigBuilder::new()
+    let mut config_builder = ConfigBuilder::new();
+    config_builder
         .set_target_level(LevelFilter::Error)
-        .build();
+        // rustnetec: 日志时间改为本地时区并带日期前缀(YYYY-MM-DD HH:MM:SS),
+        // 便于跨天排查; simplelog 默认是 UTC 且只有时分秒。
+        .set_time_format_custom(format_description!(
+            "[year]-[month]-[day] [hour]:[minute]:[second]"
+        ));
+    // set_time_offset_to_local 在无法确定本地偏移时返回 Err(保持 UTC 回退),
+    // 忽略该失败即可 — 日期前缀仍会写入, 只是时区可能回退为 UTC。
+    let _ = config_builder.set_time_offset_to_local();
+    let config = config_builder.build();
     WriteLogger::init(LevelFilter::Info, config, log_file)?;
 
     info!(

@@ -4233,6 +4233,7 @@ dependencies = [
  "sha2 0.11.0",
  "signal-hook",
  "simplelog",
+ "time",
  "tiny_http",
  "tray-icon",
  "ureq",
