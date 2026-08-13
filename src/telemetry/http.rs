@@ -1834,6 +1834,36 @@ fn handle_put_config(mut request: tiny_http::Request, state: &HttpState) {
         return;
     }
 
+    // rustnetec: T1.11 修复 — 设置页联动系统自启注册。
+    // 比较新旧配置的 autostart_enabled / autostart_mode, 变化时真正调用
+    // autostart::install / uninstall(HKCU Run / systemd --user unit /
+    // LaunchAgent plist), 使 WebUI 的"开机自启"开关不再只是写 config.yml。
+    // 注册失败则不保存(保持磁盘配置与系统注册状态一致), 返回明确错误。
+    let old_config = crate::config::PersistentConfig::load().unwrap_or_default();
+    let autostart_changed = old_config.autostart_enabled != new_config.autostart_enabled
+        || (new_config.autostart_enabled
+            && old_config.autostart_mode != new_config.autostart_mode);
+    if autostart_changed {
+        let result = if new_config.autostart_enabled {
+            crate::telemetry::autostart::install(new_config.autostart_mode)
+        } else {
+            crate::telemetry::autostart::uninstall()
+        };
+        if let Err(e) = result {
+            let response = serde_json::json!({
+                "error": format!("autostart change failed, config not saved: {e:#}"),
+                "autostart": "failed"
+            });
+            let _ = respond_json(request, 500, &response);
+            return;
+        }
+        info!(
+            "autostart {} via settings page (mode: {:?})",
+            if new_config.autostart_enabled { "registered" } else { "removed" },
+            new_config.autostart_mode
+        );
+    }
+
     if let Err(e) = new_config.save() {
         let response = serde_json::json!({"error": format!("failed to save config: {}", e)});
         let _ = respond_json(request, 500, &response);
@@ -1862,6 +1892,16 @@ fn handle_put_config(mut request: tiny_http::Request, state: &HttpState) {
     let response = serde_json::json!({
         "status": "ok",
         "pending_restart": pending_restart,
+        // rustnetec: T1.11 修复 — 回显自启注册结果, 供 WebUI 设置页标注。
+        "autostart": if autostart_changed {
+            if new_config.autostart_enabled {
+                format!("registered ({})", new_config.autostart_mode.cli_flag())
+            } else {
+                "removed".to_string()
+            }
+        } else {
+            "unchanged".to_string()
+        },
         "note": "config saved — hot-update items applied immediately; restart-required items need POST /config/restart-capture"
     });
     let _ = respond_json(request, 200, &response);

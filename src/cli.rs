@@ -225,6 +225,18 @@ pub fn build_cli() -> Command {
                 .long("daemon")
                 .help("Run in daemon mode (headless, no TUI). Captures and logs network events in the background")
                 .action(clap::ArgAction::SetTrue),
+        )
+        // rustnetec: --autostart flag (R1/T1.11 修复) — 由平台自启机制
+        // (HKCU Run / systemd --user / LaunchAgent) 拉起的进程带上此标志:
+        // 1) 权限检查走软路径(无抓包权限时降级 process-only 而非退出);
+        // 2) Windows 下隐藏控制台黑窗; 3) 启动失败写入 autostart.log。
+        // 对用户隐藏(仅 autostart 注册表/unit 条目使用), 避免 --help 干扰。
+        .arg(
+            Arg::new("autostart")
+                .long("autostart")
+                .help("Marked by the platform autostart mechanism (internal)")
+                .action(clap::ArgAction::SetTrue)
+                .hide(true),
         );
 
     // rustnetec: --tray flag (R1, feature-gated; T3.6.7: independent helper
@@ -407,6 +419,27 @@ mod tests {
             .try_get_matches_from(["rustnet", "--daemon"])
             .expect("--daemon should parse");
         assert!(matches.get_flag("daemon"));
+    }
+
+    // rustnetec: T1.11 修复 — 隐藏的 --autostart 标志: 平台自启机制使用,
+    // 可解析且对用户隐藏(不出现在 --help)。
+    #[test]
+    fn autostart_flag_parses() {
+        let matches = build_cli()
+            .try_get_matches_from(["rustnet", "--autostart", "--daemon"])
+            .expect("--autostart should parse");
+        assert!(matches.get_flag("autostart"));
+        assert!(matches.get_flag("daemon"));
+    }
+
+    #[test]
+    fn autostart_flag_hidden_from_help() {
+        let help = build_cli().render_long_help();
+        let text = help.to_string();
+        assert!(
+            !text.contains("--autostart"),
+            "--autostart is internal and must be hidden from --help"
+        );
     }
 
     #[test]

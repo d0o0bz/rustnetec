@@ -38,7 +38,34 @@ fn launched_by_double_click() -> bool {
     count == 1 && pids[0] != 0
 }
 
+/// rustnetec: T1.11 修复 — 程序入口薄包装。
+///
+/// 带 `--autostart` 时(平台自启机制拉起):
+/// 1. Windows 下立即释放控制台, 避免登录黑窗(早于一切输出);
+/// 2. 任何启动失败(含依赖检查、权限检查)都会追加写入
+///    `<data_dir>/autostart.log`, 让"开机自启失败"可排查。
+///
+/// 其余情况直接透传 [`run`]。
 fn main() -> Result<()> {
+    let autostart = std::env::args().any(|a| a == "--autostart");
+    #[cfg(target_os = "windows")]
+    if autostart {
+        unsafe {
+            let _ = windows::Win32::System::Console::FreeConsole();
+        }
+    }
+
+    let result = run();
+    if autostart
+        && let Err(e) = &result
+    {
+        append_autostart_error(&format!("autostart run failed: {e:#}"));
+    }
+    result
+}
+
+/// rustnetec: 原 main 主体(见 [`main`] 包装)。
+fn run() -> Result<()> {
     // Check for required dependencies on Windows
     #[cfg(target_os = "windows")]
     check_windows_dependencies()?;
@@ -74,6 +101,13 @@ fn main() -> Result<()> {
             .parse::<LevelFilter>()
             .map_err(|_| anyhow::anyhow!("Invalid log level: {}", log_level_str))?;
         setup_logging(log_level)?;
+    } else if matches.get_flag("autostart") {
+        // rustnetec: T1.11 修复 — 自启模式未显式指定 --log-level 时,
+        // 默认把日志落盘到 <data_dir>/autostart.log, 使"开机自启失败"
+        // 可排查(否则黑窗已隐藏, 错误无迹可寻)。
+        if let Err(e) = setup_autostart_log() {
+            eprintln!("Warning: failed to initialize autostart log: {}", e);
+        }
     }
 
     // rustnetec: Determine run mode (TUI / daemon / tray)
@@ -100,13 +134,20 @@ fn main() -> Result<()> {
     // check: the tray panels (/live, /config) must stay reachable even
     // without capture privileges, with capture degrading to process-only.
     #[cfg(feature = "tray")]
-    if tray_mode || std::env::var("RUSTNETEC_TRAY_DAEMON").is_ok() {
-        check_privileges_tray();
+    if tray_mode
+        || matches.get_flag("autostart")
+        || std::env::var("RUSTNETEC_TRAY_DAEMON").is_ok()
+    {
+        check_privileges_soft();
     } else {
         check_privileges_early()?;
     }
     #[cfg(not(feature = "tray"))]
-    check_privileges_early()?;
+    if matches.get_flag("autostart") {
+        check_privileges_soft();
+    } else {
+        check_privileges_early()?;
+    }
 
     // rustnetec: T3.6.7 — tray is now an independent helper process (A
     // topology: tray is the entry point, it spawns the daemon child and runs
@@ -1114,6 +1155,102 @@ fn setup_logging(level: LevelFilter) -> Result<()> {
     );
 
     Ok(())
+}
+
+/// rustnetec: T1.11 修复 — 自启模式默认日志: 追加写入
+/// `<data_dir>/autostart.log`(Info 级)。带 `--autostart` 且未显式指定
+/// `--log-level` 时由 [`run`] 调用, 使开机自启的启动/运行轨迹可查。
+///
+/// 与 `setup_logging` 的差异: 固定路径、追加模式(保留多次自启历史)、
+/// 失败不致命(自启日志只是诊断辅助, 不影响主流程)。
+fn setup_autostart_log() -> Result<()> {
+    let dir = telemetry::paths::data_dir()?;
+    fs::create_dir_all(&dir)?;
+    let log_path = dir.join("autostart.log");
+
+    // On Unix, open with O_NOFOLLOW + 0o600 (mirrors setup_logging) so a
+    // pre-planted symlink at the predictable path cannot redirect writes and
+    // the file is not world-readable (it may contain connection metadata).
+    #[cfg(unix)]
+    let log_file = {
+        use std::os::unix::fs::OpenOptionsExt;
+        fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .append(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .mode(0o600)
+            .open(&log_path)?
+    };
+    #[cfg(not(unix))]
+    let log_file = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .append(true)
+        .open(&log_path)?;
+
+    let config = ConfigBuilder::new()
+        .set_target_level(LevelFilter::Error)
+        .build();
+    WriteLogger::init(LevelFilter::Info, config, log_file)?;
+
+    info!(
+        "{} v{} autostart (pid {})",
+        env!("CARGO_PKG_NAME"),
+        env!("CARGO_PKG_VERSION"),
+        std::process::id()
+    );
+    Ok(())
+}
+
+/// rustnetec: T1.11 修复 — 追加一行错误诊断到 `<data_dir>/autostart.log`。
+///
+/// 由 [`main`] 包装在自启进程整体失败(返回 Err)时兜底调用, 保证即使
+/// 日志系统尚未初始化(如依赖检查失败在 `setup_autostart_log` 之前)也能
+/// 留下可排查记录。失败时静默放弃(自启日志只是诊断辅助)。
+fn append_autostart_error(message: &str) {
+    use std::io::Write;
+    let log_path = match telemetry::paths::data_dir() {
+        Ok(dir) => dir.join("autostart.log"),
+        Err(e) => {
+            eprintln!("autostart error logging skipped (no data dir): {e}");
+            return;
+        }
+    };
+    if let Some(parent) = log_path.parent()
+        && let Err(e) = fs::create_dir_all(parent)
+    {
+        eprintln!("autostart error logging skipped (create dir): {e}");
+        return;
+    }
+
+    #[cfg(unix)]
+    let open_result = {
+        use std::os::unix::fs::OpenOptionsExt;
+        fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .append(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .mode(0o600)
+            .open(&log_path)
+    };
+    #[cfg(not(unix))]
+    let open_result = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .append(true)
+        .open(&log_path);
+
+    let mut file = match open_result {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("autostart error logging skipped (open): {e}");
+            return;
+        }
+    };
+    let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+    let _ = writeln!(file, "[{timestamp}] {message}");
 }
 
 /// Hand an output file over to the uid-drop target.
@@ -2774,36 +2911,33 @@ fn check_privileges_early() -> Result<()> {
     Ok(())
 }
 
-/// rustnetec: Soft privilege check for tray mode (T3.6.1).
+/// rustnetec: Soft privilege check (tray mode T3.6.1, autostart mode T1.11).
 ///
 /// The tray menu (open terminal / local panel / settings / quit) does not
-/// need packet capture, so an unprivileged user should still be able to
-/// start the tray. Capture itself degrades to process-only mode inside
-/// `App::start_capture_thread` (it sets `CaptureStatus::Failed` and logs
-/// "Application will run in process-only mode" instead of aborting), so the
-/// tray keeps working with an empty/zero status line.
+/// need packet capture, and neither does an autostart-registered daemon
+/// (marked with `--autostart`, e.g. HKCU Run on Windows): both must keep
+/// running for an unprivileged user. Capture degrades to process-only mode
+/// inside `App::start_capture_thread` (it sets `CaptureStatus::Failed` and
+/// logs "Application will run in process-only mode" instead of aborting),
+/// so the tray/daemon keeps working with an empty/zero status line.
 ///
 /// Unlike [`check_privileges_early`], this prints a warning and continues —
-/// it never aborts the process. This is feature-gated because `tray_mode` is
-/// only a real flag when the `tray` feature is compiled in.
-#[cfg(feature = "tray")]
-fn check_privileges_tray() {
+/// it never aborts the process.
+fn check_privileges_soft() {
     match network::privileges::check_packet_capture_privileges() {
         Ok(status) if !status.has_privileges => {
             warn!(
-                "Tray started without packet capture privileges — the tray menu works, \
-                 but live traffic will be unavailable. {}",
+                "Started without packet capture privileges — running in process-only mode. {}",
                 status.error_message()
             );
             eprintln!(
-                "Warning: insufficient privileges for packet capture — the tray is running, \
-                 but live traffic will be unavailable.\n{}",
+                "Warning: insufficient privileges for packet capture — running in process-only mode.\n{}",
                 status.error_message()
             );
         }
         Err(e) => {
             // Privilege check failed - warn but continue
-            warn!("Failed to check privileges (tray mode): {}", e);
+            warn!("Failed to check privileges (soft mode): {}", e);
         }
         _ => {
             // Privileges OK

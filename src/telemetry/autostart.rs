@@ -375,8 +375,14 @@ fn install_windows(mode: AutostartMode) -> Result<()> {
 
     let exe = current_exe_path()?;
     let flag = mode.cli_flag();
-    // Quote the exe path to survive spaces, then append the mode flag.
-    let value_data = format!("\"{exe}\" {flag}", exe = exe, flag = flag);
+    // Quote the exe path to survive spaces, then append the autostart marker
+    // (soft privilege check / console hiding / failure log) plus the mode flag.
+    // Example: "C:\Program Files\Rustnet\rustnet.exe" --autostart --daemon
+    let value_data = format!(
+        "\"{exe}\" --autostart {flag}",
+        exe = exe,
+        flag = flag
+    );
 
     let mut hkey = std::mem::MaybeUninit::uninit();
     let status = unsafe {

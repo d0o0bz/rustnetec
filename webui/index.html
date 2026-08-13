@@ -1676,6 +1676,36 @@
     monthlyState.chart = echarts.init(el, null, { renderer: "canvas" });
   }
 
+  // rustnetec: T-E7 — 拉取单个 scope 的每日桶，返回 Promise<{byDay, total}>。
+  function fetchMonthlyScope(range, scope) {
+    var url = "/stats/range?start=" + encodeURIComponent(range.start) +
+      "&end=" + encodeURIComponent(range.end) +
+      "&bucket=1day&scope=" + scope;
+    return fetch(url, { credentials: "same-origin" })
+      .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+      .then(function (data) {
+        var buckets = data.buckets || [];
+        var byDay = {};
+        var total = 0;
+        for (var i = 0; i < buckets.length; i++) {
+          var b = buckets[i];
+          var dt = new Date(b.ts + "T00:00:00Z");
+          var day = dt.getDate();
+          var v = (Number(b.bytes_rx) || 0) + (Number(b.bytes_tx) || 0);
+          byDay[day] = v;
+          total += v;
+        }
+        return { byDay: byDay, total: total };
+      });
+  }
+
+  // rustnetec: T-E7 — 把 byDay 映射展开为与 xdata 对齐的值数组。
+  function expandByDay(byDay, days) {
+    var arr = [];
+    for (var d = 1; d <= days; d++) arr.push(byDay[d] || 0);
+    return arr;
+  }
+
   function fetchMonthly() {
     initMonthlyChart();
     if (!monthlyState.chart) return;
@@ -1693,32 +1723,86 @@
     var nextBtn = document.getElementById("monthly-next");
     if (nextBtn) nextBtn.disabled = atLatest;
 
-    var url = "/stats/range?start=" + encodeURIComponent(range.start) +
-      "&end=" + encodeURIComponent(range.end) +
-      "&bucket=1day&scope=" + monthlyState.scope;
-    fetch(url, { credentials: "same-origin" })
-      .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
-      .then(function (data) {
-        var buckets = data.buckets || [];
-        // 按"日"索引：ts 为 UTC "YYYY-MM-DD"，转本地日号。
-        var byDay = {};
-        var total = 0;
-        for (var i = 0; i < buckets.length; i++) {
-          var b = buckets[i];
-          var dt = new Date(b.ts + "T00:00:00Z");
-          var day = dt.getDate(); // 本地日号（UTC 日期在东八区仍为同一日）
-          var v = (Number(b.bytes_rx) || 0) + (Number(b.bytes_tx) || 0);
-          byDay[day] = v;
-          total += v;
-        }
-        var xdata = [];
-        var ydata = [];
-        for (var d = 1; d <= range.days; d++) {
-          xdata.push(String(d));
-          ydata.push(byDay[d] || 0);
-        }
-        var totalEl = document.getElementById("monthly-total");
-        if (totalEl) totalEl.textContent = scopeLabel(monthlyState.scope) + "合计：" + formatBytes(total);
+    var xdata = [];
+    for (var d = 1; d <= range.days; d++) xdata.push(String(d));
+
+    var totalEl = document.getElementById("monthly-total");
+
+    // rustnetec: 总流量视图 = 内网 + 外网堆叠柱状图（两根系列叠在同一柱内）。
+    if (monthlyState.scope === "all") {
+      Promise.all([fetchMonthlyScope(range, "lan"), fetchMonthlyScope(range, "external")])
+        .then(function (results) {
+          var lan = results[0], ext = results[1];
+          var lanData = expandByDay(lan.byDay, range.days);
+          var extData = expandByDay(ext.byDay, range.days);
+          var grand = lan.total + ext.total;
+          if (totalEl) {
+            totalEl.textContent = "合计：" + formatBytes(grand) +
+              "（内网 " + formatBytes(lan.total) + " / 外网 " + formatBytes(ext.total) + "）";
+          }
+          monthlyState.chart.setOption({
+            tooltip: {
+              trigger: "axis", axisPointer: { type: "shadow" },
+              formatter: function (params) {
+                var day = params[0].name;
+                var lanV = 0, extV = 0;
+                for (var i = 0; i < params.length; i++) {
+                  if (params[i].seriesName === "内网") lanV = params[i].value;
+                  else if (params[i].seriesName === "外网") extV = params[i].value;
+                }
+                return label + " " + day + "日<br/>" +
+                  "内网：" + formatBytes(lanV) + "<br/>" +
+                  "外网：" + formatBytes(extV) + "<br/>" +
+                  "合计：" + formatBytes(lanV + extV);
+              },
+            },
+            legend: { data: ["内网", "外网"], textStyle: { color: GRAPH_COLORS.axis }, top: 0 },
+            grid: { left: 72, right: 16, top: 32, bottom: 40 },
+            xAxis: {
+              type: "category", data: xdata, name: "日",
+              nameTextStyle: { color: GRAPH_COLORS.axis, fontSize: 10 },
+              axisLine: { lineStyle: { color: GRAPH_COLORS.axis } },
+              axisLabel: { color: GRAPH_COLORS.axis, fontSize: 10 },
+              splitLine: { show: false },
+            },
+            yAxis: {
+              type: "value", name: "流量",
+              nameTextStyle: { color: GRAPH_COLORS.axis },
+              axisLine: { lineStyle: { color: GRAPH_COLORS.axis } },
+              axisLabel: {
+                color: GRAPH_COLORS.axis, fontSize: 10,
+                formatter: function (v) { return formatBytes(v); },
+              },
+              splitLine: { lineStyle: { color: GRAPH_COLORS.grid } },
+            },
+            series: [
+              {
+                name: "内网", type: "bar", barWidth: "70%", stack: "total",
+                itemStyle: { color: LAN_COLORS.flow },
+                emphasis: { focus: "series" },
+                data: lanData,
+              },
+              {
+                name: "外网", type: "bar", barWidth: "70%", stack: "total",
+                itemStyle: { color: GRAPH_COLORS.out },
+                emphasis: { focus: "series" },
+                data: extData,
+              },
+            ],
+          }, true);
+        })
+        .catch(function (err) {
+          if (totalEl) totalEl.textContent = "加载失败：" + (err && err.message ? err.message : err);
+          console.error("[monthly-chart] /stats/range failed:", err);
+        });
+      return;
+    }
+
+    // 内网 / 外网 单系列模式（保持原有单色柱状图）。
+    fetchMonthlyScope(range, monthlyState.scope)
+      .then(function (res) {
+        var ydata = expandByDay(res.byDay, range.days);
+        if (totalEl) totalEl.textContent = scopeLabel(monthlyState.scope) + "合计：" + formatBytes(res.total);
 
         monthlyState.chart.setOption({
           tooltip: {
@@ -1728,6 +1812,7 @@
               return label + " " + p.name + "日<br/>" + scopeLabel(monthlyState.scope) + "：" + formatBytes(p.value);
             },
           },
+          legend: { show: false },
           grid: { left: 72, right: 16, top: 24, bottom: 40 },
           xAxis: {
             type: "category", data: xdata, name: "日",
@@ -1755,7 +1840,6 @@
         }, true);
       })
       .catch(function (err) {
-        var totalEl = document.getElementById("monthly-total");
         if (totalEl) totalEl.textContent = "加载失败：" + (err && err.message ? err.message : err);
         console.error("[monthly-chart] /stats/range failed:", err);
       });
@@ -3143,18 +3227,22 @@
       .then(function (data) {
         // rustnetec: W4.2 — 据 pending_restart 标注生效状态
         if (data.status === "ok") {
+          var parts = [];
           if (data.pending_restart === true) {
-            resultEl.innerHTML = "";
-            var t1 = document.createTextNode("已保存(部分项需 ");
-            var b = document.createElement("b");
-            b.textContent = "重启捕获";
-            var t2 = document.createTextNode(" 后生效)");
-            resultEl.appendChild(t1);
-            resultEl.appendChild(b);
-            resultEl.appendChild(t2);
+            parts.push("部分项需 重启捕获 后生效");
           } else {
-            resultEl.textContent = "已保存(全部即时生效)";
+            parts.push("全部即时生效");
           }
+          // rustnetec: T1.11 修复 — 回显自启注册结果(系统注册表/unit 已联动,
+          // 不再是只写 config.yml 的"假开关")。
+          if (data.autostart === "registered (Daemon)") {
+            parts.push("开机自启:已注册(Daemon)");
+          } else if (data.autostart === "registered (Tray)") {
+            parts.push("开机自启:已注册(Tray)");
+          } else if (data.autostart === "removed") {
+            parts.push("开机自启:已取消");
+          }
+          resultEl.textContent = "已保存(" + parts.join(", ") + ")";
         } else {
           resultEl.textContent = "保存失败: " + (data.error || "未知错误");
         }
