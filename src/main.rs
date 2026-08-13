@@ -1552,8 +1552,22 @@ fn run_tray_helper(matches: &clap::ArgMatches) -> Result<()> {
             // 改为 Windows 下给 daemon 追加 --autostart: daemon 自身 FreeConsole
             // 隐藏黑窗(父进程无控制台时子进程本就无控制台), 并自动获得软权限
             // 检查与 autostart.log 记录, 与 HKCU Run 自启注册行为一致。
+            //
+            // rustnetec: 二次修复 — 仅移除 CREATE_NO_WINDOW 仍不够: FreeConsole
+            // 后父进程的 stdin/stdout/stderr 句柄已失效, Rust std 默认让子进程
+            // 继承父进程句柄(Stdio::Inherit → GetStdHandle → DuplicateHandle),
+            // DuplicateHandle 对失效句柄返回 ERROR_INVALID_HANDLE (os error 6)
+            // 或 ERROR_NOT_SUPPORTED (os error 50)。显式将三路 stdio 设为 null
+            // 避免继承失效句柄, spawn 才能成功。
             #[cfg(target_os = "windows")]
-            daemon_cmd.arg("--autostart");
+            {
+                use std::process::Stdio;
+                daemon_cmd
+                    .arg("--autostart")
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null());
+            }
             let child = daemon_cmd
                 .spawn()
                 .map_err(|e| anyhow::anyhow!("failed to spawn daemon child: {e}"))?;

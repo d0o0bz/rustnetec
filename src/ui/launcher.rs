@@ -319,8 +319,14 @@ fn dispatch_terminal(command: &str) -> bool {
 #[cfg(target_os = "windows")]
 fn dispatch_terminal(command: &str) -> bool {
     // `start cmd /k` opens a new cmd window that stays open after the command.
+    // rustnetec: tray helper 已 FreeConsole, 显式 null stdio 避免继承失效句柄
+    // (os error 6/50), 见 main.rs run_tray_helper 同类修复。
+    use std::process::Stdio;
     Command::new("cmd")
         .args(["/C", "start", "cmd", "/k", command])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .spawn()
         .is_ok()
 }
@@ -345,8 +351,14 @@ fn dispatch_browser(url: &str) -> bool {
 fn dispatch_browser(url: &str) -> bool {
     // Empty title arg stops `start` from treating a URL starting with `/` as
     // a flag.
+    // rustnetec: tray helper 已 FreeConsole, 显式 null stdio 避免继承失效句柄
+    // (os error 6/50), 见 main.rs run_tray_helper 同类修复。
+    use std::process::Stdio;
     Command::new("cmd")
         .args(["/C", "start", "", url])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .spawn()
         .is_ok()
 }
