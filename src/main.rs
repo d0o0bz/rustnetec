@@ -28,14 +28,23 @@ fn resolve_db_path(matches: &clap::ArgMatches) -> PathBuf {
 /// - count >= 2：与 shell（cmd/PowerShell）共享控制台 → 从终端运行
 /// - count == 0：无控制台（输出被重定向）→ 不是双击
 ///
-/// 仅在判定为双击时返回 true，由调用方据此强制进入托盘模式；
-/// 显式 `--tray` / `--daemon` 参数始终优先。
-#[cfg(all(feature = "tray", target_os = "windows"))]
-fn launched_by_double_click() -> bool {
+/// 不依赖 `tray` feature：供 `check_windows_dependencies()`（双击时弹 GUI
+/// 对话框）与托盘逻辑共用。仅在判定为双击时返回 true。
+#[cfg(target_os = "windows")]
+fn is_double_click_launch() -> bool {
     use windows::Win32::System::Console::GetConsoleProcessList;
     let mut pids = [0u32; 2];
     let count = unsafe { GetConsoleProcessList(&mut pids) };
     count == 1 && pids[0] != 0
+}
+
+/// rustnetec: 托盘模式下判定双击启动（见 [`is_double_click_launch`]）。
+///
+/// 仅在判定为双击时返回 true，由调用方据此强制进入托盘模式；
+/// 显式 `--tray` / `--daemon` 参数始终优先。
+#[cfg(all(feature = "tray", target_os = "windows"))]
+fn launched_by_double_click() -> bool {
+    is_double_click_launch()
 }
 
 /// rustnetec: T1.11 修复 — 程序入口薄包装。
@@ -2989,38 +2998,13 @@ fn check_windows_dependencies() -> Result<()> {
     let packet_available = check_dll_available("Packet.dll");
 
     if !wpcap_available || !packet_available {
-        eprintln!(
-            "\n╔═══════════════════════════════════════════════════════════════════════════╗"
-        );
-        eprintln!("║                          MISSING DEPENDENCY                               ║");
-        eprintln!("╚═══════════════════════════════════════════════════════════════════════════╝");
-        eprintln!();
-        eprintln!("RustNet requires Npcap for packet capture on Windows.");
-        eprintln!();
-
-        if !wpcap_available {
-            eprintln!("  ✗ wpcap.dll not found");
+        // rustnetec: 双击启动时弹出 GUI 对话框（先释放控制台黑窗）；
+        // 从终端运行时走文本引导。
+        if is_double_click_launch() {
+            show_missing_npcap_messagebox(wpcap_available, packet_available);
+        } else {
+            print_missing_npcap_text(wpcap_available, packet_available);
         }
-        if !packet_available {
-            eprintln!("  ✗ Packet.dll not found");
-        }
-
-        eprintln!();
-        eprintln!("To fix this:");
-        eprintln!();
-        eprintln!("  1. Download Npcap from: https://npcap.com/dist/");
-        eprintln!("     (e.g. https://npcap.com/dist/npcap-1.88.exe)");
-        eprintln!("  2. Run the installer");
-        eprintln!("  3. IMPORTANT: Check \"Install Npcap in WinPcap API-compatible Mode\"");
-        eprintln!("  4. IMPORTANT: Uncheck \"Restrict Npcap driver's access to");
-        eprintln!("     Administrators only\" so standard users can capture packets");
-        eprintln!("  5. Complete the installation");
-        eprintln!();
-        eprintln!("Only the driver installation needs one-time elevation; after that,");
-        eprintln!("packet capture works without Administrator privileges.");
-        eprintln!();
-        eprintln!("After installation, restart your terminal and try again.");
-        eprintln!();
 
         return Err(anyhow!(
             "Npcap is not installed or not in WinPcap compatible mode"
@@ -3028,6 +3012,93 @@ fn check_windows_dependencies() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// rustnetec: 命令行（终端）启动时输出缺失 Npcap 的文本引导。
+#[cfg(target_os = "windows")]
+fn print_missing_npcap_text(wpcap_available: bool, packet_available: bool) {
+    eprintln!(
+        "\n╔═══════════════════════════════════════════════════════════════════════════╗"
+    );
+    eprintln!("║                          MISSING DEPENDENCY                               ║");
+    eprintln!("╚═══════════════════════════════════════════════════════════════════════════╝");
+    eprintln!();
+    eprintln!("RustNet requires Npcap for packet capture on Windows.");
+    eprintln!();
+
+    if !wpcap_available {
+        eprintln!("  ✗ wpcap.dll not found");
+    }
+    if !packet_available {
+        eprintln!("  ✗ Packet.dll not found");
+    }
+
+    eprintln!();
+    eprintln!("To fix this:");
+    eprintln!();
+    eprintln!("  1. Download Npcap from: https://npcap.com/dist/");
+    eprintln!("     (e.g. https://npcap.com/dist/npcap-1.88.exe)");
+    eprintln!("  2. Run the installer");
+    eprintln!("  3. IMPORTANT: Check \"Install Npcap in WinPcap API-compatible Mode\"");
+    eprintln!("  4. IMPORTANT: Uncheck \"Restrict Npcap driver's access to");
+    eprintln!("     Administrators only\" so standard users can capture packets");
+    eprintln!("  5. Complete the installation");
+    eprintln!();
+    eprintln!("Only the driver installation needs one-time elevation; after that,");
+    eprintln!("packet capture works without Administrator privileges.");
+    eprintln!();
+    eprintln!("After installation, restart your terminal and try again.");
+    eprintln!();
+}
+
+/// rustnetec: 双击启动且缺失 Npcap 时弹 GUI 对话框引导下载安装。
+///
+/// 先 `FreeConsole()` 隐藏双击启动产生的控制台黑窗，再用 `MessageBoxW`
+/// 弹出模态对话框（正文含下载地址与安装提示），用户关闭后调用方返回
+/// `Err` 退出程序。
+#[cfg(target_os = "windows")]
+fn show_missing_npcap_messagebox(wpcap_available: bool, packet_available: bool) {
+    use windows::Win32::System::Console::FreeConsole;
+    use windows::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW};
+    use windows::core::PCWSTR;
+
+    // 隐藏双击启动的黑窗，避免 GUI 弹窗背后残留控制台窗口。
+    unsafe {
+        let _ = FreeConsole();
+    }
+
+    let mut missing: Vec<&str> = Vec::with_capacity(2);
+    if !wpcap_available {
+        missing.push("wpcap.dll");
+    }
+    if !packet_available {
+        missing.push("Packet.dll");
+    }
+
+    let text = format!(
+        "RustNet requires Npcap for packet capture, but it is not installed on this system.\n\n\
+         Missing: {}\n\n\
+         To fix this:\n\
+         1. Download Npcap from https://npcap.com/dist/\n\
+         2. Run the installer\n\
+         3. Check \"Install Npcap in WinPcap API-compatible Mode\"\n\
+         4. Uncheck \"Restrict Npcap driver's access to Administrators only\"\n\
+         5. Complete the installation and restart RustNet",
+        missing.join(", ")
+    );
+    let title = "Missing Npcap dependency";
+
+    let text_wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+    let title_wide: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();
+
+    unsafe {
+        let _ = MessageBoxW(
+            None,
+            PCWSTR(text_wide.as_ptr()),
+            PCWSTR(title_wide.as_ptr()),
+            MB_OK | MB_ICONERROR,
+        );
+    }
 }
 
 #[cfg(target_os = "windows")]

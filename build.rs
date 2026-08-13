@@ -193,5 +193,14 @@ fn download_windows_npcap_sdk() -> Result<()> {
             .ok_or_else(|| anyhow::anyhow!("{lib_dir:?} is not valid UTF-8"))?
     );
 
+    // rustnetec: 延迟加载 wpcap.dll / Packet.dll，使 Npcap 未安装时程序仍能
+    // 正常启动（不再被 PE 加载器在 main() 之前拦截），随后由
+    // check_windows_dependencies() 给出友好引导。仅 MSVC 链接器支持
+    // /DELAYLOAD；GNU 目标（*-pc-windows-gnu）不支持该参数，跳过以维持现状。
+    if target.contains("msvc") {
+        println!("cargo:rustc-link-arg=/DELAYLOAD:wpcap.dll");
+        println!("cargo:rustc-link-arg=/DELAYLOAD:Packet.dll");
+    }
+
     Ok(())
 }
