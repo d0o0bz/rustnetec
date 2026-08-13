@@ -1545,13 +1545,15 @@ fn run_tray_helper(matches: &clap::ArgMatches) -> Result<()> {
                 .arg("--http-port")
                 .arg(http_port.to_string())
                 .env("RUSTNETEC_TRAY_DAEMON", "1");
-            // rustnetec: Windows 下以 CREATE_NO_WINDOW 启动 daemon 子进程，
-            // 避免托盘 helper 释放控制台后 daemon 再弹出一个新的黑窗。
+            // rustnetec: 修复 — 不再用 CREATE_NO_WINDOW: --autostart 的托盘
+            // helper 已 FreeConsole, 父进程无控制台时带 CREATE_NO_WINDOW spawn
+            // 会返回 ERROR_NOT_SUPPORTED (os error 50), 导致 daemon 子进程
+            // 启动失败(autostart.log 中 "failed to spawn daemon child")。
+            // 改为 Windows 下给 daemon 追加 --autostart: daemon 自身 FreeConsole
+            // 隐藏黑窗(父进程无控制台时子进程本就无控制台), 并自动获得软权限
+            // 检查与 autostart.log 记录, 与 HKCU Run 自启注册行为一致。
             #[cfg(target_os = "windows")]
-            {
-                use std::os::windows::process::CommandExt;
-                daemon_cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-            }
+            daemon_cmd.arg("--autostart");
             let child = daemon_cmd
                 .spawn()
                 .map_err(|e| anyhow::anyhow!("failed to spawn daemon child: {e}"))?;
