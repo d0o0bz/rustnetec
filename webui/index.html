@@ -425,6 +425,17 @@
   }
   .window-btns button:hover { color: var(--text); border-color: var(--accent); }
   .window-btns button.active { color: var(--accent); border-color: var(--accent); }
+  /* rustnetec: 外网可达率标题右侧状态标记（绿/黄/红） */
+  .reach-status-dot {
+    display: inline-block;
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    margin-left: 8px;
+    vertical-align: middle;
+    background: var(--green);
+    box-shadow: 0 0 6px currentColor;
+    transition: background 0.3s ease;
+  }
 
   /* rustnetec: W3.4 进程活动表样式 */
   #activity-toolbar {
@@ -712,7 +723,7 @@
     <div id="sla-gauge"></div>
     -->
 
-    <!-- rustnetec: 外网可达率（DNS/UDP 探测 5 个公共 DNS，20s 轮询，双轴：可达率% + 延迟ms） -->
+    <!-- rustnetec: 外网可达率（DNS/UDP 探测 5 个公共 DNS，12s 轮询，双轴：可达率% + 延迟ms） -->
     <p class="chart-title">外网可达率
       <span class="window-btns" id="reach-window-btns">
         <button data-secs="3600" class="active">1h</button>
@@ -721,11 +732,12 @@
         <button data-secs="86400">1d</button>
         <button data-secs="604800">7d</button>
       </span>
+      <span class="reach-status-dot" id="reach-status-dot"></span>
     </p>
-    <p class="chart-caption">每 20 秒对 5 个公共 DNS 发起 UDP 查询，任一成功即可达
+    <p class="chart-caption">每 12 秒对 5 个公共 DNS 发起 UDP 查询，任一成功即可达
       <a href="javascript:void(0)" id="reach-detail-toggle">详情 ›</a>
     </p>
-    <p class="chart-caption chart-caption-detail" id="reach-detail" style="display:none;">每 20 秒对 5 个公共 DNS 服务器发起 UDP 查询（ntp.ntsc.ac.cn / ntp.sjtu.edu.cn），任一服务器成功响应即视为该轮可达；左轴可达率 = 每个统计桶（1h~1d 视图按分钟、7d 视图按小时）内成功轮次占比，右轴 = 延时（毫秒）</p>
+    <p class="chart-caption chart-caption-detail" id="reach-detail" style="display:none;">每 12 秒对 5 个公共 DNS 服务器发起 UDP 查询（ntp.ntsc.ac.cn / ntp.sjtu.edu.cn），任一服务器成功响应即视为该轮可达；左轴可达率 = 每个统计桶（1h~1d 视图按分钟、7d 视图按小时）内成功轮次占比，右轴 = 延时（毫秒）</p>
     <div id="reachability-chart"></div>
 
     <!-- rustnetec: T-D2 — RTT 趋势折线（p50/p95/p99 双轴，最近 1h） -->
@@ -2374,7 +2386,22 @@
   var reachChart = null;
   var reachTimer = null;
   var reachSecs = 3600;
-  var REACH_COLORS = { ok: "#3fb950", rtt: "#f0883e" };
+  var REACH_COLORS = { ok: "#3fb950", warn: "#d29922", bad: "#f85149", rtt: "#58a6ff" };
+
+  // 可达率分档配色：=100% 绿、>50% 且 <100% 黄、<=50% 红
+  function reachColorFor(ratioVal) {
+    if (ratioVal >= 1) return REACH_COLORS.ok;
+    if (ratioVal > 0.5) return REACH_COLORS.warn;
+    return REACH_COLORS.bad;
+  }
+  // 当前窗口内最差（最低）可达率，用于标题状态圆点
+  function reachWorst(ratioArr) {
+    var min = 1;
+    for (var i = 0; i < ratioArr.length; i++) {
+      if (ratioArr[i][1] < min) min = ratioArr[i][1];
+    }
+    return min;
+  }
 
   function reachBucketFor(secs) {
     if (secs <= 86400) return "1min";
@@ -2429,11 +2456,24 @@
           splitLine: { show: false },
         },
       ],
+      visualMap: {
+        show: false,
+        dimension: 1,       // 对 y 值（可达率 ratio，0~1）分段着色
+        seriesIndex: 0,     // 仅作用于"可达率"折线，不影响"延时"
+        pieces: [
+          { lte: 0.5, color: REACH_COLORS.bad },        // <=50% 红
+          { gt: 0.5, lt: 1, color: REACH_COLORS.warn }, // >50% 且 <100% 黄
+          { gte: 1, color: REACH_COLORS.ok },           // =100% 绿
+        ],
+        outOfRange: { color: REACH_COLORS.ok },
+      },
       series: [
         {
           name: "可达率", type: "line", yAxisIndex: 0, showSymbol: false, smooth: true,
-          lineStyle: { color: REACH_COLORS.ok, width: 1.5 },
-          areaStyle: { color: "rgba(63,185,80,0.12)" },
+          // 分段着色由上方 visualMap 统一处理：仅低于 100% 的线段按档变黄/红，
+          // 满 100% 段保持绿色（lineStyle 不再设 color，避免覆盖 visualMap）
+          lineStyle: { width: 1.5 },
+          areaStyle: { opacity: 0.1 },
           data: [],
         },
         {
@@ -2466,7 +2506,7 @@
     }
 
     pollReachability();
-    // 10s 轮询（探测每 20s 一轮，10s 足够跟进而不过密）
+    // 10s 轮询（探测每 15s 一轮，10s 足够跟进而不过密）
     reachTimer = setInterval(function () { if (isPageVisible) pollReachability(); }, 10000);
   }
 
@@ -2490,7 +2530,12 @@
             rtt.push([ts, Number(b.min_latency_ms)]);
           }
         }
+        // 折线分段着色已在 series 配置中以函数实现：仅低于 100% 的线段
+        // 按档变黄/红，满 100% 段保持绿色。此处只需更新数据。
         reachChart.setOption({ series: [{ data: ratio }, { data: rtt }] });
+        // 标题最右侧状态圆点：取当前窗口最差可达率分档着色
+        var dot = document.getElementById("reach-status-dot");
+        if (dot) dot.style.background = reachColorFor(ratio.length ? reachWorst(ratio) : 1);
       })
       .catch(function () { /* 静默置空 */ });
   }

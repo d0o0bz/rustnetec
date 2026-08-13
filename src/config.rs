@@ -336,7 +336,7 @@ pub struct PersistentConfig {
     /// 探测目标，格式 `ip:port` 或 `host:port`；任一成功即视为可达。
     #[serde(default = "default_reachability_targets")]
     pub reachability_targets: Vec<String>,
-    /// 探测间隔（秒），默认 30s。
+    /// 探测间隔（秒），默认 12s。
     #[serde(default = "default_reachability_interval_secs")]
     pub reachability_interval_secs: u32,
 
@@ -399,7 +399,7 @@ fn default_reachability_targets() -> Vec<String> {
     ]
 }
 fn default_reachability_interval_secs() -> u32 {
-    20
+    12
 }
 
 fn default_http_port() -> u16 {

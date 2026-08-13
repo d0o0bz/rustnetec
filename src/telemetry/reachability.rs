@@ -30,7 +30,7 @@ use crate::config::PersistentConfig;
 /// 单个目标的 UDP 收发超时。
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 /// 探测目标解析失败/关闭时的兜底间隔。
-const DEFAULT_INTERVAL_SECS: u64 = 20;
+const DEFAULT_INTERVAL_SECS: u64 = 12;
 /// 「快」目标延迟阈值（毫秒）：命中即早退。
 /// 国内 DNS 通常 <50ms，国外（如 8.8.8.8）~180ms；设为 150ms 可优先国内。
 const FAST_THRESHOLD_MS: f64 = 150.0;
