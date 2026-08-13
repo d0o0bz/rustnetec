@@ -410,7 +410,6 @@ fn default_http_port() -> u16 {
 fn default_tray_status_fields() -> Vec<TrayStatusField> {
     vec![
         TrayStatusField::State,
-        TrayStatusField::Interface,
         TrayStatusField::RateIn,
         TrayStatusField::RateOut,
         TrayStatusField::Connections,

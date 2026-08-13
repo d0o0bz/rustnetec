@@ -276,6 +276,15 @@ impl TrayController {
             "⏸ 暂停捕获"
         };
         let _ = self.pause_item.set_text(pause_label);
+
+        // Windows: re-associate the menu so the popup status line repaints
+        // (see refresh_status_from_live for the rationale).
+        #[cfg(target_os = "windows")]
+        {
+            let _ = self
+                ._tray_icon
+                .set_menu(Some(Box::new(self.menu.clone())));
+        }
     }
 
     /// Refresh the dynamic status line + tooltip from the daemon's live
@@ -315,6 +324,19 @@ impl TrayController {
             "⏸ 暂停捕获"
         };
         self.pause_item.set_text(pause_label);
+
+        // Windows: the system-tray menu is shown via TrackPopupMenu from a
+        // cached HMENU, and `set_text` (SetMenuItemInfoW) alone does not always
+        // repaint the popup menu item's text on the next open. Re-associating
+        // the menu with the tray icon forces the host to re-read the updated
+        // HMENU, so the status line refreshes dynamically. macOS refreshes via
+        // Cocoa automatically; Linux (AppIndicator) rebuilds on update.
+        #[cfg(target_os = "windows")]
+        {
+            let _ = self
+                ._tray_icon
+                .set_menu(Some(Box::new(self.menu.clone())));
+        }
     }
 
     /// Build a `StatusContext` from the daemon's `/live` JSON snapshot.
