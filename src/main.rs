@@ -3024,30 +3024,37 @@ fn print_missing_npcap_text(wpcap_available: bool, packet_available: bool) {
     eprintln!("╚═══════════════════════════════════════════════════════════════════════════╝");
     eprintln!();
     eprintln!("RustNet requires Npcap for packet capture on Windows.");
+    eprintln!("RustNet 在 Windows 上抓包需要安装 Npcap。");
     eprintln!();
 
     if !wpcap_available {
-        eprintln!("  ✗ wpcap.dll not found");
+        eprintln!("  ✗ wpcap.dll not found / 未找到 wpcap.dll");
     }
     if !packet_available {
-        eprintln!("  ✗ Packet.dll not found");
+        eprintln!("  ✗ Packet.dll not found / 未找到 Packet.dll");
     }
 
     eprintln!();
-    eprintln!("To fix this:");
+    eprintln!("To fix this / 解决方法：");
     eprintln!();
     eprintln!("  1. Download Npcap from: https://npcap.com/dist/");
+    eprintln!("     下载 Npcap：https://npcap.com/dist/");
     eprintln!("     (e.g. https://npcap.com/dist/npcap-1.88.exe)");
-    eprintln!("  2. Run the installer");
+    eprintln!("  2. Run the installer / 运行安装程序");
     eprintln!("  3. IMPORTANT: Check \"Install Npcap in WinPcap API-compatible Mode\"");
+    eprintln!("     重要：勾选“Install Npcap in WinPcap API-compatible Mode”（WinPcap 兼容模式）");
     eprintln!("  4. IMPORTANT: Uncheck \"Restrict Npcap driver's access to");
     eprintln!("     Administrators only\" so standard users can capture packets");
-    eprintln!("  5. Complete the installation");
+    eprintln!("     重要：取消勾选“Restrict Npcap driver's access to Administrators only”，");
+    eprintln!("     以便普通用户也能抓包");
+    eprintln!("  5. Complete the installation / 完成安装");
     eprintln!();
     eprintln!("Only the driver installation needs one-time elevation; after that,");
     eprintln!("packet capture works without Administrator privileges.");
+    eprintln!("仅驱动安装时需要一次管理员权限，之后普通用户即可抓包。");
     eprintln!();
     eprintln!("After installation, restart your terminal and try again.");
+    eprintln!("安装完成后请重新启动终端再运行本程序。");
     eprintln!();
 }
 
@@ -3076,17 +3083,22 @@ fn show_missing_npcap_messagebox(wpcap_available: bool, packet_available: bool) 
     }
 
     let text = format!(
-        "RustNet requires Npcap for packet capture, but it is not installed on this system.\n\n\
-         Missing: {}\n\n\
-         To fix this:\n\
+        "RustNet requires Npcap for packet capture, but it is not installed on this system.\n\
+         RustNet 在 Windows 上抓包需要 Npcap，但本机尚未安装。\n\n\
+         Missing / 缺失：{}\n\n\
+         To fix this / 解决方法：\n\
          1. Download Npcap from https://npcap.com/dist/\n\
-         2. Run the installer\n\
+            下载 Npcap：https://npcap.com/dist/\n\
+         2. Run the installer / 运行安装程序\n\
          3. Check \"Install Npcap in WinPcap API-compatible Mode\"\n\
+            勾选“Install Npcap in WinPcap API-compatible Mode”（WinPcap 兼容模式）\n\
          4. Uncheck \"Restrict Npcap driver's access to Administrators only\"\n\
-         5. Complete the installation and restart RustNet",
+            取消勾选“Restrict Npcap driver's access to Administrators only”，以便普通用户也能抓包\n\
+         5. Complete the installation and restart RustNet\n\
+            完成安装后重新启动 RustNet",
         missing.join(", ")
     );
-    let title = "Missing Npcap dependency";
+    let title = "Missing Npcap dependency / 缺少 Npcap 依赖";
 
     let text_wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
     let title_wide: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();
