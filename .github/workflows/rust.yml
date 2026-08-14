@@ -1,18 +1,18 @@
 name: Rust
 
 on:
-  push:
-    branches: [ "main" ]
-    paths:
-      - 'src/**'
-      - 'crates/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'build.rs'
-      - 'benches/**'
-      - 'Dockerfile'
-      - '.cargo/audit.toml'
-      - '.github/workflows/rust.yml'
+  # push:
+  #   branches: [ "main" ]
+  #   paths:
+  #     - 'src/**'
+  #     - 'crates/**'
+  #     - 'Cargo.toml'
+  #     - 'Cargo.lock'
+  #     - 'build.rs'
+  #     - 'benches/**'
+  #     - 'Dockerfile'
+  #     - '.cargo/audit.toml'
+  #     - '.github/workflows/rust.yml'
   pull_request:
     branches: [ "main" ]
     paths:
