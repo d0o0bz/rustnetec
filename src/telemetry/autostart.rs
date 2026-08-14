@@ -55,6 +55,22 @@ impl AutostartMode {
             AutostartMode::Tray => "tray",
         }
     }
+
+    /// Whether this mode requires a graphical (user) session and should be
+    /// ordered after `graphical-session.target` on Linux systemd.
+    ///
+    /// When the `tray` feature is disabled `Tray` is not constructible, so the
+    /// only possible mode is `Daemon` and this always returns `false`.
+    #[cfg(feature = "tray")]
+    pub fn needs_graphical_session(self) -> bool {
+        matches!(self, AutostartMode::Tray)
+    }
+
+    /// See `needs_graphical_session` — `false` when `tray` is disabled.
+    #[cfg(not(feature = "tray"))]
+    pub fn needs_graphical_session(self) -> bool {
+        false
+    }
 }
 
 /// Absolute path to the current executable, used as `ExecStart` / `ProgramArguments`.
@@ -176,12 +192,12 @@ fn install_linux(mode: AutostartMode) -> Result<()> {
 
     let exe = current_exe_path()?;
     let flag = mode.cli_flag();
-    let after = if matches!(mode, AutostartMode::Tray) {
+    let after = if mode.needs_graphical_session() {
         "After=graphical-session.target\n"
     } else {
         ""
     };
-    let wanted_by = if matches!(mode, AutostartMode::Tray) {
+    let wanted_by = if mode.needs_graphical_session() {
         "graphical-session.target"
     } else {
         "default.target"
