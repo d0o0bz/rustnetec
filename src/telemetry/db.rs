@@ -971,7 +971,7 @@ impl SqliteSink {
              service_name, direction, dpi_protocol, dpi_domain, \
              geoip_country_code, geoip_country_name, geoip_asn, \
              geoip_as_org, geoip_city, geoip_postal_code, \
-             bytes_sent, bytes_received, duration_secs \
+             bytes_sent, bytes_received, duration_secs, interface \
              FROM connection_events WHERE id > ? ORDER BY id ASC LIMIT ?",
         )?;
         let rows = stmt.query_map(params![after_id, limit as i64], |r| {

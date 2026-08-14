@@ -24,6 +24,19 @@ use rustnet_server::db::{self, ServerDbConfig, retention};
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// 初始化测试日志 (stderr), 让 upload 线程的 warn!/info! 在 --nocapture 下可见。
+fn init_logger() {
+    use std::sync::Once;
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        let _ = simplelog::WriteLogger::init(
+            simplelog::LevelFilter::Debug,
+            simplelog::Config::default(),
+            std::io::stderr(),
+        );
+    });
+}
+
 fn tmp_db(tag: &str) -> std::path::PathBuf {
     use std::sync::atomic::{AtomicU64, Ordering};
     static SEQ: AtomicU64 = AtomicU64::new(0);
@@ -84,6 +97,7 @@ fn read_cursor(path: &std::path::Path) -> i64 {
 
 #[test]
 fn full_chain_client_upload_to_server_query_stats() {
+    init_logger();
     let client_db = tmp_db("full");
     seed_client_db(
         &client_db,
@@ -161,6 +175,7 @@ fn full_chain_client_upload_to_server_query_stats() {
 
 #[test]
 fn ip_list_changes_but_user_id_stable() {
+    init_logger();
     let client_db = tmp_db("ip");
     seed_client_db(&client_db, &[(1, "2026-08-01T00:00:00+00:00", 443)]);
 
@@ -218,6 +233,7 @@ fn ip_list_changes_but_user_id_stable() {
 
 #[test]
 fn network_outage_then_recovery_replays_all() {
+    init_logger();
     let client_db = tmp_db("replay");
     seed_client_db(
         &client_db,

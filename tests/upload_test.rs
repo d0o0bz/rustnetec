@@ -23,6 +23,19 @@ use rustnet_monitor::telemetry::upload::UploadSink;
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// 初始化测试日志 (stderr), 让 upload 线程的 warn!/info! 在 --nocapture 下可见。
+fn init_logger() {
+    use std::sync::Once;
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        let _ = simplelog::WriteLogger::init(
+            simplelog::LevelFilter::Debug,
+            simplelog::Config::default(),
+            std::io::stderr(),
+        );
+    });
+}
+
 fn tmp_db() -> std::path::PathBuf {
     use std::sync::atomic::{AtomicU64, Ordering};
     static SEQ: AtomicU64 = AtomicU64::new(0);
@@ -85,6 +98,7 @@ fn read_cursor(path: &std::path::Path) -> i64 {
 
 #[test]
 fn failure_then_success_advances_cursor() {
+    init_logger();
     let db = tmp_db();
     seed_schema(&db);
 
@@ -135,6 +149,7 @@ fn failure_then_success_advances_cursor() {
 
 #[test]
 fn idempotent_upload_advances_cursor() {
+    init_logger();
     let db = tmp_db();
     seed_schema(&db);
 
