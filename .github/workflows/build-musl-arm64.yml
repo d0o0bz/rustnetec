@@ -49,8 +49,8 @@ jobs:
           RUSTFLAGS: "-C strip=symbols -C link-arg=-l:libzstd.a"
         run: |
           cargo build --release
-          file target/release/rustnet
-          file target/release/rustnet | grep -q "static.* linked" || \
+          file target/release/rustnetec
+          file target/release/rustnetec | grep -q "static.* linked" || \
             (echo "ERROR: Binary is not statically linked" && exit 1)
 
       - name: Create release archive
@@ -58,7 +58,7 @@ jobs:
           VERSION="${{ inputs.version }}"
           staging="rustnet-${VERSION}-aarch64-unknown-linux-musl"
           mkdir -p "$staging/assets"
-          cp target/release/rustnet "$staging/"
+          cp target/release/rustnetec "$staging/"
           cp crates/rustnet-core/assets/services "$staging/assets/" 2>/dev/null || true
           cp README.md "$staging/"
           cp LICENSE "$staging/" 2>/dev/null || true

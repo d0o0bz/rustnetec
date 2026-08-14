@@ -189,7 +189,7 @@ jobs:
 
       - name: Verify static linking
         run: |
-          BIN="${{ (matrix.arch == 'armv7' && 'target/armv7-unknown-linux-musleabihf/release/rustnet') || (matrix.arch == 'x86' && 'target/i686-unknown-linux-musl/release/rustnet') || 'target/release/rustnet' }}"
+          BIN="${{ (matrix.arch == 'armv7' && 'target/armv7-unknown-linux-musleabihf/release/rustnetec') || (matrix.arch == 'x86' && 'target/i686-unknown-linux-musl/release/rustnetec') || 'target/release/rustnetec' }}"
           file "$BIN"
           file "$BIN" | grep -q "static.* linked" || \
             (echo "ERROR: Binary is not statically linked" && exit 1)
@@ -200,9 +200,9 @@ jobs:
           ARTIFACT="${{ matrix.artifact }}"
 
           case "${{ matrix.arch }}" in
-            armv7) BIN="target/armv7-unknown-linux-musleabihf/release/rustnet" ;;
-            x86)   BIN="target/i686-unknown-linux-musl/release/rustnet" ;;
-            *)     BIN="target/release/rustnet" ;;
+            armv7) BIN="target/armv7-unknown-linux-musleabihf/release/rustnetec" ;;
+            x86)   BIN="target/i686-unknown-linux-musl/release/rustnetec" ;;
+            *)     BIN="target/release/rustnetec" ;;
           esac
 
           staging="rustnet-${VERSION}-${ARTIFACT}"

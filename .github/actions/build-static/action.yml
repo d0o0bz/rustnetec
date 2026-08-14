@@ -24,7 +24,7 @@ runs:
     - name: Verify static linking
       shell: sh
       run: |
-        file target/release/rustnet
+        file target/release/rustnetec
         # Use file command to verify (ldd behaves differently inside Alpine)
-        file target/release/rustnet | grep -q "static.* linked" || \
+        file target/release/rustnetec | grep -q "static.* linked" || \
           (echo "ERROR: Binary is not statically linked" && exit 1)
