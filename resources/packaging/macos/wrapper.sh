@@ -15,4 +15,4 @@ DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 LOG="${HOME}/Library/Logs/rustnet-tray.log"
 mkdir -p "$(dirname "$LOG")"
 
-exec "$DIR/rustnet" --tray "$@" >> "$LOG" 2>&1
+exec "$DIR/rustnetec" --tray "$@" >> "$LOG" 2>&1

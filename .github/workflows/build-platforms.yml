@@ -130,8 +130,8 @@ jobs:
         if: ${{ !inputs.create-archives }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: rustnet-${{ matrix.build }}
-          path: target/${{ matrix.target }}/release/rustnet${{ contains(matrix.os, 'windows') && '.exe' || '' }}
+          name: rustnetec-${{ matrix.build }}
+          path: target/${{ matrix.target }}/release/rustnetec${{ contains(matrix.os, 'windows') && '.exe' || '' }}
           if-no-files-found: error
 
       # For release builds: create archive with README/LICENSE
@@ -139,9 +139,9 @@ jobs:
         if: ${{ inputs.create-archives }}
         shell: bash
         env:
-          RUSTNET_BIN: ${{ contains(matrix.os, 'windows') && 'rustnet.exe' || 'rustnet' }}
+          RUSTNET_BIN: ${{ contains(matrix.os, 'windows') && 'rustnetec.exe' || 'rustnetec' }}
         run: |
-          staging="rustnet-${{ inputs.version }}-${{ matrix.target }}"
+          staging="rustnetec-${{ inputs.version }}-${{ matrix.target }}"
           mkdir -p "$staging"
 
           cp "target/${{ matrix.target }}/release/$RUSTNET_BIN" "$staging/"
@@ -306,7 +306,7 @@ jobs:
       - name: Verify static linking (Android)
         if: matrix.arch != 'x86_64'
         run: |
-          BIN="${{ (matrix.arch == 'armv7-android' && 'target/armv7-unknown-linux-musleabihf/release/rustnet') || (matrix.arch == 'x86-android' && 'target/i686-unknown-linux-musl/release/rustnet') || 'target/release/rustnet' }}"
+          BIN="${{ (matrix.arch == 'armv7-android' && 'target/armv7-unknown-linux-musleabihf/release/rustnetec') || (matrix.arch == 'x86-android' && 'target/i686-unknown-linux-musl/release/rustnetec') || 'target/release/rustnetec' }}"
           file "$BIN"
           file "$BIN" | grep -q "static.* linked" || \
             (echo "ERROR: Binary is not statically linked" && exit 1)
@@ -316,20 +316,20 @@ jobs:
         if: ${{ !inputs.create-archives }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: rustnet-linux-static-${{ matrix.arch }}
-          path: ${{ (matrix.arch == 'armv7-android' && 'target/armv7-unknown-linux-musleabihf/release/rustnet') || (matrix.arch == 'x86-android' && 'target/i686-unknown-linux-musl/release/rustnet') || 'target/release/rustnet' }}
+          name: rustnetec-linux-static-${{ matrix.arch }}
+          path: ${{ (matrix.arch == 'armv7-android' && 'target/armv7-unknown-linux-musleabihf/release/rustnetec') || (matrix.arch == 'x86-android' && 'target/i686-unknown-linux-musl/release/rustnetec') || 'target/release/rustnetec' }}
           if-no-files-found: error
 
       # For release builds: create archive
       - name: Create release archive
         if: ${{ inputs.create-archives }}
         run: |
-          BIN="${{ (matrix.arch == 'armv7-android' && 'target/armv7-unknown-linux-musleabihf/release/rustnet') || (matrix.arch == 'x86-android' && 'target/i686-unknown-linux-musl/release/rustnet') || 'target/release/rustnet' }}"
+          BIN="${{ (matrix.arch == 'armv7-android' && 'target/armv7-unknown-linux-musleabihf/release/rustnetec') || (matrix.arch == 'x86-android' && 'target/i686-unknown-linux-musl/release/rustnetec') || 'target/release/rustnetec' }}"
 
-          staging="rustnet-${{ inputs.version }}-${{ matrix.target }}"
+          staging="rustnetec-${{ inputs.version }}-${{ matrix.target }}"
           mkdir -p "$staging/assets"
 
-          cp "$BIN" "$staging/rustnet"
+          cp "$BIN" "$staging/rustnetec"
           cp crates/rustnet-core/assets/services "$staging/assets/" 2>/dev/null || true
           cp README.md "$staging/"
           cp LICENSE "$staging/" 2>/dev/null || true
@@ -341,7 +341,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: build-${{ matrix.target }}
-          path: rustnet-${{ inputs.version }}-${{ matrix.target }}.tar.gz
+          path: rustnetec-${{ inputs.version }}-${{ matrix.target }}.tar.gz
           if-no-files-found: error
 
   # aarch64 static builds run on a native ARM runner WITHOUT a job-level container:
@@ -387,8 +387,8 @@ jobs:
 
       - name: Verify static linking
         run: |
-          file target/release/rustnet
-          file target/release/rustnet | grep -q "static.* linked" || \
+          file target/release/rustnetec
+          file target/release/rustnetec | grep -q "static.* linked" || \
             (echo "ERROR: Binary is not statically linked" && exit 1)
 
       # For test builds: upload raw binary
@@ -396,18 +396,18 @@ jobs:
         if: ${{ !inputs.create-archives }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: rustnet-linux-static-${{ matrix.arch }}
-          path: target/release/rustnet
+          name: rustnetec-linux-static-${{ matrix.arch }}
+          path: target/release/rustnetec
           if-no-files-found: error
 
       # For release builds: create archive
       - name: Create release archive
         if: ${{ inputs.create-archives }}
         run: |
-          staging="rustnet-${{ inputs.version }}-${{ matrix.target }}"
+          staging="rustnetec-${{ inputs.version }}-${{ matrix.target }}"
           mkdir -p "$staging/assets"
 
-          cp target/release/rustnet "$staging/"
+          cp target/release/rustnetec "$staging/"
           cp crates/rustnet-core/assets/services "$staging/assets/" 2>/dev/null || true
           cp README.md "$staging/"
           cp LICENSE "$staging/" 2>/dev/null || true
@@ -419,6 +419,6 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: build-${{ matrix.target }}
-          path: rustnet-${{ inputs.version }}-${{ matrix.target }}.tar.gz
+          path: rustnetec-${{ inputs.version }}-${{ matrix.target }}.tar.gz
           if-no-files-found: error
 

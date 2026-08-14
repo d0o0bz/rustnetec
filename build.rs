@@ -72,18 +72,18 @@ fn generate_assets() -> Result<()> {
 
     // completion
     for &shell in Shell::value_variants() {
-        clap_complete::generate_to(shell, &mut cmd, "rustnet", &asset_dir)?;
+        clap_complete::generate_to(shell, &mut cmd, "rustnetec", &asset_dir)?;
     }
 
     // manpage
-    let mut manpage_out = File::create(asset_dir.join("rustnet.1"))?;
+    let mut manpage_out = File::create(asset_dir.join("rustnetec.1"))?;
     let manpage = Man::new(cmd);
     manpage.render(&mut manpage_out)?;
 
     Ok(())
 }
 
-/// rustnetec: 构建期把 rustnetec.ico 嵌入 exe 资源，使 rustnet.exe 在
+/// rustnetec: 构建期把 rustnetec.ico 嵌入 exe 资源，使 rustnetec.exe 在
 /// 资源管理器/任务栏显示品牌图标。仅 Windows 原生构建生效（build.rs 的
 /// cfg(target_os) 基于宿主平台；macOS 交叉编译不会执行）。
 #[cfg(target_os = "windows")]

@@ -108,7 +108,7 @@ jobs:
           fi
 
           # Upload all build artifacts
-          for artifact in artifacts/build-*/rustnet-*; do
+          for artifact in artifacts/build-*/rustnetec-*; do
             gh release upload ${{ github.ref_name }} "$artifact" --clobber
           done
 
@@ -150,16 +150,16 @@ jobs:
 
       - name: Verify static linking
         run: |
-          file target/release/rustnet
-          file target/release/rustnet | grep -q "static.* linked" || \
+          file target/release/rustnetec
+          file target/release/rustnetec | grep -q "static.* linked" || \
             (echo "ERROR: Binary is not statically linked" && exit 1)
 
       - name: Create and upload release archive
         run: |
-          staging="rustnet-${{ github.ref_name }}-aarch64-unknown-linux-musl"
+          staging="rustnetec-${{ github.ref_name }}-aarch64-unknown-linux-musl"
           mkdir -p "$staging/assets"
 
-          cp target/release/rustnet "$staging/"
+          cp target/release/rustnetec "$staging/"
           cp crates/rustnet-core/assets/services "$staging/assets/" 2>/dev/null || true
           cp README.md "$staging/"
           cp LICENSE "$staging/" 2>/dev/null || true
@@ -336,7 +336,7 @@ jobs:
 
       - name: Verify static linking
         run: |
-          BIN="${{ (matrix.arch == 'armv7' && 'target/armv7-unknown-linux-musleabihf/release/rustnet') || (matrix.arch == 'x86' && 'target/i686-unknown-linux-musl/release/rustnet') || 'target/release/rustnet' }}"
+          BIN="${{ (matrix.arch == 'armv7' && 'target/armv7-unknown-linux-musleabihf/release/rustnetec') || (matrix.arch == 'x86' && 'target/i686-unknown-linux-musl/release/rustnetec') || 'target/release/rustnetec' }}"
           file "$BIN"
           file "$BIN" | grep -q "static.* linked" || \
             (echo "ERROR: Binary is not statically linked" && exit 1)
@@ -347,14 +347,14 @@ jobs:
           ARTIFACT="${{ matrix.artifact }}"
 
           case "${{ matrix.arch }}" in
-            armv7) BIN="target/armv7-unknown-linux-musleabihf/release/rustnet" ;;
-            x86)   BIN="target/i686-unknown-linux-musl/release/rustnet" ;;
-            *)     BIN="target/release/rustnet" ;;
+            armv7) BIN="target/armv7-unknown-linux-musleabihf/release/rustnetec" ;;
+            x86)   BIN="target/i686-unknown-linux-musl/release/rustnetec" ;;
+            *)     BIN="target/release/rustnetec" ;;
           esac
 
-          staging="rustnet-${VERSION}-${ARTIFACT}"
+          staging="rustnetec-${VERSION}-${ARTIFACT}"
           mkdir -p "$staging/assets"
-          cp "$BIN" "$staging/rustnet"
+          cp "$BIN" "$staging/rustnetec"
           cp crates/rustnet-core/assets/services "$staging/assets/" 2>/dev/null || true
           cp README.md "$staging/"
           cp LICENSE "$staging/" 2>/dev/null || true
@@ -363,7 +363,7 @@ jobs:
       - name: Upload to release
         run: |
           VERSION="${{ github.ref_name }}"
-          ARCHIVE="rustnet-${VERSION}-${{ matrix.artifact }}.tar.gz"
+          ARCHIVE="rustnetec-${VERSION}-${{ matrix.artifact }}.tar.gz"
           gh release upload "$VERSION" "$ARCHIVE" --repo "${{ github.repository }}" --clobber
         env:
           GH_TOKEN: ${{ github.token }}
@@ -502,14 +502,14 @@ jobs:
             esac
 
             # Extract binary and assets from artifact
-            tar -xzf "artifacts/build-$target/rustnet-${{ github.ref_name }}-$target.tar.gz"
+            tar -xzf "artifacts/build-$target/rustnetec-${{ github.ref_name }}-$target.tar.gz"
             mkdir -p "target/$target/release"
-            cp "rustnet-${{ github.ref_name }}-$target/rustnet" "target/$target/release/"
+            cp "rustnetec-${{ github.ref_name }}-$target/rustnetec" "target/$target/release/"
 
             # Ensure services file exists for packaging
             mkdir -p crates/rustnet-core/assets
-            if [ -f "rustnet-${{ github.ref_name }}-$target/assets/services" ]; then
-              cp "rustnet-${{ github.ref_name }}-$target/assets/services" crates/rustnet-core/assets/
+            if [ -f "rustnetec-${{ github.ref_name }}-$target/assets/services" ]; then
+              cp "rustnetec-${{ github.ref_name }}-$target/assets/services" crates/rustnet-core/assets/
             fi
 
             # Create deb package
@@ -517,7 +517,7 @@ jobs:
             mv "target/$target/debian"/*.deb "installers/Rustnet_LinuxDEB_$arch.deb"
 
             # Clean up for next iteration
-            rm -rf "rustnet-${{ github.ref_name }}-$target" "target/$target"
+            rm -rf "rustnetec-${{ github.ref_name }}-$target" "target/$target"
           done
 
       - name: Package RPM packages
@@ -526,25 +526,25 @@ jobs:
             target="$arch-unknown-linux-gnu"
 
             # Extract binary and assets from artifact
-            tar -xzf "artifacts/build-$target/rustnet-${{ github.ref_name }}-$target.tar.gz"
+            tar -xzf "artifacts/build-$target/rustnetec-${{ github.ref_name }}-$target.tar.gz"
             mkdir -p "target/$target/release"
-            cp "rustnet-${{ github.ref_name }}-$target/rustnet" "target/$target/release/"
+            cp "rustnetec-${{ github.ref_name }}-$target/rustnetec" "target/$target/release/"
 
             # Ensure services file exists for packaging
             mkdir -p crates/rustnet-core/assets
-            if [ -f "rustnet-${{ github.ref_name }}-$target/assets/services" ]; then
-              cp "rustnet-${{ github.ref_name }}-$target/assets/services" crates/rustnet-core/assets/
+            if [ -f "rustnetec-${{ github.ref_name }}-$target/assets/services" ]; then
+              cp "rustnetec-${{ github.ref_name }}-$target/assets/services" crates/rustnet-core/assets/
             fi
 
             # Fix library linking if needed
-            patchelf --replace-needed libpcap.so.0.8 libpcap.so.1 "target/$target/release/rustnet" 2>/dev/null || true
+            patchelf --replace-needed libpcap.so.0.8 libpcap.so.1 "target/$target/release/rustnetec" 2>/dev/null || true
 
             # Create rpm package
             cargo generate-rpm --target "$target"
             mv "target/$target/generate-rpm"/*.rpm "installers/Rustnet_LinuxRPM_$arch.rpm"
 
             # Clean up for next iteration
-            rm -rf "rustnet-${{ github.ref_name }}-$target" "target/$target"
+            rm -rf "rustnetec-${{ github.ref_name }}-$target" "target/$target"
           done
 
       - name: Upload installer packages
@@ -586,7 +586,7 @@ jobs:
       - name: Package for macOS
         run: |
           # Extract binary
-          tar -xzf "artifacts/rustnet-${{ github.ref_name }}-${{ matrix.target }}.tar.gz"
+          tar -xzf "artifacts/rustnetec-${{ github.ref_name }}-${{ matrix.target }}.tar.gz"
 
           # Get version and update plist
           VERSION=$(toml get Cargo.toml package.version --raw)
@@ -596,10 +596,10 @@ jobs:
           mkdir -p "Rustnet.app/Contents/"{MacOS,Resources/assets}
           cp resources/packaging/macos/Info.plist "Rustnet.app/Contents/"
           cp resources/packaging/macos/graphics/rustnetec.icns "Rustnet.app/Contents/Resources/"
-          cp "rustnet-${{ github.ref_name }}-${{ matrix.target }}/rustnet" "Rustnet.app/Contents/MacOS/"
+          cp "rustnetec-${{ github.ref_name }}-${{ matrix.target }}/rustnetec" "Rustnet.app/Contents/MacOS/"
           cp resources/packaging/macos/wrapper.sh "Rustnet.app/Contents/MacOS/"
-          cp "rustnet-${{ github.ref_name }}-${{ matrix.target }}/assets/services" "Rustnet.app/Contents/Resources/assets/"
-          chmod +x "Rustnet.app/Contents/MacOS/"{rustnet,wrapper.sh}
+          cp "rustnetec-${{ github.ref_name }}-${{ matrix.target }}/assets/services" "Rustnet.app/Contents/Resources/assets/"
+          chmod +x "Rustnet.app/Contents/MacOS/"{rustnetec,wrapper.sh}
 
       - name: Code sign and notarize app bundle
         env:
@@ -732,19 +732,19 @@ jobs:
         run: |
           # Extract binary and assets
           Write-Host "Extracting artifact..."
-          Expand-Archive -LiteralPath "artifacts\rustnet-${{ github.ref_name }}-${{ matrix.target }}.zip" -DestinationPath . -Force
+          Expand-Archive -LiteralPath "artifacts\rustnetec-${{ github.ref_name }}-${{ matrix.target }}.zip" -DestinationPath . -Force
 
           # Create target directory structure
           New-Item -ItemType Directory -Path "target\${{ matrix.target }}\release" -Force
 
           # Copy binary
-          Copy-Item -Path "rustnet-${{ github.ref_name }}-${{ matrix.target }}\rustnet.exe" -Destination "target\${{ matrix.target }}\release\" -Force
+          Copy-Item -Path "rustnetec-${{ github.ref_name }}-${{ matrix.target }}\rustnetec.exe" -Destination "target\${{ matrix.target }}\release\" -Force
           Write-Host "Binary copied to target directory"
 
           # Copy services file if it exists
           New-Item -ItemType Directory -Path "assets" -Force
-          if (Test-Path "rustnet-${{ github.ref_name }}-${{ matrix.target }}\assets\services") {
-            Copy-Item -Path "rustnet-${{ github.ref_name }}-${{ matrix.target }}\assets\services" -Destination "assets\" -Force
+          if (Test-Path "rustnetec-${{ github.ref_name }}-${{ matrix.target }}\assets\services") {
+            Copy-Item -Path "rustnetec-${{ github.ref_name }}-${{ matrix.target }}\assets\services" -Destination "assets\" -Force
             Write-Host "Services file copied successfully"
           } else {
             Write-Host "Warning: No services file found"

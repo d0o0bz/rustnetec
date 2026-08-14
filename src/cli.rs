@@ -14,7 +14,7 @@ const BPF_HELP: &str =
     "BPF filter expression for packet capture (e.g., \"tcp port 443\", \"dst port 80\")";
 
 pub fn build_cli() -> Command {
-    let cmd = Command::new("rustnet")
+    let cmd = Command::new("rustnetec")
         .version(env!("CARGO_PKG_VERSION"))
         .author("Network Monitor")
         .about("Cross-platform network monitoring tool")
@@ -406,7 +406,7 @@ mod tests {
     #[test]
     fn refresh_interval_defaults_to_500ms() {
         let matches = build_cli()
-            .try_get_matches_from(["rustnet"])
+            .try_get_matches_from(["rustnetec"])
             .expect("default CLI arguments should parse");
 
         assert_eq!(matches.get_one::<u64>("refresh-interval"), Some(&500));
@@ -416,7 +416,7 @@ mod tests {
     #[test]
     fn daemon_flag_parses() {
         let matches = build_cli()
-            .try_get_matches_from(["rustnet", "--daemon"])
+            .try_get_matches_from(["rustnetec", "--daemon"])
             .expect("--daemon should parse");
         assert!(matches.get_flag("daemon"));
     }
@@ -426,7 +426,7 @@ mod tests {
     #[test]
     fn autostart_flag_parses() {
         let matches = build_cli()
-            .try_get_matches_from(["rustnet", "--autostart", "--daemon"])
+            .try_get_matches_from(["rustnetec", "--autostart", "--daemon"])
             .expect("--autostart should parse");
         assert!(matches.get_flag("autostart"));
         assert!(matches.get_flag("daemon"));
@@ -445,7 +445,7 @@ mod tests {
     #[test]
     fn db_flag_parses() {
         let matches = build_cli()
-            .try_get_matches_from(["rustnet", "--db", "/tmp/test.db"])
+            .try_get_matches_from(["rustnetec", "--db", "/tmp/test.db"])
             .expect("--db should parse");
         assert_eq!(
             matches.get_one::<String>("db").map(String::as_str),
@@ -456,7 +456,7 @@ mod tests {
     #[test]
     fn server_url_flag_parses() {
         let matches = build_cli()
-            .try_get_matches_from(["rustnet", "--server-url", "https://example.com"])
+            .try_get_matches_from(["rustnetec", "--server-url", "https://example.com"])
             .expect("--server-url should parse");
         assert_eq!(
             matches.get_one::<String>("server-url").map(String::as_str),
@@ -467,7 +467,7 @@ mod tests {
     #[test]
     fn upload_interval_flag_parses() {
         let matches = build_cli()
-            .try_get_matches_from(["rustnet", "--upload-interval", "30"])
+            .try_get_matches_from(["rustnetec", "--upload-interval", "30"])
             .expect("--upload-interval should parse");
         assert_eq!(matches.get_one::<u32>("upload-interval"), Some(&30));
     }
@@ -475,7 +475,7 @@ mod tests {
     #[test]
     fn http_port_flag_parses() {
         let matches = build_cli()
-            .try_get_matches_from(["rustnet", "--http-port", "8080"])
+            .try_get_matches_from(["rustnetec", "--http-port", "8080"])
             .expect("--http-port should parse");
         assert_eq!(matches.get_one::<u16>("http-port"), Some(&8080));
     }
@@ -483,7 +483,7 @@ mod tests {
     #[test]
     fn retention_days_flag_parses() {
         let matches = build_cli()
-            .try_get_matches_from(["rustnet", "--retention-days", "30"])
+            .try_get_matches_from(["rustnetec", "--retention-days", "30"])
             .expect("--retention-days should parse");
         assert_eq!(matches.get_one::<u32>("retention-days"), Some(&30));
     }
@@ -491,7 +491,7 @@ mod tests {
     #[test]
     fn username_flag_parses() {
         let matches = build_cli()
-            .try_get_matches_from(["rustnet", "--username", "alice"])
+            .try_get_matches_from(["rustnetec", "--username", "alice"])
             .expect("--username should parse");
         assert_eq!(
             matches.get_one::<String>("username").map(String::as_str),
@@ -502,7 +502,7 @@ mod tests {
     #[test]
     fn user_id_flag_parses() {
         let matches = build_cli()
-            .try_get_matches_from(["rustnet", "--user-id", "12345"])
+            .try_get_matches_from(["rustnetec", "--user-id", "12345"])
             .expect("--user-id should parse");
         assert_eq!(matches.get_one::<i64>("user-id"), Some(&12345));
     }
@@ -510,7 +510,7 @@ mod tests {
     #[test]
     fn query_subcommand_parses() {
         let matches = build_cli()
-            .try_get_matches_from(["rustnet", "query", "--filter", "proto:TCP"])
+            .try_get_matches_from(["rustnetec", "query", "--filter", "proto:TCP"])
             .expect("query subcommand should parse");
         let sub = matches
             .subcommand_matches("query")
@@ -525,7 +525,7 @@ mod tests {
     fn query_subcommand_with_sql() {
         let matches = build_cli()
             .try_get_matches_from([
-                "rustnet",
+                "rustnetec",
                 "query",
                 "--sql",
                 "SELECT COUNT(*) FROM connection_events",
@@ -543,7 +543,7 @@ mod tests {
     #[test]
     fn query_subcommand_with_live() {
         let matches = build_cli()
-            .try_get_matches_from(["rustnet", "query", "--live"])
+            .try_get_matches_from(["rustnetec", "query", "--live"])
             .expect("query --live should parse");
         let sub = matches
             .subcommand_matches("query")
@@ -555,7 +555,7 @@ mod tests {
     #[test]
     fn install_autostart_subcommand_parses() {
         let matches = build_cli()
-            .try_get_matches_from(["rustnet", "install-autostart"])
+            .try_get_matches_from(["rustnetec", "install-autostart"])
             .expect("install-autostart subcommand should parse");
         assert!(
             matches.subcommand_matches("install-autostart").is_some(),
@@ -566,7 +566,7 @@ mod tests {
     #[test]
     fn uninstall_autostart_subcommand_parses() {
         let matches = build_cli()
-            .try_get_matches_from(["rustnet", "uninstall-autostart"])
+            .try_get_matches_from(["rustnetec", "uninstall-autostart"])
             .expect("uninstall-autostart subcommand should parse");
         assert!(
             matches.subcommand_matches("uninstall-autostart").is_some(),

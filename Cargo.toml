@@ -51,7 +51,8 @@ name = "rustnet_monitor"
 path = "src/lib.rs"
 
 [[bin]]
-name = "rustnet"
+# rustnetec: 产物名改为 rustnetec (Windows 下为 rustnetec.exe)
+name = "rustnetec"
 path = "src/main.rs"
 # The bin re-compiles every src/* module that lib.rs also re-exports.
 # Running `cargo test` on the bin therefore duplicates every unit test
@@ -148,7 +149,7 @@ clap_mangen = "0.3"
 http_req = "0.14"
 zip = "8.6"
 sha2 = "0.11"
-# rustnetec: 构建期把 rustnetec.ico 嵌入 rustnet.exe 资源（图标显示）
+# rustnetec: 构建期把 rustnetec.ico 嵌入 rustnetec.exe 资源（图标显示）
 winres = "0.1"
 windows = { version = "0.62", features = [
     "Win32_Foundation",
