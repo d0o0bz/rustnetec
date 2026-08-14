@@ -28,20 +28,20 @@ jobs:
       create-archives: false
       strip-symbols: false
 
-  trigger-freebsd-build:
-    name: trigger-freebsd-build
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Trigger FreeBSD test build
-        run: |
-          REF="${{ github.sha }}"
-          TAG="test-$(date +%Y%m%d-%H%M%S)"
-
-          gh api repos/domcyrus/rustnet-bsd/dispatches \
-            -f event_type=freebsd-build \
-            -f "client_payload[tag]=$TAG" \
-            -f "client_payload[rustnet_ref]=$REF" \
-            -f "client_payload[create_release]=false"
-        env:
-          GH_TOKEN: ${{ secrets.BSD_DISPATCH_TOKEN }}
+  # trigger-freebsd-build:
+  #   name: trigger-freebsd-build
+  #   if: github.event_name == 'workflow_dispatch'
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - name: Trigger FreeBSD test build
+  #       run: |
+  #         REF="${{ github.sha }}"
+  #         TAG="test-$(date +%Y%m%d-%H%M%S)"
+  #
+  #         gh api repos/domcyrus/rustnet-bsd/dispatches \
+  #           -f event_type=freebsd-build \
+  #           -f "client_payload[tag]=$TAG" \
+  #           -f "client_payload[rustnet_ref]=$REF" \
+  #           -f "client_payload[create_release]=false"
+  #       env:
+  #         GH_TOKEN: ${{ secrets.BSD_DISPATCH_TOKEN }}
