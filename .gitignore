@@ -24,3 +24,12 @@ target/
 .venv
 .vscode/*
 .gitignore
+Rustnetec.app*
+.gitignore
+*.dmg
+RustNetec二次开发*.md
+tmp*
+assets/preview-*.png
+assets/rustnetec-mark-*.png
+.codeartsdoer/*
+.codebuddy/*
