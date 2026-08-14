@@ -755,9 +755,9 @@
     <p class="chart-caption">每分钟分位数（左轴 p50/p95，右轴 p99）</p>
     <div id="rtt-chart"></div>
 
-    <!-- rustnetec: T-D3 — 外网连接数堆叠面积图（按协议，最近 1h） -->
+    <!-- rustnetec: T-D3 — 外网连接数堆叠面积图（单系列总连接数，最近 1h） -->
     <p class="chart-title">外网连接数构成</p>
-    <p class="chart-caption">按协议堆叠（每分钟桶）</p>
+    <p class="chart-caption">单系列总连接数（每分钟桶）</p>
     <div id="external-stack"></div>
 
     <!-- rustnetec: T-D4 — 周×小时外网流量热力图（7×24，最近 7d） -->
@@ -765,7 +765,7 @@
     <p class="chart-caption">周×小时热力图（颜色深浅 = 该时段外网流量占总流量的比例，过去 7 天平均）</p>
     <div id="availability-heatmap"></div>
 
-    <!-- rustnetec: T-D5 — 局域网图表组（流量折线 + 连接数折线 + 双轴折线） -->
+    <!-- rustnetec: T-D5 — 局域网图表组（流量折线 + 连接数/流量双轴折线） -->
     <p class="chart-title">局域网图表组</p>
     <!--<p class="chart-caption">上：流量折线；下：连接数 + 流量双轴折线</p>-->
     <p class="chart-sub-title">局域网流量</p>
@@ -830,7 +830,7 @@
       <div id="activity-empty" class="muted" style="display:none;">无进程数据(需进程归因启用且有捕获数据)</div>
     </div>
 
-    <!-- rustnetec: T-E4 — 进程详情抽屉（时间窗 + �口下拉 + 双轴折线 + 外网持续时长） -->
+    <!-- rustnetec: T-E4 — 进程详情抽屉（时间窗 + 网口下拉 + 双轴折线 + 外网持续时长） -->
     <div id="process-drawer" style="display:none;">
       <div id="process-drawer-header">
         <h3 id="process-drawer-title">进程详情</h3>
@@ -948,7 +948,7 @@
         <label>BPF 过滤<input type="text" data-cfg="bpf_filter" placeholder="(默认)"></label>
         <label><input type="checkbox" data-cfg="enable_dpi">启用 DPI</label>
         <label><input type="checkbox" data-cfg="filter_localhost">过滤本机回环(loopback)</label>
-        <label>界面快照刷新间隔(毫秒)<input type="number" data-cfg="refresh_interval" min="100" max="60000" title="仅控制终端界面(TUI)连接表与统计的刷新节奏(默认 500ms);不影响数据包捕获频率,WebUI 实时数据固定 1s 轮询"></label>
+        <label>终端界面快照刷新间隔(毫秒)<input type="number" data-cfg="refresh_interval" min="100" max="60000" title="仅控制终端界面(TUI)连接表与统计的刷新节奏(默认 500ms);不影响数据包捕获频率,WebUI 实时数据固定 1s 轮询"></label>
       </fieldset>
       <fieldset>
         <legend>输出 <span class="restart-hint">(重启进程生效)</span></legend>
@@ -989,8 +989,8 @@
         <legend>外网可达率探测 <span class="restart-hint">(重启进程生效)</span></legend>
         <label><input type="checkbox" data-cfg="reachability_enabled">启用探测</label>
         <label>探测目标(逗号分隔,1-5个)<input type="text" data-cfg-array="reachability_targets" data-cfg="reachability_targets" placeholder="114.114.115.115:53,8.8.8.8:53" title="格式 ip:port 或 host:port,逗号分隔;最少 1 个、最多 5 个,任一目标成功即视为该轮可达"></label>
-        <label>探测间隔(秒)(5,30] 即 6~30<input type="number" data-cfg="reachability_interval_secs" min="6" max="30" step="1" title="探测间隔区间 (5,30],整数即 6-30 秒"></label>
-        <div class="muted" style="font-size:12px;">探测超时 = (探测间隔-1) ÷ 目标数 取整(秒),限 1~10 秒</div>
+        <label>探测间隔(秒)<input type="number" data-cfg="reachability_interval_secs" min="6" max="30" step="1" title="探测间隔区间 (5,30],整数即 6-30 秒"></label>
+        <div class="muted" style="font-size:12px;">探测超时 = (探测间隔-1) ÷ 目标数，取整(秒)，限 1~10 秒</div>
       </fieldset>
       <fieldset>
         <legend>开机自启 <span class="restart-hint">(重启进程生效)</span></legend>
@@ -1906,7 +1906,7 @@
   }
 
   // rustnetec: T-F3e — 仪表盘 sparkline(速率图)与协议分布,均用 ECharts。
-  // 设计文档 §3.1:速率图 Sparkline(最近 60 个采样点 → 60s 窗口);
+  // 设计文档 §3.1:速率图 Sparkline(实现为最近 3 分钟窗口);
   // 协议分布用 ECharts bar（category 轴映射协议名）。
   var dashSpark = null;
   var protoPlot = null;
@@ -2043,7 +2043,7 @@
       }],
     });
     pollSla();
-    // 5s 轮询节奏（与 /stats 同节奏，tiny_http 单线程不宜更密）
+    // 5s 轮询节奏（与 /stats 同节奏，SQLite 聚合查询较重）
     slaTimer = setInterval(function () {
       if (isPageVisible) pollSla();
     }, 5000);
@@ -2144,11 +2144,10 @@
       .catch(function () { /* 鉴权失败时静默置空 */ });
   }
 
-  // rustnetec: T-D3 — 外网连接数堆叠面积图（按协议，最近 1h）。
+  // rustnetec: T-D3 — 外网连接数堆叠面积图（单系列总连接数，最近 1h）。
   // 数据：GET /stats/range?bucket=1min&scope=external。后端返回桶聚合，
-  // 前端无法再按协议拆分（/stats/range 不返回 protocol 维度），故此处
-  // 改为「外网总连接数堆叠面积」单系列展示；协议拆分需后端增 protocol 维度，
-  // 列入后续 issue。当前以单系列面积图呈现外网连接数趋势。
+  // /stats/range 不返回 protocol 维度，无法按协议拆分；协议拆分需后端增
+  // protocol 维度，列入后续 issue。当前以单系列面积图呈现外网连接数趋势。
   var externalStack = null;
   var externalStackTimer = null;
 
@@ -2550,7 +2549,7 @@
     }
 
     pollReachability();
-    // 10s 轮询（探测每 15s 一轮，10s 足够跟进而不过密）
+    // 10s 轮询（探测每 12s 一轮（默认），10s 足够跟进而不过密）
     reachTimer = setInterval(function () { if (isPageVisible) pollReachability(); }, 10000);
   }
 
@@ -3104,7 +3103,8 @@
   })();
 
   // rustnetec: T-E6 — 进程×时段可用性热力图（时间窗 ≥1d 时渲染）。
-  // 数据：GET /stats/availability?start=<window>&bucket=1hour&process=<names>。
+  // 数据：GET /stats/availability?start=<window>&bucket=1hour|1day&process=<names>
+  //（时间窗 ≥7d 时用 1day bucket）。
   // 横轴时间桶，纵轴进程名，颜色深浅 = 活跃度。
   // 注：后端 /stats/availability 不按 process_name 细分（仅按桶返回 ratio），
   // 此处以「总活跃度」单维度热力图呈现；精确的进程×时段矩阵需后端增
@@ -3485,7 +3485,7 @@
 
     // rustnetec: W3.1 — 喂采样给流量图,由 drawGraph 按 rangeSecs 窗口裁剪。
     pushGraphSample(snapshot.rate_in_bps, snapshot.rate_out_bps);
-    // 仪表盘 sparkline 实时刷新(60s 窗口)
+    // 仪表盘 sparkline 实时刷新(3 分钟窗口)
     if (dashSpark) updateDashSpark();
     // 若流量图已初始化(用户切过该标签),节流重绘
     if (graphInitialized) scheduleGraphRedraw();
@@ -3528,7 +3528,7 @@
       isPageVisible = true;
       startLivePolling();
     } else if (!nowVisible && isPageVisible) {
-      // 页面隐藏:暂停轮询,释放本机 HTTP 单线程压力
+      // 页面隐藏:暂停轮询,减少后台请求
       isPageVisible = false;
       stopLivePolling();
     }
