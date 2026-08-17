@@ -1025,7 +1025,7 @@ impl App {
             }
         } else {
             // Auto-discover databases
-            let resolver = GeoIpResolver::with_auto_discovery();
+            let resolver = GeoIpResolver::with_auto_discovery(crate::telemetry::paths::config_dir().ok());
             if resolver.is_available() {
                 let (has_country, has_asn, has_city) = resolver.get_status();
                 info!(

@@ -601,13 +601,14 @@ fn run() -> Result<()> {
             SandboxMode::BestEffort
         };
 
-        // Collect read paths (GeoIP databases). Exclude the bare current-directory
-        // entry: a Landlock PathBeneath rule on "." grants recursive read access to
-        // the entire CWD subtree (e.g. all of $HOME when rustnet is launched from
-        // there), which defeats the point of the read-path whitelist. The concrete
-        // GeoIP locations (resources/geoip2, XDG/system dirs) stay covered.
+        // Collect read paths (GeoIP databases). The bare current-directory
+        // entry was removed from auto-discovery search paths: a Landlock
+        // PathBeneath rule on "." grants recursive read access to the entire
+        // CWD subtree (e.g. all of $HOME when rustnet is launched from there),
+        // which defeats the point of the read-path whitelist. The concrete
+        // GeoIP locations (<config_dir>/GeoIP, XDG/system dirs) stay covered.
         #[cfg(not(feature = "kubernetes"))]
-        let read_paths: Vec<PathBuf> = GeoIpResolver::get_search_paths()
+        let read_paths: Vec<PathBuf> = GeoIpResolver::get_search_paths(crate::telemetry::paths::config_dir().ok())
             .into_iter()
             .filter(|p| p.exists() && p.as_os_str() != ".")
             .collect();
@@ -619,7 +620,7 @@ fn run() -> Result<()> {
         // applies.
         #[cfg(feature = "kubernetes")]
         let read_paths: Vec<PathBuf> = {
-            let mut paths: Vec<PathBuf> = GeoIpResolver::get_search_paths()
+            let mut paths: Vec<PathBuf> = GeoIpResolver::get_search_paths(crate::telemetry::paths::config_dir().ok())
                 .into_iter()
                 .filter(|p| p.exists() && p.as_os_str() != ".")
                 .collect();
@@ -809,7 +810,7 @@ fn run() -> Result<()> {
             if paths.is_empty() && !config.disable_geoip {
                 // Use auto-discovery search paths (directories, not individual files)
                 paths.extend(
-                    GeoIpResolver::get_search_paths()
+                    GeoIpResolver::get_search_paths(crate::telemetry::paths::config_dir().ok())
                         .into_iter()
                         .filter(|p| p.exists())
                         .map(|p| p.to_string_lossy().into_owned()),

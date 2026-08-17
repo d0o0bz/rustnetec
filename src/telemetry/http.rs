@@ -2100,6 +2100,27 @@ fn handle_get_config(request: tiny_http::Request, _state: &HttpState) {
                     .map(|p| p.display().to_string())
                     .unwrap_or_default();
                 obj.insert("config_path".to_string(), serde_json::json!(config_path));
+                // rustnetec: W-GEOIP — 注入配置目录(WebUI 引导推荐放 <config_dir>/GeoIP 用)
+                obj.insert(
+                    "config_dir".to_string(),
+                    serde_json::json!(
+                        crate::telemetry::paths::config_dir()
+                            .map(|p| p.display().to_string())
+                            .unwrap_or_default()
+                    ),
+                );
+                // rustnetec: W-GEOIP — 注入 GeoIP 自动发现目录列表(WebUI 引导下载用)。
+                // 每个目录附带是否存在标记,且已按"已存在优先"排序。
+                let geoip_dirs: Vec<serde_json::Value> = rustnet_core::network::geoip::GeoIpResolver::get_search_paths_with_status(crate::telemetry::paths::config_dir().ok())
+                    .into_iter()
+                    .map(|(p, exists)| {
+                        serde_json::json!({
+                            "path": p.display().to_string(),
+                            "exists": exists,
+                        })
+                    })
+                    .collect();
+                obj.insert("geoip_search_dirs".to_string(), serde_json::json!(geoip_dirs));
             }
             let _ = respond_json(request, 200, &json);
         }

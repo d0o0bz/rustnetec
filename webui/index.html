@@ -668,6 +668,35 @@
     background: rgba(248,81,73,0.10);
     color: #f85149;
   }
+  /* rustnetec: W-GEOIP — GeoIP 引导下载区样式 */
+  #settings-form a.db-btn { text-decoration: none; display: inline-block; line-height: 1.2; }
+  #settings-form a.db-btn:hover:not(:disabled) {
+    border-color: var(--accent, #3fb950);
+    background: rgba(63,176,80,0.08);
+  }
+  .geoip-guide {
+    margin-top: 10px;
+    padding: 10px 12px;
+    border: 1px dashed var(--border, #30363d);
+    border-radius: 6px;
+    background: rgba(63,176,80,0.04);
+  }
+  .geoip-guide-title {
+    display: flex; align-items: center; gap: 6px;
+    width: 100%; padding: 0; margin: 0 0 2px;
+    font: inherit; font-weight: 600; font-size: 13px;
+    color: var(--text, #e6edf3); text-align: left;
+    background: none; border: none; cursor: pointer;
+  }
+  .geoip-guide-title:hover { color: var(--accent, #3fb050); }
+  .geoip-guide-caret { display: inline-block; transition: transform 0.15s ease; color: var(--muted); }
+  .geoip-guide-title[aria-expanded="true"] .geoip-guide-caret { transform: rotate(90deg); }
+  .geoip-guide-body { margin-top: 6px; }
+  .geoip-dirs { margin-top: 4px; }
+  .geoip-dirs-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .geoip-dirs-select { width: 100%; margin: 6px 0 0; font-size: 12px; font-family: var(--mono, monospace); }
+  .geoip-dirs-select option.geoip-dir-exists { color: var(--ok, #2e9e5b); }
+  .geoip-dirs-select option.geoip-dir-missing { color: var(--muted); font-style: italic; }
   #settings-form label {
     display: inline-flex;
     align-items: center;
@@ -1051,6 +1080,35 @@
         <label>ASN 库路径<input type="text" data-cfg="geoip_asn_path" placeholder="(自动发现)"></label>
         <label>城市库路径<input type="text" data-cfg="geoip_city_path" placeholder="(自动发现)"></label>
         <label><input type="checkbox" data-cfg="disable_geoip">禁用 GeoIP</label>
+        <div class="geoip-guide">
+          <button type="button" class="geoip-guide-title" id="geoip-guide-toggle" aria-expanded="false">
+            <span class="geoip-guide-caret">▸</span> 获取 / 更新 GeoLite2 数据库
+          </button>
+          <div class="geoip-guide-body" id="geoip-guide-body" hidden>
+          <p class="muted" style="font-size:12px;margin:4px 0 8px;">
+            下载 <code>.mmdb</code> 文件后,放入下方任一「自动发现目录」(建议放入配置目录下的
+            <code>GeoIP</code> 子目录,如 <code id="geoip-config-dir">&lt;配置目录&gt;/GeoIP</code>),
+            重启进程即可自动加载。无需在此填路径。
+          </p>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
+            <a class="db-btn" href="https://www.maxmind.com/en/geolite2/sign_up" target="_blank" rel="noopener">官方下载 (需注册)</a>
+            <a class="db-btn" href="https://github.com/Skiddle-ID/geoip2-mirror" target="_blank" rel="noopener">GitHub 镜像 (免注册)</a>
+          </div>
+          <p class="muted" style="font-size:12px;margin:0 0 8px;">
+            <strong>提示:</strong>GeoLite2-City 是 Country 的<strong>超集</strong>;装了 City 就不必再装 Country。
+            三个库可任选:Country(国家)、City(国家+城市)、ASN(自治系统/运营商)。
+          </p>
+          <div class="geoip-dirs">
+            <div class="geoip-dirs-head">
+              <span class="db-label">自动发现目录 <span class="muted">(已存在优先)</span></span>
+              <button type="button" id="geoip-open-dir" class="db-btn">打开选中目录</button>
+            </div>
+            <select id="geoip-dirs" class="geoip-dirs-select" size="6">
+              <option class="muted">加载中…</option>
+            </select>
+          </div>
+          </div>
+        </div>
       </fieldset>
       <fieldset>
         <legend>外网可达率探测 <span class="restart-hint">(重启进程生效)</span></legend>
@@ -1262,6 +1320,7 @@
     { key: "direction", label: "方向", sortable: false },
     { key: "rtt_ms", label: "RTT", sortable: true, format: formatRtt },
     { key: "geoip_country_code", label: "GeoIP", sortable: false },
+    { key: "geoip_city", label: "城市", sortable: false },
     { key: "bytes_sent", label: "发", sortable: true, format: formatBytes },
     { key: "bytes_received", label: "收", sortable: true, format: formatBytes },
   ];
@@ -3329,6 +3388,41 @@
     // rustnetec: R-DB — 配置文件完整路径只读展示
     var cfgPathEl = document.getElementById("config-path");
     if (cfgPathEl) cfgPathEl.textContent = cfg.config_path || "—";
+    // rustnetec: W-GEOIP — 引导推荐目录显示为 <config_dir>/GeoIP
+    var geoipCfgDirEl = document.getElementById("geoip-config-dir");
+    if (geoipCfgDirEl) {
+      geoipCfgDirEl.textContent = cfg.config_dir ? cfg.config_dir + "/GeoIP" : "—";
+    }
+    // rustnetec: W-GEOIP — 渲染 GeoIP 自动发现目录为下拉列表(存在优先,可选中)
+    // 数据结构:{ path: string, exists: bool } —— 后端已按"已存在优先"排序
+    var dirs = Array.isArray(cfg.geoip_search_dirs) ? cfg.geoip_search_dirs : [];
+    var selectEl = document.getElementById("geoip-dirs");
+    if (selectEl) {
+      selectEl.innerHTML = "";
+      if (dirs.length === 0) {
+        var opt0 = document.createElement("option");
+        opt0.textContent = "未获取到目录列表";
+        opt0.disabled = true;
+        selectEl.appendChild(opt0);
+      } else {
+        dirs.forEach(function (d) {
+          var path = typeof d === "string" ? d : (d.path || "");
+          var exists = typeof d === "string" ? false : !!d.exists;
+          var opt = document.createElement("option");
+          opt.value = path;
+          opt.textContent = (exists ? "✓ " : "✗ ") + path +
+            (exists ? "  (目录已存在)" : "  (尚不存在)");
+          opt.title = path;
+          if (exists) opt.className = "geoip-dir-exists";
+          else opt.className = "geoip-dir-missing";
+          selectEl.appendChild(opt);
+        });
+        // 默认选中第一个已存在的目录(后端已排好序,即第一项)
+        selectEl.selectedIndex = 0;
+      }
+    }
+    // 「打开选中目录」目标取当前下拉选中项
+    settingsState.geoipDir = "";
   }
 
   // 收集表单值 → Object(按 data-cfg 属性)
@@ -3531,6 +3625,27 @@
       var p = document.getElementById("db-path").value;
       openDir(p);
     });
+    // rustnetec: W-GEOIP — 折叠/展开「获取 / 更新 GeoLite2 数据库」引导区
+    var geoipGuideToggle = document.getElementById("geoip-guide-toggle");
+    var geoipGuideBody = document.getElementById("geoip-guide-body");
+    if (geoipGuideToggle && geoipGuideBody) {
+      geoipGuideToggle.addEventListener("click", function () {
+        var expanded = geoipGuideToggle.getAttribute("aria-expanded") === "true";
+        var next = !expanded;
+        geoipGuideToggle.setAttribute("aria-expanded", String(next));
+        geoipGuideBody.hidden = !next;
+      });
+    }
+    // rustnetec: W-GEOIP — 打开 GeoIP 自动发现目录(打开下拉列表中选中的目录)
+    var geoipOpenBtn = document.getElementById("geoip-open-dir");
+    if (geoipOpenBtn) {
+      geoipOpenBtn.addEventListener("click", function () {
+        var sel = document.getElementById("geoip-dirs");
+        var path = sel && sel.value ? sel.value : "";
+        if (!path) { alert("请先在上方列表中选择一个目录"); return; }
+        openDir(path);
+      });
+    }
   }
 
   // rustnetec: WebUI — POST /open-dir 用系统文件管理器打开路径所在目录

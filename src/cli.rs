@@ -190,7 +190,7 @@ pub fn build_cli() -> Command {
                 .value_name("PATH")
                 .help(
                     "Path to GeoLite2-Country.mmdb database. \
-                     Auto-discovered from: ./resources/geoip2, $XDG_DATA_HOME/rustnet/geoip, \
+                     Auto-discovered from: <config_dir>/GeoIP, $XDG_DATA_HOME/rustnet/geoip, \
                      ~/.local/share/rustnet/geoip, /usr/share/GeoIP, /usr/local/share/GeoIP, \
                      /opt/homebrew/share/GeoIP, /var/lib/GeoIP",
                 )

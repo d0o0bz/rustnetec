@@ -36,7 +36,8 @@ use crate::ui::{
 const PROCESS_WIDTH: u16 = 22;
 /// Floor for the Local column; "192.168.1.10:51234" fits in 18.
 const LOCAL_MIN_WIDTH: u16 = 18;
-const LOCATION_WIDTH: u16 = 4;
+/// Floor for the Location column; "CN,Shanghai" fits, longer cities ellipsize.
+const LOCATION_WIDTH: u16 = 14;
 const SERVICE_WIDTH: u16 = 10; // most IANA service names ("netbios-ns") fit
 const APP_WIDTH_FULL: u16 = 24;
 const APP_WIDTH_COMPACT: u16 = 14;
@@ -418,9 +419,10 @@ pub(in crate::ui) fn connection_row<'a>(
                 let location = conn
                     .geoip_info
                     .as_ref()
-                    .map(|g| g.country_display())
-                    .unwrap_or(NONE_PLACEHOLDER);
-                Cell::from(location).style(style_if_colored(theme::field_location()))
+                    .map(|g| g.location_display())
+                    .unwrap_or_else(|| NONE_PLACEHOLDER.to_string());
+                Cell::from(truncate_with_ellipsis(&location, col.width as usize))
+                    .style(style_if_colored(theme::field_location()))
             }
             ColumnId::Service => {
                 let service =
@@ -588,8 +590,8 @@ mod tests {
     }
 
     // Width math for the full set with Location at floor widths:
-    // 22+21+18+4+10+24+12+7+11 = 129 content + chrome(9 cols) = 10 -> 139.
-    const FULL_WIDTH: u16 = 139;
+    // 22+21+18+14+10+24+12+7+11 = 139 content + chrome(9 cols) = 10 -> 149.
+    const FULL_WIDTH: u16 = 149;
 
     #[test]
     fn select_columns_shows_everything_when_wide() {

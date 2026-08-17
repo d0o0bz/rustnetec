@@ -38,6 +38,19 @@ impl GeoIpInfo {
     pub fn country_display(&self) -> &str {
         self.country_code.as_deref().unwrap_or("-")
     }
+
+    /// Get "Country,City" for the table's Loc column.
+    ///
+    /// Prefers the country code + city (e.g. "CN,Shanghai"), falls back to
+    /// whichever single part is available, and to "-" when neither is.
+    pub fn location_display(&self) -> String {
+        match (&self.country_code, &self.city) {
+            (Some(cc), Some(city)) => format!("{},{}", cc, city),
+            (Some(cc), None) => cc.clone(),
+            (None, Some(city)) => city.clone(),
+            (None, None) => "-".to_string(),
+        }
+    }
 }
 
 /// Cached GeoIP entry
@@ -150,12 +163,15 @@ impl GeoIpResolver {
         }
     }
 
-    /// Try to auto-discover and load databases from common paths
-    pub fn with_auto_discovery() -> Self {
+    /// Try to auto-discover and load databases from common paths.
+    ///
+    /// `config_dir` (when provided) adds `<config_dir>/GeoIP` to the search
+    /// list, so databases placed next to the running config are discovered.
+    pub fn with_auto_discovery(config_dir: Option<PathBuf>) -> Self {
         let mut config = GeoIpConfig::default();
 
         // Common paths to search for databases
-        let search_paths = Self::get_search_paths();
+        let search_paths = Self::get_search_paths(config_dir);
 
         for base_path in search_paths {
             // Try Country database
@@ -194,44 +210,79 @@ impl GeoIpResolver {
         Self::new(config)
     }
 
-    /// Get common search paths for GeoIP databases
+    /// Get common search paths for GeoIP databases.
     ///
-    /// This is public so that the Landlock sandbox can whitelist these paths
-    /// for read access.
-    pub fn get_search_paths() -> Vec<PathBuf> {
+    /// `config_dir` (when provided) adds `<config_dir>/GeoIP` to the list so that
+    /// databases placed next to the running config are auto-discovered. This is
+    /// public so that the Landlock sandbox can whitelist these paths for read
+    /// access.
+    pub fn get_search_paths(config_dir: Option<PathBuf>) -> Vec<PathBuf> {
         let mut paths = Vec::new();
 
-        // Current directory / resources
-        paths.push(PathBuf::from("resources/geoip2"));
-        paths.push(PathBuf::from("."));
-
-        // XDG data directory
-        if let Ok(xdg_data) = std::env::var("XDG_DATA_HOME") {
-            paths.push(PathBuf::from(&xdg_data).join("rustnet/geoip"));
-            paths.push(PathBuf::from(xdg_data).join("GeoIP"));
+        // Config-dir sibling location (e.g. <config_dir>/GeoIP).
+        if let Some(cfg_dir) = config_dir {
+            paths.push(cfg_dir.join("GeoIP"));
         }
 
-        // Home directory
-        if let Ok(home) = std::env::var("HOME") {
-            let home_path = PathBuf::from(&home);
-            paths.push(home_path.join(".local/share/rustnet/geoip"));
-            paths.push(home_path.join(".local/share/GeoIP"));
-        }
-
-        // System paths
-        paths.push(PathBuf::from("/usr/share/GeoIP"));
-        paths.push(PathBuf::from("/usr/local/share/GeoIP"));
-        paths.push(PathBuf::from("/opt/homebrew/share/GeoIP"));
-        paths.push(PathBuf::from("/var/lib/GeoIP"));
-
-        // Windows paths
-        #[cfg(target_os = "windows")]
-        {
+        if cfg!(target_os = "windows") {
+            // User-writable location (preferred for guided downloads).
+            if let Ok(local) = std::env::var("LOCALAPPDATA") {
+                paths.push(PathBuf::from(&local).join("GeoIP"));
+            }
+            // Roaming user data.
+            if let Ok(appdata) = std::env::var("APPDATA") {
+                paths.push(PathBuf::from(&appdata).join("GeoIP"));
+            }
+            // System-wide (read-only for normal users).
             if let Ok(program_data) = std::env::var("ProgramData") {
                 paths.push(PathBuf::from(program_data).join("GeoIP"));
             }
+        } else {
+            // XDG data directory
+            if let Ok(xdg_data) = std::env::var("XDG_DATA_HOME") {
+                paths.push(PathBuf::from(&xdg_data).join("rustnet/geoip"));
+                paths.push(PathBuf::from(xdg_data).join("GeoIP"));
+            }
+
+            // Home directory
+            if let Ok(home) = std::env::var("HOME") {
+                let home_path = PathBuf::from(&home);
+                paths.push(home_path.join(".local/share/rustnet/geoip"));
+                paths.push(home_path.join(".local/share/GeoIP"));
+                // macOS native user-data location.
+                #[cfg(target_os = "macos")]
+                {
+                    paths.push(home_path.join("Library/Application Support/GeoIP"));
+                }
+            }
+
+            // System paths
+            paths.push(PathBuf::from("/usr/share/GeoIP"));
+            paths.push(PathBuf::from("/usr/local/share/GeoIP"));
+            paths.push(PathBuf::from("/opt/homebrew/share/GeoIP"));
+            paths.push(PathBuf::from("/var/lib/GeoIP"));
         }
 
+        paths
+    }
+
+    /// Same as [`get_search_paths`], but each entry also reports whether the
+    /// directory currently exists on disk. Returned sorted so that existing
+    /// directories come first (handy for "guided download" UIs).
+    pub fn get_search_paths_with_status(config_dir: Option<PathBuf>) -> Vec<(PathBuf, bool)> {
+        let mut paths: Vec<(PathBuf, bool)> = Self::get_search_paths(config_dir)
+            .into_iter()
+            .map(|p| {
+                let exists = p.is_dir();
+                (p, exists)
+            })
+            .collect();
+        // De-duplicate while preserving order (absolute resolution can collapse
+        // entries, e.g. cwd == ".").
+        let mut seen = std::collections::HashSet::new();
+        paths.retain(|(p, _)| seen.insert(p.clone()));
+        // Existing directories first, then by path for stable ordering.
+        paths.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         paths
     }
 
