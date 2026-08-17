@@ -14,6 +14,7 @@ use log::{info, warn};
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -23,6 +24,14 @@ use std::time::{Duration, Instant};
 /// Lifetime bounds for the bootstrap handshake and the resulting session.
 const BOOTSTRAP_GUID_TTL: Duration = Duration::from_secs(5 * 60);
 const SESSION_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// rustnetec: 慢查询超时兜底 — 单个 SQLite 查询（/query、/processes、/stats/*）
+/// 超过此时间即被中断（sqlite3_interrupt → SQLITE_INTERRUPT），防止慢 SQL 长期
+/// 占住 `http_req` worker 线程。取值依据：正常查询（有索引 + LIMIT 钳制）毫秒级
+/// 完成，5s 远大于正常耗时；又低于 WebUI 5s 轮询节奏，超时后下一轮轮询即可重试，
+/// 不会造成用户可见的长时间卡死。与 open_read_only 的 busy_timeout(2s) 互补：
+/// busy_timeout 只管等锁，本超时管整个查询执行。
+const QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Shared state accessible by HTTP handlers.
 pub struct HttpState {
@@ -154,7 +163,7 @@ impl HttpState {
 /// Once the cap is hit, the accept loop blocks (backpressure) until a worker
 /// finishes — this also prevents the single slow-client case from wedging
 /// everything, which was the original bug.
-const MAX_CONCURRENT_REQUESTS: usize = 32;
+const MAX_CONCURRENT_REQUESTS: usize = 16;
 
 pub fn start_http_server(port: u16, state: Arc<HttpState>) -> Result<()> {
     let addr = std::net::SocketAddr::from((Ipv4Addr::new(127, 0, 0, 1), port));
@@ -690,6 +699,8 @@ fn handle_processes(request: tiny_http::Request, state: &HttpState) {
             return;
         }
     };
+    // rustnetec: C 落地 — 慢查询超时兜底（超时则 watchdog interrupt）。
+    let _query_guard = QueryTimeoutGuard::arm(&conn, QUERY_TIMEOUT);
 
     // 按 process_name 聚合,按总字节降序取 top 50。
     // COALESCE 防 NULL;bytes_total = bytes_sent + bytes_received 供前端排序展示。
@@ -978,6 +989,8 @@ fn handle_stats_range(request: tiny_http::Request, state: &HttpState) {
             return;
         }
     };
+    // rustnetec: C 落地 — 慢查询超时兜底（超时则 watchdog interrupt）。
+    let _query_guard = QueryTimeoutGuard::arm(&conn, QUERY_TIMEOUT);
 
     let mut stmt = match conn.prepare(&sql) {
         Ok(s) => s,
@@ -1250,6 +1263,8 @@ fn handle_stats_range_aggregated(
             return;
         }
     };
+    // rustnetec: C 落地 — 慢查询超时兜底（超时则 watchdog interrupt）。
+    let _query_guard = QueryTimeoutGuard::arm(&conn, QUERY_TIMEOUT);
 
     let bind_refs: Vec<&dyn rusqlite::ToSql> = bind_values.iter().map(|b| b.as_ref()).collect();
 
@@ -1449,6 +1464,8 @@ fn handle_stats_rtt(request: tiny_http::Request, state: &HttpState) {
             return;
         }
     };
+    // rustnetec: C 落地 — 慢查询超时兜底（超时则 watchdog interrupt）。
+    let _query_guard = QueryTimeoutGuard::arm(&conn, QUERY_TIMEOUT);
 
     let mut stmt = match conn.prepare(&sql) {
         Ok(s) => s,
@@ -1619,6 +1636,8 @@ fn handle_stats_availability(request: tiny_http::Request, state: &HttpState) {
             return;
         }
     };
+    // rustnetec: C 落地 — 慢查询超时兜底（超时则 watchdog interrupt）。
+    let _query_guard = QueryTimeoutGuard::arm(&conn, QUERY_TIMEOUT);
 
     let mut stmt = match conn.prepare(&sql) {
         Ok(s) => s,
@@ -1813,6 +1832,8 @@ fn handle_stats_duration(request: tiny_http::Request, state: &HttpState) {
             return;
         }
     };
+    // rustnetec: C 落地 — 慢查询超时兜底（超时则 watchdog interrupt）。
+    let _query_guard = QueryTimeoutGuard::arm(&conn, QUERY_TIMEOUT);
 
     let mut stmt = match conn.prepare(&sql) {
         Ok(s) => s,
@@ -1951,6 +1972,8 @@ fn handle_stats_reachability(request: tiny_http::Request, state: &HttpState) {
             return;
         }
     };
+    // rustnetec: C 落地 — 慢查询超时兜底（超时则 watchdog interrupt）。
+    let _query_guard = QueryTimeoutGuard::arm(&conn, QUERY_TIMEOUT);
 
     let sql = "SELECT ts, reachable, latency_ms FROM reachability_probes \
                WHERE ts >= ?1 AND ts <= ?2 ORDER BY ts ASC";
@@ -2227,6 +2250,8 @@ fn query_stats(db_path: &PathBuf) -> Result<serde_json::Value> {
     }
 
     let conn = open_read_only(db_path)?;
+    // rustnetec: C 落地 — 慢查询超时兜底（超时则 watchdog interrupt）。
+    let _query_guard = QueryTimeoutGuard::arm(&conn, QUERY_TIMEOUT);
 
     let total_events: i64 = conn
         .query_row("SELECT COUNT(*) FROM connection_events", [], |row| {
@@ -2486,6 +2511,54 @@ fn open_read_only(path: &std::path::Path) -> rusqlite::Result<rusqlite::Connecti
     let conn = rusqlite::Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     conn.busy_timeout(std::time::Duration::from_secs(2))?;
     Ok(conn)
+}
+
+/// rustnetec: 慢查询超时守卫（2026-08-17，C 落地）。
+///
+/// 在 HTTP 读端点打开只读连接后调用 `arm`，启动一个 watchdog 线程：查询在
+/// `QUERY_TIMEOUT` 内完成则守卫 drop 时通知 watchdog 退出；超时则 watchdog 调
+/// `sqlite3_interrupt` 中断正在执行的查询（rusqlite 返回 `SQLITE_INTERRUPT`）。
+///
+/// 为什么不用 busy_timeout 解决：`busy_timeout` 只覆盖「等待写锁」的时长，对
+/// 「查询本身执行太久」（如无索引全表扫描、慢聚合）无效；本守卫覆盖整个查询。
+///
+/// 生命周期：守卫与查询同一作用域（handler 内），drop 时 `send` 通知 watchdog
+/// 退出并 `join`，避免线程泄漏；查询正常完成后 watchdog 立即退出，无残留线程。
+struct QueryTimeoutGuard {
+    done_tx: Option<mpsc::Sender<()>>,
+    watchdog: Option<thread::JoinHandle<()>>,
+}
+
+impl QueryTimeoutGuard {
+    fn arm(conn: &rusqlite::Connection, timeout: Duration) -> Self {
+        let interrupt = conn.get_interrupt_handle();
+        let (done_tx, done_rx) = mpsc::channel::<()>();
+        let watchdog = thread::Builder::new()
+            .name("http_query_timeout".to_string())
+            .spawn(move || {
+                // 等待「查询完成」通知；超时未收到 → 中断查询。
+                if done_rx.recv_timeout(timeout).is_err() {
+                    interrupt.interrupt();
+                }
+            })
+            .ok();
+        QueryTimeoutGuard {
+            done_tx: Some(done_tx),
+            watchdog,
+        }
+    }
+}
+
+impl Drop for QueryTimeoutGuard {
+    fn drop(&mut self) {
+        // 通知 watchdog：查询已完成，无需中断（若仍在 recv_timeout 等待中）。
+        if let Some(tx) = self.done_tx.take() {
+            let _ = tx.send(());
+        }
+        if let Some(handle) = self.watchdog.take() {
+            let _ = handle.join();
+        }
+    }
 }
 
 /// Index page HTML.
