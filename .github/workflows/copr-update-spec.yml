@@ -21,8 +21,14 @@ jobs:
       - name: Extract version from tag
         id: version
         run: |
-          # Extract version by removing 'v' prefix
-          VERSION=${GITHUB_REF#refs/tags/v}
+          # Prefer the release tag; fall back to the binary's [package] version
+          # for manual runs (same awk as obs-release/ppa-release, reading the
+          # binary's section, not the first [workspace.package] 0.x version).
+          if [[ $GITHUB_REF == refs/tags/* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/v}
+          else
+            VERSION=$(awk -F'"' '/^\[package\]/{p=1} p && /^version = /{print $2; exit}' Cargo.toml)
+          fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Extracted version: $VERSION"
 

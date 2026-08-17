@@ -45,8 +45,8 @@ jobs:
           TAG="${{ steps.version.outputs.tag }}"
 
           # Define asset names
-          ASSET_X64="rustnet-${TAG}-x86_64-unknown-linux-gnu.tar.gz"
-          ASSET_ARM64="rustnet-${TAG}-aarch64-unknown-linux-gnu.tar.gz"
+          ASSET_X64="rustnetec-${TAG}-x86_64-unknown-linux-gnu.tar.gz"
+          ASSET_ARM64="rustnetec-${TAG}-aarch64-unknown-linux-gnu.tar.gz"
 
           echo "Downloading release assets..."
 
@@ -75,8 +75,8 @@ jobs:
 
           echo "Re-downloading assets to verify checksums are stable..."
 
-          ASSET_X64="rustnet-${TAG}-x86_64-unknown-linux-gnu.tar.gz"
-          ASSET_ARM64="rustnet-${TAG}-aarch64-unknown-linux-gnu.tar.gz"
+          ASSET_X64="rustnetec-${TAG}-x86_64-unknown-linux-gnu.tar.gz"
+          ASSET_ARM64="rustnetec-${TAG}-aarch64-unknown-linux-gnu.tar.gz"
 
           gh release download "$TAG" -p "$ASSET_X64" -p "$ASSET_ARM64" -D /tmp/verify
 
@@ -150,7 +150,7 @@ jobs:
 
           # Update source URLs (need to escape special characters for sed)
           ESCAPED_TAG=$(echo "$TAG" | sed 's/[\/&]/\\&/g')
-          sed -i "s|rustnet-v[0-9.]*-\${arch}|rustnet-${ESCAPED_TAG}-\${arch}|g" PKGBUILD
+          sed -i "s|rustnetec-v[0-9.]*-\${arch}|rustnetec-${ESCAPED_TAG}-\${arch}|g" PKGBUILD
 
           # Update checksums
           sed -i "s/sha256sums_x86_64=.*/sha256sums_x86_64=('$SHA256_X64')/" PKGBUILD
