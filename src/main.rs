@@ -973,6 +973,7 @@ fn run() -> Result<()> {
                 db_path: db_path.clone(),
                 http_token,
                 should_stop: app.should_stop_handle(),
+                paused: app.paused_handle(),
                 // rustnetec: one-time bootstrap code auth (T3.3, R6)
                 pending_guids: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
                 session_key: std::sync::Arc::new(session_key),
@@ -1737,8 +1738,12 @@ fn run_tray_helper(matches: &clap::ArgMatches) -> Result<()> {
                             break;
                         }
                         Ok(Cmd::TogglePause) => {
+                            // rustnetec: tray helper 是独立进程，无 App 实例，
+                            // 通过 POST /pause 让 daemon 翻转 paused 标志。
+                            let now_paused = toggle_pause_via_http(&daemon_base_cmd);
                             info!(
-                                "Tray menu: TogglePause selected (pause/resume not yet implemented)"
+                                "Tray menu: TogglePause selected — capture {}",
+                                if now_paused { "paused" } else { "resumed" }
                             );
                         }
                         Ok(Cmd::OpenTerminal) => {
@@ -1921,7 +1926,11 @@ fn run_tray_helper(matches: &clap::ArgMatches) -> Result<()> {
                     break;
                 }
                 Cmd::TogglePause => {
-                    info!("Tray menu: TogglePause selected (pause/resume not yet implemented)");
+                    let now_paused = toggle_pause_via_http(&daemon_base);
+                    info!(
+                        "Tray menu: TogglePause selected — capture {}",
+                        if now_paused { "paused" } else { "resumed" }
+                    );
                 }
                 Cmd::OpenTerminal => ui::open_terminal_monitor(),
                 Cmd::OpenLocalPanel => {
@@ -2050,6 +2059,34 @@ fn stop_daemon_via_http(daemon_base: &str) {
             terminate_pid(pid);
         } else {
             info!("Tray helper: daemon (pid {pid}) exited cleanly after HTTP shutdown");
+        }
+    }
+}
+
+/// rustnetec: 托盘「暂停/继续捕获」——tray helper 是独立进程，不持有 App，
+/// 通过 POST /pause 让 daemon 翻转 paused 标志。返回新状态（true=已暂停）；
+/// HTTP 失败时返回 false，调用方据日志判断。
+#[cfg(all(feature = "tray", not(target_os = "freebsd")))]
+fn toggle_pause_via_http(daemon_base: &str) -> bool {
+    use std::time::Duration;
+    let token = rustnet_monitor::config::PersistentConfig::load()
+        .ok()
+        .and_then(|c| c.http_token)
+        .unwrap_or_default();
+    let url = format!("{daemon_base}/pause");
+    let mut req = ureq::post(&url).timeout(Duration::from_millis(800));
+    if !token.is_empty() {
+        req = req.set("Authorization", &format!("Bearer {token}"));
+    }
+    match req.call() {
+        Ok(resp) => resp
+            .into_json::<serde_json::Value>()
+            .ok()
+            .and_then(|v| v.get("paused").and_then(|p| p.as_bool()))
+            .unwrap_or(false),
+        Err(e) => {
+            warn!("Tray helper: POST /pause failed: {e}");
+            false
         }
     }
 }
@@ -2297,10 +2334,10 @@ fn run_daemon_loop(
                         }
                         Cmd::TogglePause => {
                             eprintln!("[tray-diag] got TogglePause command");
-                            // rustnetec: TODO — App has no pause/resume API yet;
-                            // log placeholder so the menu item visibly does something.
+                            let now_paused = app.toggle_paused();
                             info!(
-                                "Tray menu: TogglePause selected (pause/resume not yet implemented)"
+                                "Tray menu: TogglePause selected — capture {}",
+                                if now_paused { "paused" } else { "resumed" }
                             );
                         }
                         Cmd::OpenTerminal => {

@@ -806,6 +806,12 @@ pub struct App {
     /// Control flag for graceful shutdown
     should_stop: Arc<AtomicBool>,
 
+    /// rustnetec: 暂停/继续捕获的可逆开关（区别于 `should_stop` 的不可逆退出）。
+    /// 由托盘菜单「⏸ 暂停捕获 / ▶ 继续捕获」翻转。置位时所有捕获/采集线程
+    /// 在 loop 顶部 `sleep(100ms) + continue`——既不推进数据也不空转 CPU，
+    /// 清位后立即恢复。`should_stop` 优先级高于本标志，避免暂停态下无法退出。
+    paused: Arc<AtomicBool>,
+
     /// Live connection tracker (active + historic tables, RTT, QUIC coalescing,
     /// and lifecycle cleanup). Shared with background threads. This is the same
     /// `rustnet_core::network::tracker::ConnectionTracker` headless tools use —
@@ -1036,6 +1042,7 @@ impl App {
         Ok(Self {
             config,
             should_stop: Arc::new(AtomicBool::new(false)),
+            paused: Arc::new(AtomicBool::new(false)),
             tracker: Arc::new(ConnectionTracker::new()),
             connections_snapshot: Arc::new(RwLock::new(Vec::new())),
             snapshot_generation: Arc::new(AtomicU64::new(0)),
@@ -1223,6 +1230,7 @@ impl App {
         };
 
         let should_stop = Arc::clone(&self.should_stop);
+        let paused = Arc::clone(&self.paused);
         let stats = Arc::clone(&self.stats);
         let current_interface = Arc::clone(&self.current_interface);
         let linktype_storage = Arc::clone(&self.linktype);
@@ -1331,6 +1339,12 @@ impl App {
                         if should_stop.load(Ordering::Relaxed) {
                             info!("Capture thread stopping");
                             break;
+                        }
+
+                        // rustnetec: 托盘「暂停捕获」——不退出线程，仅空转等待恢复。
+                        if paused.load(Ordering::Relaxed) {
+                            thread::sleep(Duration::from_millis(100));
+                            continue;
                         }
 
                         match reader.next_packet() {
@@ -1492,6 +1506,7 @@ impl App {
         pcapng_tx: Option<Sender<PcapngRecord>>,
     ) {
         let should_stop = Arc::clone(&self.should_stop);
+        let paused = Arc::clone(&self.paused);
         let stats = Arc::clone(&self.stats);
         let linktype_storage = Arc::clone(&self.linktype);
         let capture_status = Arc::clone(&self.capture_status);
@@ -1568,6 +1583,12 @@ impl App {
                     if should_stop.load(Ordering::Relaxed) {
                         info!("Packet processor {} stopping", id);
                         break;
+                    }
+
+                    // rustnetec: 托盘「暂停捕获」——保持线程存活，等待恢复。
+                    if paused.load(Ordering::Relaxed) {
+                        thread::sleep(Duration::from_millis(100));
+                        continue;
                     }
 
                     // Block until sender delivers a full batch (no spin, no polling)
@@ -1742,6 +1763,7 @@ impl App {
         let export_path = self.config.pcapng_export_file.clone().unwrap_or_default();
         let (tx, rx) = channel::bounded::<PcapngRecord>(MAX_PCAPNG_QUEUE);
         let should_stop = Arc::clone(&self.should_stop);
+        let paused = Arc::clone(&self.paused);
         let linktype_storage = Arc::clone(&self.linktype);
         let capture_status = Arc::clone(&self.capture_status);
         let current_interface = Arc::clone(&self.current_interface);
@@ -1797,6 +1819,12 @@ impl App {
                 loop {
                     if should_stop.load(Ordering::Relaxed) && rx.is_empty() {
                         break;
+                    }
+
+                    // rustnetec: 托盘「暂停捕获」——停止落盘，保留队列待恢复后写。
+                    if paused.load(Ordering::Relaxed) {
+                        thread::sleep(Duration::from_millis(100));
+                        continue;
                     }
 
                     match rx.recv_timeout(Duration::from_millis(50)) {
@@ -1885,6 +1913,7 @@ impl App {
     ) -> Result<()> {
         let pktap_active = Arc::clone(&self.pktap_active);
         let should_stop = Arc::clone(&self.should_stop);
+        let paused = Arc::clone(&self.paused);
         let process_detection_status = Arc::clone(&self.process_detection_status);
         #[cfg(feature = "kubernetes")]
         let kubernetes_mode = self.config.kubernetes_mode;
@@ -1892,6 +1921,8 @@ impl App {
         thread::Builder::new()
             .name("process-enrichment".to_string())
             .spawn(move || {
+            // rustnetec: 托盘「暂停捕获」——clone 进闭包，下传给 run_process_enrichment。
+            let paused = Arc::clone(&paused);
             // On macOS, wait for PKTAP detection to avoid unnecessary lsof calls
             #[cfg(target_os = "macos")]
             {
@@ -1926,6 +1957,7 @@ impl App {
             if let Err(e) = Self::run_process_enrichment(
                 tracker,
                 should_stop,
+                paused,
                 pktap_active,
                 process_detection_status,
                 process_ready_tx,
@@ -1944,6 +1976,7 @@ impl App {
     fn run_process_enrichment(
         tracker: Arc<ConnectionTracker>,
         should_stop: Arc<AtomicBool>,
+        paused: Arc<AtomicBool>,
         pktap_active: Arc<AtomicBool>,
         process_detection_status: Arc<RwLock<ProcessDetectionStatus>>,
         process_ready_tx: std::sync::mpsc::SyncSender<()>,
@@ -2045,6 +2078,12 @@ impl App {
             if should_stop.load(Ordering::Relaxed) {
                 info!("Process enrichment thread stopping");
                 break;
+            }
+
+            // rustnetec: 托盘「暂停捕获」——冻结进程归属刷新，等待恢复。
+            if paused.load(Ordering::Relaxed) {
+                thread::sleep(Duration::from_millis(100));
+                continue;
             }
 
             // If PKTAP activates after the startup grace period, stop polling
@@ -2220,6 +2259,7 @@ impl App {
         let snapshot = Arc::clone(&self.connections_snapshot);
         let snapshot_generation = Arc::clone(&self.snapshot_generation);
         let should_stop = Arc::clone(&self.should_stop);
+        let paused = Arc::clone(&self.paused);
         let stats = Arc::clone(&self.stats);
         let service_lookup = Arc::clone(&self.service_lookup);
         let process_activity = Arc::clone(&self.process_activity);
@@ -2264,6 +2304,12 @@ impl App {
                     if should_stop.load(Ordering::Relaxed) {
                         info!("Snapshot provider thread stopping");
                         break;
+                    }
+
+                    // rustnetec: 托盘「暂停捕获」——冻结快照刷新，等待恢复。
+                    if paused.load(Ordering::Relaxed) {
+                        thread::sleep(Duration::from_millis(100));
+                        continue;
                     }
 
                     // Create snapshot
@@ -2388,6 +2434,7 @@ impl App {
     /// Start rate refresh thread to update rates for idle connections
     fn start_rate_refresh_thread(&self, tracker: Arc<ConnectionTracker>) -> Result<()> {
         let should_stop = Arc::clone(&self.should_stop);
+        let paused = Arc::clone(&self.paused);
 
         thread::Builder::new()
             .name("state_refresh".to_string())
@@ -2398,6 +2445,12 @@ impl App {
                     if should_stop.load(Ordering::Relaxed) {
                         info!("Rate refresh thread stopping");
                         break;
+                    }
+
+                    // rustnetec: 托盘「暂停捕获」——冻结速率刷新，等待恢复。
+                    if paused.load(Ordering::Relaxed) {
+                        thread::sleep(Duration::from_millis(100));
+                        continue;
                     }
 
                     // Refresh rates for connections that may still have non-zero rates.
@@ -2430,6 +2483,7 @@ impl App {
     /// Start interface statistics collection thread
     fn start_interface_stats_thread(&self) -> Result<()> {
         let should_stop = Arc::clone(&self.should_stop);
+        let paused = Arc::clone(&self.paused);
         let interface_stats = Arc::clone(&self.interface_stats);
         let interface_rates = Arc::clone(&self.interface_rates);
         let interface_traffic_windows = Arc::clone(&self.interface_traffic_windows);
@@ -2451,6 +2505,12 @@ impl App {
                     if should_stop.load(Ordering::Relaxed) {
                         info!("Interface stats thread stopping");
                         break;
+                    }
+
+                    // rustnetec: 托盘「暂停捕获」——冻结接口统计采样，等待恢复。
+                    if paused.load(Ordering::Relaxed) {
+                        thread::sleep(Duration::from_millis(100));
+                        continue;
                     }
 
                     // Collect stats from all interfaces
@@ -2520,6 +2580,7 @@ impl App {
     /// Start traffic history thread for graph visualization
     fn start_traffic_history_thread(&self) -> Result<()> {
         let should_stop = Arc::clone(&self.should_stop);
+        let paused = Arc::clone(&self.paused);
         let traffic_history = Arc::clone(&self.traffic_history);
         let conn_rate_history = Arc::clone(&self.conn_rate_history);
         let interface_rates = Arc::clone(&self.interface_rates);
@@ -2545,6 +2606,12 @@ impl App {
                     if should_stop.load(Ordering::Relaxed) {
                         info!("Traffic history thread stopping");
                         break;
+                    }
+
+                    // rustnetec: 托盘「暂停捕获」——冻结流量历史采样，等待恢复。
+                    if paused.load(Ordering::Relaxed) {
+                        thread::sleep(Duration::from_millis(100));
+                        continue;
                     }
 
                     // Aggregate rates from all interfaces
@@ -2653,6 +2720,7 @@ impl App {
         };
 
         let should_stop = Arc::clone(&self.should_stop);
+        let paused = Arc::clone(&self.paused);
 
         thread::Builder::new()
             .name("geoip-enrichment".to_string())
@@ -2664,6 +2732,12 @@ impl App {
                     if should_stop.load(Ordering::Relaxed) {
                         info!("GeoIP enrichment thread stopping");
                         break;
+                    }
+
+                    // rustnetec: 托盘「暂停捕获」——冻结 GeoIP 归属刷新，等待恢复。
+                    if paused.load(Ordering::Relaxed) {
+                        thread::sleep(Duration::from_millis(100));
+                        continue;
                     }
 
                     // Enrich connections without GeoIP info
@@ -2694,6 +2768,7 @@ impl App {
     /// Start cleanup thread to remove old connections
     fn start_cleanup_thread(&self, tracker: Arc<ConnectionTracker>) -> Result<()> {
         let should_stop = Arc::clone(&self.should_stop);
+        let paused = Arc::clone(&self.paused);
         let json_log_file = self.json_log_file.clone();
         let pcap_sidecar_file = self.pcap_sidecar_file.clone();
         // rustnetec: W-修复 — SQLite 事件落库挂接(cleanup 的 connection_closed 事件)。
@@ -2710,6 +2785,12 @@ impl App {
                 if should_stop.load(Ordering::Relaxed) {
                     info!("Cleanup thread stopping");
                     break;
+                }
+
+                // rustnetec: 托盘「暂停捕获」——冻结连接清理/归档，等待恢复。
+                if paused.load(Ordering::Relaxed) {
+                    thread::sleep(Duration::from_millis(100));
+                    continue;
                 }
 
                 // Remove inactive connections. The tracker handles the timeout
@@ -3252,6 +3333,24 @@ impl App {
         self.should_stop.load(Ordering::Relaxed)
     }
 
+    // rustnetec: 托盘「暂停/继续捕获」的可逆开关访问器。
+    /// 捕获是否处于暂停态（由托盘菜单翻转）。
+    pub fn is_paused(&self) -> bool {
+        self.paused.load(Ordering::Relaxed)
+    }
+
+    /// 置位/清位暂停标志。清位后捕获/采集线程立即恢复推进。
+    pub fn set_paused(&self, value: bool) {
+        self.paused.store(value, Ordering::Relaxed);
+    }
+
+    /// 翻转暂停标志，返回翻转后的新值。
+    pub fn toggle_paused(&self) -> bool {
+        let now = !self.paused.load(Ordering::Relaxed);
+        self.paused.store(now, Ordering::Relaxed);
+        now
+    }
+
     // rustnetec: Restart capture pipeline (偏差5, T1.5)
     //
     // 架构约束：capture thread 在特权期打开 raw socket，uid drop 后无法重开。
@@ -3288,6 +3387,12 @@ impl App {
     // 可安全跨线程共享，且 restart_capture 仅做 atomic store，无锁竞争。
     pub fn should_stop_handle(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.should_stop)
+    }
+
+    // rustnetec: 托盘「暂停/继续捕获」——暴露 paused 的 Arc clone，
+    // 供 HttpState 在 POST /pause 时翻转标志。
+    pub fn paused_handle(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.paused)
     }
 
     /// Stop all threads gracefully

@@ -420,7 +420,7 @@ impl TrayController {
             .unwrap_or_default();
 
         StatusContext {
-            is_paused: app.is_stopping(), // rustnetec: TODO wire real pause flag if added
+            is_paused: app.is_paused(),
             // rustnetec: resolve virtual capture devices (pktap/any/NPF) to
             // the real active interface for an accurate status line.
             interface: app.get_display_interface(),

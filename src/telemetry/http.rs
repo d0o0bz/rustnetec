@@ -36,6 +36,9 @@ pub struct HttpState {
     /// the capture thread. The flag is `Arc<AtomicBool>` (Send + Sync), safe
     /// to share with the HTTP server thread without touching `App`'s ownership.
     pub should_stop: Arc<AtomicBool>,
+    /// rustnetec: 托盘「暂停/继续捕获」可逆开关句柄（区别于 `should_stop` 的不可逆退出）。
+    /// `POST /pause` 翻转此标志；捕获/采集线程在 loop 顶部检测并空转等待恢复。
+    pub paused: Arc<AtomicBool>,
     /// rustnetec: pending one-time bootstrap codes (T3.3, R6).
     ///
     /// Each entry is `(guid, issued_at)`. A guid is removed the first time a
@@ -112,7 +115,7 @@ impl HttpState {
             "connections": connections,
             "historic_connections": historic_connections,
             "uptime_secs": uptime.as_secs(),
-            "paused": app.is_stopping(),
+            "paused": app.is_paused(),
         });
         if let Ok(mut slot) = self.live_snapshot.write() {
             *slot = snapshot;
@@ -337,6 +340,11 @@ fn handle_request(request: tiny_http::Request, state: &HttpState) {
             handle_restart_capture(request, state);
         }
 
+        // rustnetec: 托盘「暂停/继续捕获」——翻转 paused 标志，返回新状态。
+        ("/pause", tiny_http::Method::Post) => {
+            handle_pause(request, state);
+        }
+
         // rustnetec: POST /admin/shutdown — tray helper → daemon graceful
         // stop (T3.6.7). Requires auth like all non-/ endpoints.
         ("/admin/shutdown", tiny_http::Method::Post) => {
@@ -447,6 +455,27 @@ fn handle_admin_shutdown(request: tiny_http::Request, state: &HttpState) {
     let response = serde_json::json!({
         "status": "ok",
         "note": "should_stop set — daemon will exit gracefully"
+    });
+    let _ = respond_json(request, 200, &response);
+}
+
+/// rustnetec: POST /pause — 托盘「暂停/继续捕获」HTTP 端点。
+///
+/// tray helper 是独立进程，不持有 `App`，故通过此端点翻转 daemon 的 `paused`
+/// 标志。捕获/采集线程在 loop 顶部检测 `paused`，置位时 `sleep(100ms) + continue`，
+/// 清位后立即恢复。返回新状态供托盘同步菜单文案。
+fn handle_pause(request: tiny_http::Request, state: &HttpState) {
+    let now_paused = !state.paused.load(std::sync::atomic::Ordering::Relaxed);
+    state
+        .paused
+        .store(now_paused, std::sync::atomic::Ordering::Relaxed);
+    info!(
+        "POST /pause: capture {}",
+        if now_paused { "paused" } else { "resumed" }
+    );
+    let response = serde_json::json!({
+        "status": "ok",
+        "paused": now_paused
     });
     let _ = respond_json(request, 200, &response);
 }
