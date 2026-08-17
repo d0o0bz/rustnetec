@@ -619,6 +619,55 @@
     word-break: break-all;
   }
   #settings-form .identity-readonly span { color: var(--text); }
+  /* rustnetec: R-DB — 数据库字段集内占用展示与按钮 */
+  #settings-form .db-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 6px 0;
+    flex-wrap: wrap;
+  }
+  #settings-form .db-label { color: var(--muted); font-size: 13px; }
+  #settings-form .db-path {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color: var(--text);
+    font-size: 12px;
+    background: var(--bg, #0d1117);
+    border: 1px solid var(--border, #30363d);
+    border-radius: 5px;
+    padding: 3px 8px;
+    max-width: 360px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  #settings-form .db-size {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color: var(--green);
+    font-size: 13px;
+    min-width: 80px;
+  }
+  #settings-form .db-btn {
+    background: transparent;
+    border: 1px solid var(--border, #30363d);
+    color: var(--text);
+    font: inherit;
+    font-size: 12px;
+    padding: 4px 10px;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: border-color .15s, background .15s, opacity .15s;
+  }
+  #settings-form .db-btn:hover:not(:disabled) {
+    border-color: var(--accent, #3fb950);
+    background: rgba(63,176,80,0.08);
+  }
+  #settings-form .db-btn:disabled { opacity: .4; cursor: not-allowed; }
+  #settings-form .db-btn.danger:hover:not(:disabled) {
+    border-color: #f85149;
+    background: rgba(248,81,73,0.10);
+    color: #f85149;
+  }
   #settings-form label {
     display: inline-flex;
     align-items: center;
@@ -979,6 +1028,24 @@
         <label>保留天数<input type="number" data-cfg="retention_days" min="1" max="180"></label>
       </fieldset>
       <fieldset>
+        <legend>数据库 <span class="restart-hint">(重启生效)</span></legend>
+        <div class="db-row">
+          <label class="db-label" for="db-path">数据库文件</label>
+          <input type="text" id="db-path" data-cfg="db_path" class="db-path-input" placeholder="(默认 data.db)" style="flex:1; min-width:220px;">
+          <button type="button" id="db-open-dir" class="db-btn">打开目录</button>
+        </div>
+        <div class="db-row">
+          <span class="db-label">当前占用</span>
+          <span id="db-size" class="db-size">—</span>
+          <button type="button" id="db-refresh" class="db-btn">刷新大小</button>
+        </div>
+        <div class="db-row">
+          <button type="button" id="db-delete-original" class="db-btn danger" disabled>删除原数据库</button>
+          <span id="db-delete-hint" class="muted" style="font-size:12px;"></span>
+        </div>
+        <div class="muted" style="font-size:12px;">修改路径后需重启守护进程/托盘生效；重启时会自动复制旧库到新路径（保留原文件）。切换成功后可在上方「删除原数据库」回收原默认库。</div>
+      </fieldset>
+      <fieldset>
         <legend>GeoIP <span class="restart-hint">(重启进程生效)</span></legend>
         <label>国家库路径<input type="text" data-cfg="geoip_country_path" placeholder="(自动发现)"></label>
         <label>ASN 库路径<input type="text" data-cfg="geoip_asn_path" placeholder="(自动发现)"></label>
@@ -1014,6 +1081,14 @@
           <label><input type="checkbox" data-cfg-array="tray_status_fields" data-item="ratetotal">总速率</label>
           <label><input type="checkbox" data-cfg-array="tray_status_fields" data-item="connections">连接数</label>
           <label><input type="checkbox" data-cfg-array="tray_status_fields" data-item="uptime">运行时长</label>
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend>配置文件</legend>
+        <div class="db-row">
+          <span class="db-label">路径</span>
+          <span id="config-path" class="db-path">—</span>
+          <button type="button" id="config-open-dir" class="db-btn">打开目录</button>
         </div>
       </fieldset>
       <div id="settings-actions">
@@ -3251,6 +3326,9 @@
     if (uidEl) uidEl.textContent = cfg.user_id != null ? String(cfg.user_id) : "—";
     var midEl = document.getElementById("identity-machine-id");
     if (midEl) midEl.textContent = cfg.machine_id || "—";
+    // rustnetec: R-DB — 配置文件完整路径只读展示
+    var cfgPathEl = document.getElementById("config-path");
+    if (cfgPathEl) cfgPathEl.textContent = cfg.config_path || "—";
   }
 
   // 收集表单值 → Object(按 data-cfg 属性)
@@ -3440,6 +3518,106 @@
     });
     // 绑定重启捕获按钮
     document.getElementById("settings-restart").addEventListener("click", restartCapture);
+    // rustnetec: R-DB — 数据库占用/迁移状态加载 + 按钮事件
+    loadDbInfo();
+    document.getElementById("db-refresh").addEventListener("click", loadDbInfo);
+    document.getElementById("db-delete-original").addEventListener("click", deleteOriginalDb);
+    // rustnetec: WebUI — 打开目录按钮事件
+    document.getElementById("config-open-dir").addEventListener("click", function () {
+      var p = document.getElementById("config-path").textContent;
+      openDir(p);
+    });
+    document.getElementById("db-open-dir").addEventListener("click", function () {
+      var p = document.getElementById("db-path").value;
+      openDir(p);
+    });
+  }
+
+  // rustnetec: WebUI — POST /open-dir 用系统文件管理器打开路径所在目录
+  function openDir(path) {
+    if (!path || path === "—") return;
+    fetch("/open-dir", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: path }),
+    })
+      .then(function (resp) { if (!resp.ok) return resp.json().catch(function () { return {}; }).then(function (b) { throw new Error((b && b.error) || ("HTTP " + resp.status)); }); return resp.json(); })
+      .then(function (data) {
+        if (data.status !== "ok") alert("无法打开目录: " + (data.error || "未知错误"));
+      })
+      .catch(function (err) { alert("无法打开目录: " + err.message); });
+  }
+
+  // rustnetec: R-DB — 格式化字节为可读大小
+  function formatBytes(n) {
+    if (!n || n <= 0) return "0 B";
+    var units = ["B", "KB", "MB", "GB", "TB"];
+    var i = 0;
+    var v = n;
+    while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+    return (i === 0 ? v : v.toFixed(2)) + " " + units[i];
+  }
+
+  // rustnetec: R-DB — GET /db/info 填充占用大小 + 删除按钮可用态
+  function loadDbInfo() {
+    fetch("/db/info", { credentials: "same-origin" })
+      .then(function (resp) { if (!resp.ok) throw new Error("HTTP " + resp.status); return resp.json(); })
+      .then(function (info) {
+        var sizeEl = document.getElementById("db-size");
+        var delBtn = document.getElementById("db-delete-original");
+        var delHint = document.getElementById("db-delete-hint");
+        var pathEl = document.getElementById("db-path");
+        if (pathEl) pathEl.value = info.db_path || "";
+        if (sizeEl) sizeEl.textContent = formatBytes(info.size_bytes) + (info.exists ? "" : " (文件不存在)");
+        if (delBtn && delHint) {
+          if (info.migration_done === true) {
+            delBtn.disabled = false;
+            delHint.textContent = "已切换到新库，可删除原默认库 " + (info.default_db_path || "");
+          } else {
+            delBtn.disabled = true;
+            delHint.textContent = "需先重启以切换到新库后方可删除原默认库";
+          }
+        }
+      })
+      .catch(function (err) {
+        var sizeEl = document.getElementById("db-size");
+        if (sizeEl) sizeEl.textContent = "获取失败";
+        console.warn("loadDbInfo failed:", err.message);
+      });
+  }
+
+  // rustnetec: R-DB — POST /db/delete-original 删除原默认库(二次确认)
+  function deleteOriginalDb() {
+    var delBtn = document.getElementById("db-delete-original");
+    if (delBtn && delBtn.disabled) return;
+    if (!window.confirm("确认删除原默认数据库?此操作不可恢复。")) return;
+    delBtn.disabled = true;
+    fetch("/db/delete-original", {
+      method: "POST",
+      credentials: "same-origin",
+    })
+      .then(function (resp) {
+        if (!resp.ok) {
+          return resp.json().catch(function () { return {}; }).then(function (body) {
+            throw new Error((body && body.error) || ("HTTP " + resp.status));
+          });
+        }
+        return resp.json();
+      })
+      .then(function (data) {
+        if (data.status === "ok") {
+          alert("原默认数据库已删除。");
+          loadDbInfo();
+        } else {
+          alert("删除失败: " + (data.error || "未知错误"));
+          loadDbInfo();
+        }
+      })
+      .catch(function (err) {
+        alert("删除失败: " + err.message);
+        loadDbInfo();
+      });
   }
 
   // ---- /live 1s 轮询 ----

@@ -344,6 +344,21 @@ fn handle_request(request: tiny_http::Request, state: &HttpState) {
             handle_put_config(request, state);
         }
 
+        // rustnetec: R-DB — GET /db/info 数据库路径/占用/迁移状态。
+        ("/db/info", tiny_http::Method::Get) => {
+            handle_db_info(request, state);
+        }
+
+        // rustnetec: R-DB — POST /db/delete-original 删除原默认库（仅已切到新库时）。
+        ("/db/delete-original", tiny_http::Method::Post) => {
+            handle_delete_original_db(request, state);
+        }
+
+        // rustnetec: WebUI — POST /open-dir 用系统文件管理器打开目录/文件所在目录。
+        ("/open-dir", tiny_http::Method::Post) => {
+            handle_open_dir(request, state);
+        }
+
         // POST /config/restart-capture — restart capture
         ("/config/restart-capture", tiny_http::Method::Post) => {
             handle_restart_capture(request, state);
@@ -2076,9 +2091,16 @@ fn handle_stats_reachability(request: tiny_http::Request, state: &HttpState) {
 fn handle_get_config(request: tiny_http::Request, _state: &HttpState) {
     match crate::config::PersistentConfig::load() {
         Ok(config) => {
-            let json = serde_json::to_value(&config).unwrap_or_else(
+            let mut json = serde_json::to_value(&config).unwrap_or_else(
                 |e| serde_json::json!({"error": format!("serialize error: {}", e)}),
             );
+            // rustnetec: R-DB — 注入配置文件完整路径(只读展示用,不纳入持久化结构)
+            if let Some(obj) = json.as_object_mut() {
+                let config_path = crate::telemetry::paths::config_path()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default();
+                obj.insert("config_path".to_string(), serde_json::json!(config_path));
+            }
             let _ = respond_json(request, 200, &json);
         }
         Err(e) => {
@@ -2191,7 +2213,9 @@ fn handle_put_config(mut request: tiny_http::Request, state: &HttpState) {
         } else {
             "unchanged".to_string()
         },
-        "note": "config saved — hot-update items applied immediately; restart-required items need POST /config/restart-capture"
+        "note": "config saved — hot-update items applied immediately; restart-required items need POST /config/restart-capture",
+        // rustnetec: R-DB — 显式告知若改了 db_path 需重启进程才会复制迁移并生效
+        "db_path_changed": old_config.db_path != new_config.db_path
     });
     let _ = respond_json(request, 200, &response);
 }
@@ -2237,6 +2261,205 @@ fn handle_restart_capture(mut request: tiny_http::Request, state: &HttpState) {
         "note": "capture thread stopped for config reload — restart the process to resume capture with the new configuration (raw socket cannot be reopened after uid drop)"
     });
     let _ = respond_json(request, 200, &response);
+}
+
+/// rustnetec: R-DB — GET /db/info
+///
+/// 返回当前数据库路径、平台默认库路径、主文件占用大小、是否存在，以及
+/// 是否已完成「旧默认库 → 新库」迁移（用于前端判断「删除原库」按钮可用态）。
+/// O(1)：仅一次 fs::metadata，不触碰 DB 句柄。失败返回安全默认值。
+fn handle_db_info(request: tiny_http::Request, state: &HttpState) {
+    let default_db = crate::telemetry::paths::db_path()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    let db_path = state.db_path.display().to_string();
+
+    let (size_bytes, exists) = match std::fs::metadata(&state.db_path) {
+        Ok(m) => (m.len(), true),
+        Err(_) => (0u64, false),
+    };
+
+    // 已切换到自定义库且默认库仍存在 → 迁移完成，可删除原库
+    let migration_done = {
+        let default_path = crate::telemetry::paths::db_path().ok();
+        state.db_path != default_path.as_deref().unwrap_or(&PathBuf::new())
+            && default_path.as_ref().map(|p| p.exists()).unwrap_or(false)
+    };
+
+    let response = serde_json::json!({
+        "db_path": db_path,
+        "default_db_path": default_db,
+        "size_bytes": size_bytes,
+        "exists": exists,
+        "migration_done": migration_done
+    });
+    let _ = respond_json(request, 200, &response);
+}
+
+/// rustnetec: R-DB — POST /db/delete-original
+///
+/// 仅当当前进程已切换到自定义库（db_path 不等于默认库路径）时才删除默认库
+/// data.db 及其 -wal/-shm（best-effort）；否则返回 409 提示先重启，避免误删在用库。
+fn handle_delete_original_db(request: tiny_http::Request, state: &HttpState) {
+    let default_path = match crate::telemetry::paths::db_path() {
+        Ok(p) => p,
+        Err(e) => {
+            let _ = respond_json(
+                request,
+                500,
+                &serde_json::json!({ "status": "error", "error": format!("无法解析默认库路径: {e}") }),
+            );
+            return;
+        }
+    };
+
+    // 防护：若仍指向默认库，删除会破坏在用库 → 拒绝
+    if state.db_path == default_path {
+        let _ = respond_json(
+            request,
+            409,
+            &serde_json::json!({
+                "status": "error",
+                "error": "当前进程仍在使用默认数据库，请先重启守护进程/托盘以切换到新路径后再删除原库"
+            }),
+        );
+        return;
+    }
+
+    let mut deleted = Vec::new();
+    let mut failed = Vec::new();
+    for suffix in ["", "-wal", "-shm"] {
+        let f = default_path.with_extension(format!("db{}", suffix));
+        if !f.exists() {
+            continue;
+        }
+        match std::fs::remove_file(&f) {
+            Ok(()) => deleted.push(f.display().to_string()),
+            Err(e) => failed.push(format!("{}: {e}", f.display())),
+        }
+    }
+
+    if !failed.is_empty() {
+        let _ = respond_json(
+            request,
+            500,
+            &serde_json::json!({
+                "status": "error",
+                "error": format!("部分文件删除失败: {}", failed.join("; ")),
+                "deleted": deleted
+            }),
+        );
+        return;
+    }
+
+    let _ = respond_json(
+        request,
+        200,
+        &serde_json::json!({
+            "status": "ok",
+            "deleted": deleted,
+            "note": "原默认数据库已删除"
+        }),
+    );
+}
+
+/// rustnetec: WebUI — POST /open-dir
+///
+/// 用系统文件管理器打开指定路径。若传入的是文件，则打开其**所在目录**
+/// （便于「定位配置文件 / 数据库文件」）；若传入的是目录则直接打开。
+/// 仅接受已存在的路径，避免打开任意字符串。跨平台：macOS `open`、
+/// Windows `explorer`、Linux `xdg-open`。失败返回 4xx/5xx 描述错误。
+fn handle_open_dir(mut request: tiny_http::Request, _state: &HttpState) {
+    let mut body = String::new();
+    if let Err(e) = request.as_reader().read_to_string(&mut body) {
+        let _ = respond_json(
+            request,
+            400,
+            &serde_json::json!({ "status": "error", "error": format!("读取请求体失败: {e}") }),
+        );
+        return;
+    }
+
+    let path: String = match serde_json::from_str::<serde_json::Value>(&body) {
+        Ok(v) => v
+            .get("path")
+            .and_then(|p| p.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        Err(e) => {
+            let _ = respond_json(
+                request,
+                400,
+                &serde_json::json!({ "status": "error", "error": format!("无效 JSON: {e}") }),
+            );
+            return;
+        }
+    };
+
+    if path.is_empty() {
+        let _ = respond_json(
+            request,
+            400,
+            &serde_json::json!({ "status": "error", "error": "缺少 path 参数" }),
+        );
+        return;
+    }
+
+    let p = std::path::Path::new(&path);
+    if !p.exists() {
+        let _ = respond_json(
+            request,
+            404,
+            &serde_json::json!({ "status": "error", "error": format!("路径不存在: {path}") }),
+        );
+        return;
+    }
+
+    // 文件 → 打开其所在目录;目录 → 直接打开。
+    let target = if p.is_dir() {
+        p.to_path_buf()
+    } else {
+        p.parent().map(|x| x.to_path_buf()).unwrap_or_else(|| p.to_path_buf())
+    };
+
+    #[cfg(target_os = "macos")]
+    let status = std::process::Command::new("open").arg(&target).status();
+    #[cfg(target_os = "windows")]
+    let status = std::process::Command::new("explorer").arg(&target).status();
+    #[cfg(target_os = "linux")]
+    let status = std::process::Command::new("xdg-open").arg(&target).status();
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    let status: Result<std::process::ExitStatus, std::io::Error> = Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "当前平台不支持打开文件管理器",
+    ));
+
+    match status {
+        Ok(s) if s.success() => {
+            let _ = respond_json(
+                request,
+                200,
+                &serde_json::json!({ "status": "ok", "opened": target.display().to_string() }),
+            );
+        }
+        Ok(s) => {
+            let _ = respond_json(
+                request,
+                500,
+                &serde_json::json!({
+                    "status": "error",
+                    "error": format!("文件管理器退出码异常: {}", s)
+                }),
+            );
+        }
+        Err(e) => {
+            let _ = respond_json(
+                request,
+                500,
+                &serde_json::json!({ "status": "error", "error": format!("无法打开目录: {e}") }),
+            );
+        }
+    }
 }
 
 /// Query aggregate statistics from the SQLite database.
@@ -2863,6 +3086,7 @@ mod tests {
                     &crate::config::PersistentConfig::default(),
                 ),
             )),
+            paused: Arc::new(AtomicBool::new(false)),
         };
         assert_eq!(state.http_token, "test-token");
         assert!(!state.should_stop.load(std::sync::atomic::Ordering::Relaxed));
@@ -2900,6 +3124,7 @@ mod tests {
                     &crate::config::PersistentConfig::default(),
                 ),
             )),
+            paused: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -2935,6 +3160,7 @@ mod tests {
                     &crate::config::PersistentConfig::default(),
                 ),
             )),
+            paused: Arc::new(AtomicBool::new(false)),
         };
         assert_eq!(other.http_port, 19813);
     }

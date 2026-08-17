@@ -40,8 +40,49 @@ fn current_exe_path() -> Result<String> {
     Ok(exe)
 }
 
-/// 是否已安装 LaunchDaemon（plist 存在即视为已安装）。
+/// 从 LaunchDaemon plist 文本中提取 ProgramArguments 数组的第一个条目
+/// （即 daemon 可执行文件路径）。解析失败（结构异常）返回 None。
+///
+/// 仅做轻量文本解析，不依赖外部 plist crate：本模块生成的 plist 格式固定
+/// （ProgramArguments 数组首元素即 exe 路径），足以覆盖安装/校验场景。
+fn plist_program_exe(content: &str) -> Option<String> {
+    let key = "<key>ProgramArguments</key>";
+    let key_pos = content.find(key)? + key.len();
+    let rest = &content[key_pos..];
+    let open = rest.find("<string>")? + "<string>".len();
+    let close = rest[open..].find("</string>")?;
+    Some(rest[open..open + close].to_string())
+}
+
+/// 校验 plist 内容：ProgramArguments 指向的可执行文件真实存在。
+/// 与文件系统解耦，便于单元测试。
+fn plist_executable_exists(content: &str) -> bool {
+    match plist_program_exe(content) {
+        Some(exe) => PathBuf::from(exe).is_file(),
+        None => false,
+    }
+}
+
+/// 是否已安装且有效的 LaunchDaemon：
+/// plist 存在，且其 ProgramArguments 指向的可执行文件真实存在。
+///
+/// 二进制改名/移动后（如 rustnet → rustnetec），旧 plist 会因 exe 不存在
+/// 而被判为未安装，避免托盘误判"已安装"后走 kickstart 失败路径
+/// （`Could not find service`，daemon 永远起不来）。
 pub fn is_installed() -> bool {
+    let path = daemon_plist_path();
+    if !path.exists() {
+        return false;
+    }
+    match std::fs::read_to_string(&path) {
+        Ok(content) => plist_executable_exists(&content),
+        Err(_) => false,
+    }
+}
+
+/// 是否存在 plist 文件（无论内容是否有效）。供 uninstall 清理损坏/过期
+/// plist 使用——若用严格版 is_installed() 判断，损坏 plist 会永远卸不掉。
+pub fn plist_exists() -> bool {
     daemon_plist_path().exists()
 }
 
@@ -123,13 +164,17 @@ pub fn install(http_port: u16) -> Result<()> {
     std::fs::write(&tmp, plist).with_context(|| format!("failed to write temp plist {:?}", tmp))?;
 
     // 提权命令：cp 临时 plist 到系统目录 + bootstrap。命令内只有单引号
-    // 路径，无 `"`，不会被 AppleScript 字符串截断。
+    // 路径，无 `"`，不会被 AppleScript 字符串截断。先 bootout 兜底
+    // （旧 plist 的 exe 失效导致 is_installed()=false 但服务可能仍加载），
+    // 保证重装幂等。
     let target = daemon_plist_path();
     let cmd = format!(
-        "do shell script \"cp '{}' '/Library/LaunchDaemons/' && \
+        "do shell script \"launchctl bootout system/{label} 2>/dev/null; \
+         cp '{}' '/Library/LaunchDaemons/' && \
          launchctl bootstrap system '{}'\" with administrator privileges",
         tmp.display(),
-        target.display()
+        target.display(),
+        label = LABEL
     );
     let out = std::process::Command::new("osascript")
         .arg("-e")
@@ -149,8 +194,10 @@ pub fn install(http_port: u16) -> Result<()> {
 }
 
 /// 卸载 LaunchDaemon：bootout + 删除 plist（同样需一次授权）。
+/// 用 plist_exists() 而非 is_installed() 判断：exe 已失效的过期 plist
+/// 也必须能卸载，否则旧文件永远残留。
 pub fn uninstall() -> Result<()> {
-    if !is_installed() {
+    if !plist_exists() {
         info!("LaunchDaemon not installed — nothing to do");
         return Ok(());
     }
@@ -204,5 +251,26 @@ mod tests {
         let p = plist_content("/tmp/a&b<c>d", 19811, "/Users/alice", 501, 20);
         assert!(p.contains("a&amp;b&lt;c&gt;d"));
         assert!(!p.contains("/tmp/a&b<c>d"));
+    }
+    #[test]
+    fn plist_program_exe_extracts_first_argument() {
+        let p = plist_content("/usr/local/bin/rustnetec", 19811, "/Users/alice", 501, 20);
+        assert_eq!(plist_program_exe(&p), Some("/usr/local/bin/rustnetec".to_string()));
+    }
+    #[test]
+    fn plist_program_exe_malformed_returns_none() {
+        assert_eq!(plist_program_exe("not a plist"), None);
+        // ProgramArguments 存在但数组为空
+        let p = "<dict><key>ProgramArguments</key><array></array></dict>";
+        assert_eq!(plist_program_exe(p), None);
+    }
+    #[test]
+    fn plist_executable_exists_checks_real_file() {
+        // 当前可执行文件真实存在（测试进程自身）
+        let p = plist_content(&current_exe_path().unwrap(), 19811, "/Users/alice", 501, 20);
+        assert!(plist_executable_exists(&p));
+        // 指向不存在路径的 plist 必须判为未安装
+        let p2 = plist_content("/nonexistent/rustnetec", 19811, "/Users/alice", 501, 20);
+        assert!(!plist_executable_exists(&p2));
     }
 }

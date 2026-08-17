@@ -15,9 +15,66 @@ use std::time::Duration;
 /// chown 共用,保证 daemon 落库路径与 `query --live` 一致。
 fn resolve_db_path(matches: &clap::ArgMatches) -> PathBuf {
     if let Some(p) = matches.get_one::<String>("db") {
-        PathBuf::from(p)
-    } else {
-        telemetry::paths::db_path().unwrap_or_else(|_| PathBuf::from("data.db"))
+        return PathBuf::from(p);
+    }
+    // 回退到持久化配置中的自定义 db_path（若存在且非空）
+    if let Ok(cfg) = rustnet_monitor::config::PersistentConfig::load() {
+        if let Some(p) = cfg.db_path.as_ref().filter(|s| !s.trim().is_empty()) {
+            return PathBuf::from(p.trim());
+        }
+    }
+    telemetry::paths::db_path().unwrap_or_else(|_| PathBuf::from("data.db"))
+}
+
+/// 在打开 SqliteSink 前调用：若最终库路径不同于默认库路径、目标不存在且默认库存在，
+/// 则将默认库（data.db 及其 -wal/-shm）复制到目标路径，保留原文件（best-effort）。
+fn migrate_db_if_needed(final_db_path: &PathBuf) {
+    let default_path = match telemetry::paths::db_path() {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+    // 目标等于默认库（或未自定义）则无需迁移
+    if final_db_path == &default_path {
+        return;
+    }
+    // 目标已存在则视为已迁移/已有数据，跳过避免覆盖
+    if final_db_path.exists() {
+        return;
+    }
+    let default_exists = default_path.exists();
+    if !default_exists {
+        // 全新部署：无旧库可迁移，仅确保父目录存在以便 Sink 创建
+        if let Some(parent) = final_db_path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                log::warn!("无法创建数据库目标目录 {}: {}", parent.display(), e);
+            }
+        }
+        return;
+    }
+    // 确保目标父目录存在
+    if let Some(parent) = final_db_path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            log::warn!("无法创建数据库目标目录 {}: {}", parent.display(), e);
+            return;
+        }
+    }
+    // 复制 data.db 及配套文件（best-effort，保留原文件）
+    for suffix in ["", "-wal", "-shm"] {
+        let src = default_path.with_extension(format!("db{}", suffix));
+        if !src.exists() {
+            continue;
+        }
+        let dst = final_db_path.with_extension(format!("db{}", suffix));
+        if let Err(e) = std::fs::copy(&src, &dst) {
+            log::warn!(
+                "迁移数据库失败（保留原文件）{} -> {}: {}",
+                src.display(),
+                dst.display(),
+                e
+            );
+        } else {
+            log::info!("已复制数据库文件 {} -> {}", src.display(), dst.display());
+        }
     }
 }
 
@@ -891,6 +948,8 @@ fn run() -> Result<()> {
     // 进程活动(/processes)始终无数据。此处 daemon/tray 先建 sink 再启线程。
     if daemon_mode || tray_mode {
         let db_path = resolve_db_path(&matches);
+        // rustnetec: 打开 Sink 前执行 best-effort 复制迁移（仅当自定义了不同于默认的路径）
+        migrate_db_if_needed(&db_path);
         let runtime_config = std::sync::Arc::new(std::sync::RwLock::new(
             rustnet_monitor::config::RuntimeConfig::from_persistent(
                 &rustnet_monitor::config::PersistentConfig::load().unwrap_or_default(),

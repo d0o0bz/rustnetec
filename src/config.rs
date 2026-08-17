@@ -346,6 +346,12 @@ pub struct PersistentConfig {
     #[serde(default)]
     pub http_token: Option<String>,
 
+    // --- Database path (rustnetec, R-DB) ---
+    /// 自定义 SQLite 数据库路径；为空（默认）则回退平台默认 `data_dir()/data.db`。
+    /// 保存后需重启守护进程/托盘生效；重启时会自动将旧默认库复制到新路径（保留原文件）。
+    #[serde(default)]
+    pub db_path: Option<String>,
+
     // --- Boot autostart (R1 sub-requirement; default off) ---
     #[serde(default)]
     pub autostart_enabled: bool,
@@ -468,6 +474,9 @@ impl Default for PersistentConfig {
 
             http_port: 19811,
             http_token: None,
+
+            // --- Database path (rustnetec, R-DB) ---
+            db_path: None,
 
             autostart_enabled: false,
             autostart_mode: AutostartMode::default(),
