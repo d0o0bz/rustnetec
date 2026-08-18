@@ -1,0 +1,89 @@
+name: Build rustnetec-server
+
+# rustnetec: rustnetec-server（服务端）独立构建配置。
+#
+# 与 build-platforms.yml（主二进制 rustnetec）分离：rustnet-server 是纯 Rust
+# 依赖（rusqlite bundled 自带 SQLite），无需 libpcap-dev 等系统库，构建更快；
+# 触发路径独立（仅 crates/rustnet-server/** 变更时跑），避免每次主二进制
+# 变更都重复构建服务端。
+
+on:
+  pull_request:
+    branches: [ "main" ]
+    paths:
+      - 'crates/rustnet-server/**'
+      - 'crates/rustnet-core/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/build-server.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build-${{ matrix.build }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        build:
+          - linux-x64-gnu
+          - macos-aarch64
+          - macos-x64
+        include:
+          - build: linux-x64-gnu
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            run-tests: true
+          - build: macos-aarch64
+            os: macos-14
+            target: aarch64-apple-darwin
+            run-tests: true
+          - build: macos-x64
+            os: macos-14
+            target: x86_64-apple-darwin
+            run-tests: false
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Cache Cargo registry/git deps + per-target build artifacts to speed up
+      # repeated builds. Key includes the target triple and the Cargo.lock hash
+      # so different matrix entries don't share a poisoned cache.
+      - name: Cache cargo & build artifacts
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/${{ matrix.target }}
+          key: ${{ runner.os }}-server-cargo-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-server-cargo-${{ matrix.target }}-
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable # unpinned: maintained branch by Rust team member
+        with:
+          targets: ${{ matrix.target }}
+
+      # rustnetec: package 名为 rustnetec-server（产物同名的服务端二进制）。
+      # 无系统库依赖（rusqlite bundled），无需 setup-linux-deps。
+      - name: Build rustnetec-server
+        run: cargo build --release --target ${{ matrix.target }} -p rustnetec-server
+
+      - name: Run tests
+        if: matrix.run-tests
+        run: cargo test --target ${{ matrix.target }} -p rustnetec-server
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: rustnetec-server-${{ matrix.build }}
+          path: target/${{ matrix.target }}/release/rustnetec-server
+          if-no-files-found: error
