@@ -110,7 +110,7 @@ jobs:
 
       - name: Install cross
         if: matrix.cargo == 'cross'
-        run: cargo install cross@0.2.5
+        run: cargo install cross@0.2.5 --force
 
       - name: Build
         uses: ./.github/actions/build-rustnet
