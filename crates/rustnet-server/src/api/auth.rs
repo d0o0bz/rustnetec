@@ -24,6 +24,28 @@ use crate::db::ServerDb;
 /// Shared app state (mirror of [`super::AppState`] to avoid a circular import).
 pub type AppState = std::sync::Arc<ServerDb>;
 
+/// rustnetec: Authenticated principal resolved from a Bearer token.
+///
+/// Carries the token's row id, role, and (for non-admin tokens) the
+/// `machine_id` scope that limits data visibility. Admin tokens have
+/// `scope_machine_id = None`, meaning unrestricted access.
+#[derive(Debug, Clone)]
+pub struct TokenPrincipal {
+    /// Row id in `server_tokens` (needed for e.g. client auto-binding).
+    pub token_id: i64,
+    pub role: AuthRole,
+    /// `None` for admin tokens (full access); `Some(mid)` restricts reads/ingest
+    /// to events whose `machine_id` matches `mid`.
+    pub scope_machine_id: Option<String>,
+}
+
+impl TokenPrincipal {
+    /// Whether this principal has unrestricted (cross-machine) access.
+    pub fn is_unscoped(&self) -> bool {
+        self.scope_machine_id.is_none()
+    }
+}
+
 /// Minimum plaintext token length we'll accept on creation. 32 bytes is the
 /// canonical size; the bound exists to refuse degenerate inputs.
 pub const MIN_TOKEN_LEN: usize = 16;
@@ -33,11 +55,16 @@ pub const MIN_TOKEN_LEN: usize = 16;
 // ---------------------------------------------------------------------------
 
 /// Authorization role attached to a server token.
+///
+/// rustnetec: `Client` — 每机一个 token 的角色：可上报（`POST /ingest`）且
+/// 可只读自己的数据（`GET /query` 等）。创建时 `scope_machine_id` 可为
+/// `None`（待绑定），机器首次上报时服务端自动绑定到其 `machine_id`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthRole {
     Ingest,
     Query,
     Admin,
+    Client,
 }
 
 impl AuthRole {
@@ -47,6 +74,7 @@ impl AuthRole {
             AuthRole::Ingest => "ingest",
             AuthRole::Query => "query",
             AuthRole::Admin => "admin",
+            AuthRole::Client => "client",
         }
     }
 
@@ -55,6 +83,8 @@ impl AuthRole {
     fn authorizes(self, required: AuthRole) -> bool {
         match (self, required) {
             (AuthRole::Admin, _) => true,
+            // rustnetec: client = 上传 + 只读自己（ingest 与 query 端点都放行）。
+            (AuthRole::Client, AuthRole::Ingest) | (AuthRole::Client, AuthRole::Query) => true,
             (a, b) => a == b,
         }
     }
@@ -67,6 +97,7 @@ impl FromStr for AuthRole {
             "ingest" => Ok(AuthRole::Ingest),
             "query" => Ok(AuthRole::Query),
             "admin" => Ok(AuthRole::Admin),
+            "client" => Ok(AuthRole::Client),
             other => Err(anyhow::anyhow!("unknown role `{other}`")),
         }
     }
@@ -104,23 +135,24 @@ impl IntoResponse for AuthError {
 // Token verification
 // ---------------------------------------------------------------------------
 
-/// Verify a plaintext bearer token against `server_tokens` and return its
-/// role. Also bumps `last_used_at` (best-effort, failure swallowed).
+/// Verify a plaintext bearer token against `server_tokens` and return the
+/// authenticated principal (role + optional machine scope). Also bumps
+/// `last_used_at` (best-effort, failure swallowed).
 ///
 /// # Arguments
 /// * `db` - Shared server DB.
 /// * `plaintext` - The raw token received in the Authorization header.
-fn verify_token(db: &ServerDb, plaintext: &str) -> Result<AuthRole, AuthError> {
+fn verify_token(db: &ServerDb, plaintext: &str) -> Result<TokenPrincipal, AuthError> {
     let hash = blake3::hash(plaintext.as_bytes());
     let hex = hash.to_hex().to_string();
 
     let conn = db.lock_writer();
-    let role_str: String = conn
+    let (token_id, role_str, scope_machine_id): (i64, String, Option<String>) = conn
         .query_row(
-            "SELECT role FROM server_tokens \
+            "SELECT id, role, scope_machine_id FROM server_tokens \
              WHERE token_hash = ? AND is_active = 1",
             params![&hex],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .map_err(|e| match e {
             rusqlite::Error::QueryReturnedNoRows => AuthError::InvalidToken,
@@ -134,27 +166,33 @@ fn verify_token(db: &ServerDb, plaintext: &str) -> Result<AuthRole, AuthError> {
         params![&now, &hex],
     );
 
-    AuthRole::from_str(&role_str).map_err(AuthError::Backend)
+    let role = AuthRole::from_str(&role_str).map_err(AuthError::Backend)?;
+    Ok(TokenPrincipal {
+        token_id,
+        role,
+        scope_machine_id,
+    })
 }
 
 // ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
 
-/// Execute the role check against the request's Bearer token.
+/// Execute the role check against the request's Bearer token and return
+/// the authenticated principal on success.
 ///
 /// Callers arrange for this to run inside `from_fn_with_state`.
 pub async fn check_auth(
     State(db): State<AppState>,
     required: AuthRole,
     headers: &axum::http::HeaderMap,
-) -> Result<(), AuthError> {
+) -> Result<TokenPrincipal, AuthError> {
     let plaintext = extract_bearer(headers)?;
-    let role = verify_token(&db, &plaintext)?;
-    if role.authorizes(required) {
-        Ok(())
+    let principal = verify_token(&db, &plaintext)?;
+    if principal.role.authorizes(required) {
+        Ok(principal)
     } else {
-        Err(AuthError::Forbidden(role))
+        Err(AuthError::Forbidden(principal.role))
     }
 }
 

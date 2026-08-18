@@ -81,35 +81,48 @@ impl ServerDb {
 
     /// Read-only historical query (T2.4). Reuses the writer connection;
     /// safe under the single-writer model.
+    ///
+    /// rustnetec: `scope` enforces per-machine visibility.
     pub fn query_events(
         &self,
         params: &rustnet_core::ingest::QueryParams,
+        scope: &query::Scope,
     ) -> Result<rustnet_core::ingest::QueryResponse> {
         let mut conn = self.lock_writer();
-        query::query_events(&mut conn, params)
+        query::query_events(&mut conn, params, scope)
     }
 
     /// Live aggregate statistics (T2.4).
-    pub fn stats(&self) -> Result<rustnet_core::ingest::StatsResponse> {
+    ///
+    /// rustnetec: `scope` enforces per-machine visibility.
+    pub fn stats(&self, scope: &query::Scope) -> Result<rustnet_core::ingest::StatsResponse> {
         let mut conn = self.lock_writer();
-        query::stats(&mut conn)
+        query::stats(&mut conn, scope)
     }
 
     /// rustnetec: W5.3 — 按 process_name 聚合 top 50,供 WebUI Activity 页专用。
-    pub fn processes(&self) -> Result<query::ProcessesResponse> {
+    ///
+    /// rustnetec: `scope` enforces per-machine visibility.
+    pub fn processes(
+        &self,
+        scope: &query::Scope,
+    ) -> Result<query::ProcessesResponse> {
         let mut conn = self.lock_writer();
-        let rows = query::processes(&mut conn)?;
+        let rows = query::processes(&mut conn, scope)?;
         let count = rows.len();
         Ok(query::ProcessesResponse { processes: rows, count })
     }
 
     /// rustnetec: T-E5 — 时间桶流量聚合（/stats/range），供 WebUI 多进程对比。
+    ///
+    /// rustnetec: `scope` enforces per-machine visibility.
     pub fn stats_range(
         &self,
         params: &query::RangeParams,
+        scope: &query::Scope,
     ) -> Result<serde_json::Value> {
         let mut conn = self.lock_writer();
-        query::stats_range(&mut conn, params)
+        query::stats_range(&mut conn, params, scope)
     }
 
     /// Path of the underlying database file (for backups/debugging).
@@ -130,6 +143,7 @@ pub fn init(db_path: &Path, cfg: &ServerDbConfig) -> Result<ServerDb> {
 
     apply_pragmas(&mut conn, cfg)?;
     run_schema_v2(&mut conn)?;
+    run_schema_v3(&mut conn)?;
 
     // Unix: lock the db file to 0600 (server runs as a dedicated user, no chown).
     #[cfg(unix)]
@@ -376,5 +390,75 @@ fn run_schema_v2(conn: &mut Connection) -> Result<()> {
     .context("INSERT schema_version failed")?;
 
     tx.commit().context("commit schema v2 tx failed")?;
+    Ok(())
+}
+
+/// rustnetec: Schema v3 — per-machine token scope.
+///
+/// Adds `scope_machine_id` to `server_tokens`:
+/// - `NULL` → admin token, full data access (no filtering)
+/// - non-`NULL` → query/ingest token, restricted to that machine's data
+///
+/// **Default-tighten policy**: on migration, all existing non-admin tokens
+/// are soft-revoked (`is_active = 0`). Operators must re-issue scoped tokens
+/// via `POST /admin/tokens`. Admin tokens are left untouched.
+///
+/// Idempotent: if `scope_machine_id` column already exists, the migration
+/// is a no-op (the revoke also only fires once, guarded by
+/// `schema_version` row presence).
+fn run_schema_v3(conn: &mut Connection) -> Result<()> {
+    // Check if the column already exists (idempotency guard).
+    let has_scope_col: bool = {
+        let mut stmt = conn
+            .prepare("PRAGMA table_info(server_tokens)")
+            .context("PRAGMA table_info(server_tokens) failed")?;
+        let names: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(1))
+            .context("query table_info names")?
+            .filter_map(|r| r.ok())
+            .collect();
+        names.iter().any(|n| n == "scope_machine_id")
+    };
+
+    if !has_scope_col {
+        conn.execute(
+            "ALTER TABLE server_tokens ADD COLUMN scope_machine_id TEXT",
+            [],
+        )
+        .context("ALTER TABLE server_tokens ADD scope_machine_id failed")?;
+    }
+
+    // Record migration (idempotent via INSERT OR IGNORE).
+    let now = chrono::Local::now().to_rfc3339();
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_version (version, applied_at, description) \
+         VALUES (?, ?, ?)",
+        rusqlite::params![
+            3,
+            now,
+            "add scope_machine_id to server_tokens; revoke non-admin tokens (default-tighten)"
+        ],
+    )
+    .context("INSERT schema_version v3 failed")?;
+
+    // Default-tighten: revoke all non-admin tokens so operators must
+    // explicitly re-issue scoped tokens. Only run if we just added the
+    // column (i.e., first-time migration to v3).
+    if !has_scope_col {
+        let revoked: usize = conn
+            .execute(
+                "UPDATE server_tokens SET is_active = 0 WHERE role != 'admin'",
+                [],
+            )
+            .context("UPDATE server_tokens revoke non-admin failed")?;
+        if revoked > 0 {
+            log::warn!(
+                "schema v3 migration: revoked {} non-admin token(s); \
+                 re-issue scoped tokens via POST /admin/tokens",
+                revoked
+            );
+        }
+    }
+
     Ok(())
 }

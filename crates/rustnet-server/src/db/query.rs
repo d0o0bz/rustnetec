@@ -20,6 +20,40 @@ use rustnet_core::ingest::{
 use super::Error;
 
 // ---------------------------------------------------------------------------
+// rustnetec: per-machine data scope (token-bound visibility filter)
+// ---------------------------------------------------------------------------
+
+/// rustnetec: Data-visibility scope injected into every read path.
+///
+/// - `All` — admin token, no filtering (cross-machine view)
+/// - `Machine(mid)` — query/ingest token, restrict to `machine_id = mid`
+///
+/// The scope value originates from `TokenPrincipal.scope_machine_id`
+/// (resolved by the auth middleware) and is **never** taken from client
+/// request parameters, so a scoped token cannot escape its machine filter.
+#[derive(Debug, Clone)]
+pub enum Scope {
+    All,
+    Machine(String),
+}
+
+impl Scope {
+    /// Build a `Scope` from a resolved principal's `scope_machine_id`.
+    /// `None` (admin) → `Scope::All`; `Some(mid)` → `Scope::Machine(mid)`.
+    pub fn from_scope(mid: &Option<String>) -> Self {
+        match mid {
+            Some(m) if !m.is_empty() => Scope::Machine(m.clone()),
+            _ => Scope::All,
+        }
+    }
+
+    /// True when this scope imposes no `machine_id` filter.
+    pub fn is_unscoped(&self) -> bool {
+        matches!(self, Scope::All)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // /query
 // ---------------------------------------------------------------------------
 
@@ -27,7 +61,16 @@ use super::Error;
 ///
 /// Ordering is `ts DESC, id DESC` (most-recent first). `limit` defaults to
 /// 200 and is clamped to 1000 to bound response size.
-pub fn query_events(conn: &mut Connection, params: &QueryParams) -> Result<QueryResponse> {
+///
+/// rustnetec: `scope` enforces per-machine visibility. A scoped token
+/// (`Scope::Machine(mid)`) only sees rows whose `machine_id = mid`;
+/// `Scope::All` (admin) sees everything. The filter is injected by the
+/// server and cannot be overridden by client `params`.
+pub fn query_events(
+    conn: &mut Connection,
+    params: &QueryParams,
+    scope: &Scope,
+) -> Result<QueryResponse> {
     let limit = params.limit.unwrap_or(200).min(1000);
 
     let mut sql = String::from(
@@ -48,6 +91,12 @@ pub fn query_events(conn: &mut Connection, params: &QueryParams) -> Result<Query
 
     let mut conditions: Vec<String> = Vec::new();
     let mut binds: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+
+    // rustnetec: inject machine_id scope first (server-side, untamperable).
+    if let Scope::Machine(mid) = scope {
+        conditions.push("machine_id = ?".to_string());
+        binds.push(Box::new(mid.clone()));
+    }
 
     if let Some(from) = params.from {
         conditions.push("ts >= ?".to_string());
@@ -252,21 +301,32 @@ fn compile_filter(filter: &str, binds: &mut Vec<Box<dyn rusqlite::ToSql>>) -> Re
 ///
 /// `server_aggregates` bucket maintenance is deferred to T2.5; at the
 /// small-data stage a single `GROUP BY` is cheap enough.
-pub fn stats(conn: &mut Connection) -> Result<StatsResponse> {
+///
+/// rustnetec: `scope` enforces per-machine visibility. Scoped tokens only
+/// see their own machine's totals; admin (`Scope::All`) sees everything.
+pub fn stats(conn: &mut Connection, scope: &Scope) -> Result<StatsResponse> {
+    // rustnetec: build WHERE clause from scope.
+    let scope_clause = match scope {
+        Scope::Machine(mid) => format!("WHERE machine_id = '{}'", mid.replace('\'', "''")),
+        Scope::All => String::new(),
+    };
+
     let totals: (i64, i64) = conn
         .query_row(
-            "SELECT COUNT(*), COALESCE(SUM(bytes_sent), 0) + COALESCE(SUM(bytes_received), 0) \
-             FROM server_events",
+            &format!(
+                "SELECT COUNT(*), COALESCE(SUM(bytes_sent), 0) + COALESCE(SUM(bytes_received), 0) \
+                 FROM server_events {scope_clause}"
+            ),
             [],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .context("query stats totals")?;
 
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare(&format!(
         "SELECT machine_id, user_id, username, COUNT(*), \
          COALESCE(SUM(bytes_sent),0) + COALESCE(SUM(bytes_received),0) \
-         FROM server_events GROUP BY machine_id ORDER BY COUNT(*) DESC",
-    )?;
+         FROM server_events {scope_clause} GROUP BY machine_id ORDER BY COUNT(*) DESC"
+    ))?;
     let hosts: Vec<HostStats> = stmt
         .query_map([], |r| {
             Ok(HostStats {
@@ -300,17 +360,25 @@ pub fn rejection_of_sql() -> &'static str {
 /// (字段名 `process_name` 同 daemon)。返回 `Vec<ProcessRow>` 扁平数组,
 /// 按 `bytes_total = bytes_sent + bytes_received` 降序取 top 50。
 /// 过滤 NULL/空 process_name(进程归因未启用或未命中)。
-pub fn processes(conn: &mut Connection) -> Result<Vec<ProcessRow>> {
-    let mut stmt = conn.prepare(
+///
+/// rustnetec: `scope` enforces per-machine visibility.
+pub fn processes(conn: &mut Connection, scope: &Scope) -> Result<Vec<ProcessRow>> {
+    // rustnetec: build WHERE clause from scope (always AND with process_name filter).
+    let scope_clause = match scope {
+        Scope::Machine(mid) => format!("AND machine_id = '{}'", mid.replace('\'', "''")),
+        Scope::All => String::new(),
+    };
+
+    let mut stmt = conn.prepare(&format!(
         "SELECT process_name, COUNT(*) as cnt, \
          COALESCE(SUM(bytes_sent),0) as sent, \
          COALESCE(SUM(bytes_received),0) as recv \
          FROM server_events \
-         WHERE process_name IS NOT NULL AND process_name != '' \
+         WHERE process_name IS NOT NULL AND process_name != '' {scope_clause} \
          GROUP BY process_name \
          ORDER BY (sent + recv) DESC \
-         LIMIT 50",
-    )?;
+         LIMIT 50"
+    ))?;
     let rows = stmt.query_map([], |r| {
         let sent: i64 = r.get(2)?;
         let recv: i64 = r.get(3)?;
@@ -370,7 +438,11 @@ pub struct RangeParams {
 }
 
 /// rustnetec: T-E5 — 查询时间桶聚合，返回与 daemon /stats/range 同形的 JSON。
-pub fn stats_range(conn: &mut Connection, params: &RangeParams) -> Result<serde_json::Value> {
+pub fn stats_range(
+    conn: &mut Connection,
+    params: &RangeParams,
+    scope: &Scope,
+) -> Result<serde_json::Value> {
     use std::collections::BTreeMap;
 
     #[derive(Default, Clone)]
@@ -390,7 +462,14 @@ pub fn stats_range(conn: &mut Connection, params: &RangeParams) -> Result<serde_
         Box::new(params.start.clone()),
         Box::new(params.end.clone()),
     ];
-    let bind_idx = 3;
+    let mut bind_idx = 3;
+
+    // rustnetec: inject machine_id scope (server-side, untamperable).
+    if let Scope::Machine(mid) = scope {
+        where_clauses.push(format!("machine_id = ?{bind_idx}"));
+        bind_values.push(Box::new(mid.clone()));
+        bind_idx += 1;
+    }
 
     if !params.processes.is_empty() {
         let placeholders: Vec<String> = params

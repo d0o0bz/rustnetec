@@ -70,6 +70,9 @@ fn sample_request(events: Vec<ClientEvent>) -> IngestRequest {
 
 /// Set up: fresh DB + router, with one token per role provisioned.
 /// Returns (router, ingest_token, query_token, admin_token).
+///
+/// rustnetec: ingest/query tokens are scoped to `machine_id = "machine-abc"`
+/// to match `sample_request()`. Admin token is unscoped (full access).
 fn setup() -> (axum::Router, String, String, String) {
     let path = tmp_db("api");
     let db = init(&path, &ServerDbConfig::default()).unwrap();
@@ -77,21 +80,36 @@ fn setup() -> (axum::Router, String, String, String) {
     // Provision tokens directly through the db writer.
     let ingest_tok = {
         let mut conn = db.lock_writer();
-        rustnet_server::api::token::create_token(&mut conn, AuthRole::Ingest, Some("ingest"))
-            .unwrap()
-            .plaintext
+        rustnet_server::api::token::create_token(
+            &mut conn,
+            AuthRole::Ingest,
+            Some("ingest"),
+            Some("machine-abc"),
+        )
+        .unwrap()
+        .plaintext
     };
     let query_tok = {
         let mut conn = db.lock_writer();
-        rustnet_server::api::token::create_token(&mut conn, AuthRole::Query, Some("query"))
-            .unwrap()
-            .plaintext
+        rustnet_server::api::token::create_token(
+            &mut conn,
+            AuthRole::Query,
+            Some("query"),
+            Some("machine-abc"),
+        )
+        .unwrap()
+        .plaintext
     };
     let admin_tok = {
         let mut conn = db.lock_writer();
-        rustnet_server::api::token::create_token(&mut conn, AuthRole::Admin, Some("admin"))
-            .unwrap()
-            .plaintext
+        rustnet_server::api::token::create_token(
+            &mut conn,
+            AuthRole::Admin,
+            Some("admin"),
+            None,
+        )
+        .unwrap()
+        .plaintext
     };
 
     let router = build_router(Arc::new(db));
@@ -320,7 +338,7 @@ async fn revoked_admin_token_is_401() {
     let admin_tok = {
         let mut conn = db.lock_writer();
         let created =
-            rustnet_server::api::token::create_token(&mut conn, AuthRole::Admin, Some("ops"))
+            rustnet_server::api::token::create_token(&mut conn, AuthRole::Admin, Some("ops"), None)
                 .unwrap();
         // Revoke it.
         rustnet_server::api::token::revoke_token(&mut conn, created.id).unwrap();
@@ -420,4 +438,409 @@ async fn query_params_parsed_from_qs() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
+}
+
+// ---------------------------------------------------------------------------
+// rustnetec: scope_machine_id isolation tests
+// ---------------------------------------------------------------------------
+
+/// Helper: build a DB with two machines' data and provision one scoped
+/// query token per machine plus one admin token.
+///
+/// Returns (router, machine_a_query_tok, machine_b_query_tok, admin_tok).
+async fn setup_scope_isolation() -> (axum::Router, String, String, String) {
+    use rustnet_core::ingest::ClientEvent;
+
+    fn ev(local_id: i64, ts: i64, proc: &str) -> ClientEvent {
+        ClientEvent {
+            local_event_id: local_id,
+            timestamp: ts,
+            interface: "eth0".into(),
+            protocol: "tcp".into(),
+            local_ip: "10.0.0.5".into(),
+            local_port: 44321,
+            remote_ip: "93.184.216.34".into(),
+            remote_port: 443,
+            state: "ESTABLISHED".into(),
+            pid: Some(1234),
+            process_name: Some(proc.into()),
+            bytes_sent: 100,
+            bytes_recv: 200,
+            packets_sent: 5,
+            packets_recv: 10,
+            duration_ms: 500,
+            service: Some("https".into()),
+            sni: Some("example.com".into()),
+            geo_country: Some("US".into()),
+            geo_city: None,
+            dns_name: None,
+            k8s: None,
+        }
+    }
+
+    let path = tmp_db("scope");
+    let db = init(&path, &ServerDbConfig::default()).unwrap();
+
+    // Provision scoped query tokens + unscoped admin.
+    let a_query = {
+        let mut conn = db.lock_writer();
+        rustnet_server::api::token::create_token(
+            &mut conn,
+            AuthRole::Query,
+            Some("query-a"),
+            Some("machine-a"),
+        )
+        .unwrap()
+        .plaintext
+    };
+    let b_query = {
+        let mut conn = db.lock_writer();
+        rustnet_server::api::token::create_token(
+            &mut conn,
+            AuthRole::Query,
+            Some("query-b"),
+            Some("machine-b"),
+        )
+        .unwrap()
+        .plaintext
+    };
+    let admin_tok = {
+        let mut conn = db.lock_writer();
+        rustnet_server::api::token::create_token(
+            &mut conn,
+            AuthRole::Admin,
+            Some("admin"),
+            None,
+        )
+        .unwrap()
+        .plaintext
+    };
+
+    // Ingest data for machine-a and machine-b via admin token.
+    let req_a = IngestRequest {
+        machine_id: "machine-a".into(),
+        user_id: "1".into(),
+        username: "alice".into(),
+        ip_list: vec!["10.0.0.5".into()],
+        events: vec![ev(1, 1_700_000_000_000, "curl")],
+    };
+    let req_b = IngestRequest {
+        machine_id: "machine-b".into(),
+        user_id: "2".into(),
+        username: "bob".into(),
+        ip_list: vec!["10.0.0.6".into()],
+        events: vec![ev(2, 1_700_000_001_000, "wget")],
+    };
+
+    let router = build_router(Arc::new(db));
+
+    // Ingest both via admin token (unscoped).
+    for req in [&req_a, &req_b] {
+        let resp = router
+            .clone()
+            .oneshot(authed_request(
+                Method::POST,
+                "/ingest",
+                Some(Body::from(serde_json::to_vec(req).unwrap())),
+                Some(&admin_tok),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    (router, a_query, b_query, admin_tok)
+}
+
+#[tokio::test]
+async fn scoped_query_token_only_sees_own_machine() {
+    let (router, a_query, _b_query, _admin) = setup_scope_isolation().await;
+
+    let resp = router
+        .clone()
+        .oneshot(authed_request(
+            Method::GET,
+            "/query",
+            None,
+            Some(&a_query),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_to_string(resp.into_body()).await;
+    let q: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let rows = q["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 1, "scoped token should see only machine-a");
+    assert_eq!(rows[0]["machine_id"], "machine-a");
+}
+
+#[tokio::test]
+async fn admin_token_sees_all_machines() {
+    let (router, _a, _b, admin_tok) = setup_scope_isolation().await;
+
+    let resp = router
+        .oneshot(authed_request(
+            Method::GET,
+            "/query",
+            None,
+            Some(&admin_tok),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_to_string(resp.into_body()).await;
+    let q: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let rows = q["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 2, "admin should see all machines");
+}
+
+#[tokio::test]
+async fn scoped_stats_only_count_own_machine() {
+    let (router, a_query, _b, _admin) = setup_scope_isolation().await;
+
+    let resp = router
+        .oneshot(authed_request(
+            Method::GET,
+            "/stats",
+            None,
+            Some(&a_query),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_to_string(resp.into_body()).await;
+    let s: serde_json::Value = serde_json::from_str(&body).unwrap();
+    // machine-a has 1 event.
+    assert_eq!(s["total_events"], 1);
+    let hosts = s["hosts"].as_array().unwrap();
+    assert_eq!(hosts.len(), 1);
+    assert_eq!(hosts[0]["machine_id"], "machine-a");
+}
+
+#[tokio::test]
+async fn scoped_ingest_rejects_foreign_machine_id() {
+    let (router, _a, _b, admin_tok) = setup_scope_isolation().await;
+
+    // Provision a scoped ingest token bound to machine-a.
+    let path = tmp_db("scope-ingest");
+    let db = init(&path, &ServerDbConfig::default()).unwrap();
+    let a_ingest = {
+        let mut conn = db.lock_writer();
+        rustnet_server::api::token::create_token(
+            &mut conn,
+            AuthRole::Ingest,
+            Some("ingest-a"),
+            Some("machine-a"),
+        )
+        .unwrap()
+        .plaintext
+    };
+    let _admin = {
+        let mut conn = db.lock_writer();
+        rustnet_server::api::token::create_token(
+            &mut conn,
+            AuthRole::Admin,
+            Some("admin"),
+            None,
+        )
+        .unwrap()
+        .plaintext
+    };
+    let r = build_router(Arc::new(db));
+
+    // Payload claims machine-b but token is scoped to machine-a → Forbidden.
+    let req = IngestRequest {
+        machine_id: "machine-b".into(),
+        user_id: "2".into(),
+        username: "bob".into(),
+        ip_list: vec!["10.0.0.6".into()],
+        events: vec![sample_event(1, 1_700_000_000_000)],
+    };
+    let resp = r
+        .oneshot(authed_request(
+            Method::POST,
+            "/ingest",
+            Some(Body::from(serde_json::to_vec(&req).unwrap())),
+            Some(&a_ingest),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+    // Same token, correct machine_id → OK.
+    let req_ok = IngestRequest {
+        machine_id: "machine-a".into(),
+        ..req
+    };
+    let _ = router
+        .oneshot(authed_request(
+            Method::POST,
+            "/ingest",
+            Some(Body::from(serde_json::to_vec(&req_ok).unwrap())),
+            Some(&admin_tok),
+        ))
+        .await;
+}
+
+#[tokio::test]
+async fn create_token_rejects_admin_with_scope() {
+    let path = tmp_db("scope-rules");
+    let db = init(&path, &ServerDbConfig::default()).unwrap();
+    let mut conn = db.lock_writer();
+
+    let result = rustnet_server::api::token::create_token(
+        &mut conn,
+        AuthRole::Admin,
+        Some("scoped-admin"),
+        Some("machine-a"),
+    );
+    assert!(
+        result.is_err(),
+        "admin token with scope_machine_id must be rejected"
+    );
+}
+
+#[tokio::test]
+async fn create_token_rejects_query_without_scope() {
+    let path = tmp_db("scope-rules-q");
+    let db = init(&path, &ServerDbConfig::default()).unwrap();
+    let mut conn = db.lock_writer();
+
+    let result = rustnet_server::api::token::create_token(
+        &mut conn,
+        AuthRole::Query,
+        Some("unscoped-query"),
+        None,
+    );
+    assert!(
+        result.is_err(),
+        "non-admin token without scope_machine_id must be rejected"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// rustnetec: client 角色首次上报自动绑定 + 共享 ingest 上传
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn client_first_upload_auto_binds_and_queries_own_machine() {
+    let path = tmp_db("client-autobind");
+    let db = init(&path, &ServerDbConfig::default()).unwrap();
+
+    // Unbound client token — operator need not know the machine_id up front.
+    let client_tok = {
+        let mut conn = db.lock_writer();
+        rustnet_server::api::token::create_token(
+            &mut conn,
+            AuthRole::Client,
+            Some("client-a"),
+            None,
+        )
+        .unwrap()
+        .plaintext
+    };
+
+    let router = build_router(Arc::new(db));
+
+    // First upload of machine-a: must succeed and auto-bind the token.
+    let mut req = sample_request(vec![sample_event(1, 1_700_000_000_000)]);
+    req.machine_id = "machine-a".into();
+    let resp = router
+        .clone()
+        .oneshot(authed_request(
+            Method::POST,
+            "/ingest",
+            Some(Body::from(serde_json::to_vec(&req).unwrap())),
+            Some(&client_tok),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Query now sees only machine-a (auto-bound scope).
+    let resp = router
+        .clone()
+        .oneshot(authed_request(Method::GET, "/query", None, Some(&client_tok)))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_to_string(resp.into_body()).await;
+    let q: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let rows = q["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 1, "client token should see only its own machine");
+    assert_eq!(rows[0]["machine_id"], "machine-a");
+}
+
+#[tokio::test]
+async fn unbound_client_query_is_forbidden() {
+    let path = tmp_db("client-unbound-query");
+    let db = init(&path, &ServerDbConfig::default()).unwrap();
+
+    // Unbound client token — no upload yet, no scope yet.
+    let client_tok = {
+        let mut conn = db.lock_writer();
+        rustnet_server::api::token::create_token(
+            &mut conn,
+            AuthRole::Client,
+            Some("client-unbound"),
+            None,
+        )
+        .unwrap()
+        .plaintext
+    };
+
+    let router = build_router(Arc::new(db));
+
+    // Query before any upload: must be Forbidden, NOT a full-data view.
+    let resp = router
+        .oneshot(authed_request(Method::GET, "/query", None, Some(&client_tok)))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "unbound client token must not read any data"
+    );
+}
+
+#[tokio::test]
+async fn unscoped_ingest_uploads_any_machine() {
+    let path = tmp_db("ingest-shared");
+    let db = init(&path, &ServerDbConfig::default()).unwrap();
+
+    // Shared upload token (Ingest, None) — one token serves many machines.
+    let shared_tok = {
+        let mut conn = db.lock_writer();
+        rustnet_server::api::token::create_token(
+            &mut conn,
+            AuthRole::Ingest,
+            Some("shared-upload"),
+            None,
+        )
+        .unwrap()
+        .plaintext
+    };
+
+    let router = build_router(Arc::new(db));
+
+    // Upload machine-a, then machine-b with the same token: both accepted.
+    for (i, mid) in ["machine-a", "machine-b"].iter().enumerate() {
+        let mut req = sample_request(vec![sample_event(i as i64 + 1, 1_700_000_000_000)]);
+        req.machine_id = mid.to_string();
+        let resp = router
+            .clone()
+            .oneshot(authed_request(
+                Method::POST,
+                "/ingest",
+                Some(Body::from(serde_json::to_vec(&req).unwrap())),
+                Some(&shared_tok),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "shared ingest token must accept machine {mid}"
+        );
+    }
 }

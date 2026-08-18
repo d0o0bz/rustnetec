@@ -20,11 +20,12 @@
 pub mod auth;
 pub mod token;
 
+use std::str::FromStr;
 use std::sync::Arc;
 
 use axum::{
     Json, Router,
-    extract::{Query, State},
+    extract::{Extension, Query, State},
     http::{HeaderMap, Request, StatusCode},
     middleware::{Next, from_fn_with_state},
     response::{IntoResponse, Response},
@@ -39,7 +40,7 @@ use crate::db::{Error as DbError, ServerDb};
 /// rustnetec: W5.1 — WebUI 静态资产嵌入。
 ///
 /// 与 daemon 侧 `INDEX_HTML` 同法,用 `include_str!` 把 `webui/index.html`
-/// 嵌入 rustnet-server 二进制。服务端是远程查看通道(R5 远程 HTTP),
+/// 嵌入 rustnetec-server 二进制。服务端是远程查看通道(R5 远程 HTTP),
 /// 同一 HTML 复用,前端 JS 据 `window.location` 切 API base(W5.2)。
 ///
 /// 服务端无 `/live`(本机 daemon 专属),前端检测到 server 模式时
@@ -95,6 +96,18 @@ pub fn build_router(db: AppState) -> Router {
             "/processes",
             get(processes).route_layer(from_fn_with_state(db.clone(), require_query)),
         )
+        // rustnetec: admin token management (scope_machine_id-bound tokens).
+        .route(
+            "/admin/tokens",
+            get(list_tokens_handler)
+                .post(create_token_handler)
+                .route_layer(from_fn_with_state(db.clone(), require_admin)),
+        )
+        .route(
+            "/admin/tokens/{id}",
+            axum::routing::delete(revoke_token_handler)
+                .route_layer(from_fn_with_state(db.clone(), require_admin)),
+        )
         .layer(cors_layer())
         .with_state(db)
 }
@@ -126,26 +139,69 @@ async fn echarts_js() -> impl IntoResponse {
 }
 
 /// Accept a client batch and persist it through the single writer.
+///
+/// rustnetec: 纵深防御 — 已绑定 scope 的 token 只能上报自己 `machine_id`
+/// 的数据；payload 的 `machine_id` 必须等于 token 的 `scope_machine_id`，
+/// 否则返回 `Forbidden`。admin / 宽松 ingest（`None`）无此限制。
+///
+/// rustnetec: client 角色首次上报自动绑定 — 未绑定的 client token
+/// （`scope_machine_id IS NULL`）在本端点把自身绑定到 payload 的
+/// `machine_id`（幂等：已绑定 token 不会覆盖，见 `bind_token_to_machine`）。
 async fn ingest(
     State(db): State<AppState>,
+    Extension(principal): Extension<auth::TokenPrincipal>,
     Json(req): Json<IngestRequest>,
 ) -> Result<Json<IngestResponse>, ApiError> {
+    // rustnetec: client 未绑定 → 首次上报自动绑定（绑定前拒绝空 machine_id，
+    // 避免把空串写入 scope 导致 token 永久"毒化"）。
+    if principal.role == auth::AuthRole::Client && principal.scope_machine_id.is_none() {
+        if req.machine_id.trim().is_empty() {
+            return Err(ApiError::BadRequest("machine_id must not be empty".into()));
+        }
+        let mut conn = db.lock_writer();
+        token::bind_token_to_machine(&mut conn, principal.token_id, &req.machine_id)
+            .map_err(ApiError::from)?;
+    }
+    // 纵深防御：已绑定 scope 时校验一致；admin/宽松 ingest（None）跳过。
+    if let Some(ref scope_mid) = principal.scope_machine_id {
+        if &req.machine_id != scope_mid {
+            return Err(ApiError::Forbidden);
+        }
+    }
     let resp = db.ingest(&req).map_err(ApiError::from)?;
     Ok(Json(resp))
+}
+
+/// rustnetec: 解析读取端 scope。
+///
+/// 安全约束：未绑定的 client token（`scope_machine_id IS NULL`）**没有**读取
+/// 权限——直接拒绝，防止 `Scope::from_scope(None)` 落到 `Scope::All` 造成
+/// 全量越权。admin（`None`）与已绑定 query/client（`Some`）正常解析。
+fn read_scope(principal: &auth::TokenPrincipal) -> Result<crate::db::query::Scope, ApiError> {
+    if principal.role == auth::AuthRole::Client && principal.scope_machine_id.is_none() {
+        return Err(ApiError::Forbidden);
+    }
+    Ok(crate::db::query::Scope::from_scope(&principal.scope_machine_id))
 }
 
 /// Read-only historical query.
 async fn query(
     State(db): State<AppState>,
+    Extension(principal): Extension<auth::TokenPrincipal>,
     Query(params): Query<QueryParams>,
 ) -> Result<Json<QueryResponse>, ApiError> {
-    let resp = db.query_events(&params).map_err(ApiError::from)?;
+    let scope = read_scope(&principal)?;
+    let resp = db.query_events(&params, &scope).map_err(ApiError::from)?;
     Ok(Json(resp))
 }
 
 /// Aggregate statistics.
-async fn stats(State(db): State<AppState>) -> Result<Json<StatsResponse>, ApiError> {
-    let resp = db.stats().map_err(ApiError::from)?;
+async fn stats(
+    State(db): State<AppState>,
+    Extension(principal): Extension<auth::TokenPrincipal>,
+) -> Result<Json<StatsResponse>, ApiError> {
+    let scope = read_scope(&principal)?;
+    let resp = db.stats(&scope).map_err(ApiError::from)?;
     Ok(Json(resp))
 }
 
@@ -156,6 +212,7 @@ async fn stats(State(db): State<AppState>) -> Result<Json<StatsResponse>, ApiErr
 /// 返回与 daemon 侧 `/stats/range` 同形的 JSON，供 WebUI 多进程对比图表使用。
 async fn stats_range(
     State(db): State<AppState>,
+    Extension(principal): Extension<auth::TokenPrincipal>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let end = parse_time_param(params.get("end").map(String::as_str), chrono::Duration::zero());
@@ -179,7 +236,8 @@ async fn stats_range(
         bucket,
         processes,
     };
-    let resp = db.stats_range(&rp).map_err(ApiError::from)?;
+    let scope = read_scope(&principal)?;
+    let resp = db.stats_range(&rp, &scope).map_err(ApiError::from)?;
     Ok(Json(resp))
 }
 
@@ -230,9 +288,81 @@ fn parse_relative_duration(s: &str) -> Option<chrono::Duration> {
 /// 鉴权同 `/query`/`/stats`(Query/Admin 角色)。
 async fn processes(
     State(db): State<AppState>,
+    Extension(principal): Extension<auth::TokenPrincipal>,
 ) -> Result<Json<crate::db::query::ProcessesResponse>, ApiError> {
-    let resp = db.processes().map_err(ApiError::from)?;
+    let scope = read_scope(&principal)?;
+    let resp = db.processes(&scope).map_err(ApiError::from)?;
     Ok(Json(resp))
+}
+
+// ---------------------------------------------------------------------------
+// rustnetec: admin token management handlers (/admin/tokens)
+// ---------------------------------------------------------------------------
+
+/// Request body for `POST /admin/tokens`.
+#[derive(Debug, serde::Deserialize)]
+struct CreateTokenRequest {
+    role: String,
+    description: Option<String>,
+    /// `None` (or omitted) → admin token, full access.
+    /// `Some(mid)` → scoped to `machine_id = mid`.
+    scope_machine_id: Option<String>,
+}
+
+/// `POST /admin/tokens` — issue a new token.
+///
+/// Business rules (enforced in [`token::create_token`]):
+/// - `role=admin` → `scope_machine_id` must be `None`.
+/// - `role=ingest|query` → `scope_machine_id` must be `Some(non-empty)`.
+///
+/// The plaintext token is returned **once** in the response body; store it
+/// securely, it is not recoverable from the persisted BLAKE3 hash.
+async fn create_token_handler(
+    State(db): State<AppState>,
+    Json(body): Json<CreateTokenRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let role = auth::AuthRole::from_str(&body.role)
+        .map_err(|_| ApiError::BadRequest(format!("unknown role: {}", body.role)))?;
+
+    let mut conn = db.lock_writer();
+    let created = token::create_token(
+        &mut conn,
+        role,
+        body.description.as_deref(),
+        body.scope_machine_id.as_deref(),
+    )
+    .map_err(ApiError::from)?;
+
+    Ok(Json(serde_json::json!({
+        "id": created.id,
+        "plaintext": created.plaintext,
+        "role": body.role,
+        "scope_machine_id": body.scope_machine_id,
+    })))
+}
+
+/// `GET /admin/tokens` — list all tokens (active and revoked).
+///
+/// Hashes are intentionally omitted; only metadata is returned.
+async fn list_tokens_handler(
+    State(db): State<AppState>,
+) -> Result<Json<Vec<token::TokenRow>>, ApiError> {
+    let mut conn = db.lock_writer();
+    let rows = token::list_tokens(&mut conn).map_err(ApiError::from)?;
+    Ok(Json(rows))
+}
+
+/// `DELETE /admin/tokens/:id` — soft-revoke a token.
+async fn revoke_token_handler(
+    State(db): State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let mut conn = db.lock_writer();
+    let revoked = token::revoke_token(&mut conn, id).map_err(ApiError::from)?;
+    Ok(Json(serde_json::json!({
+        "id": id,
+        "revoked": revoked,
+    })))
 }
 
 // ---------------------------------------------------------------------------
@@ -246,22 +376,37 @@ pub use auth::AuthRole;
 async fn require_ingest(
     State(db): State<AppState>,
     headers: HeaderMap,
-    req: Request<axum::body::Body>,
+    mut req: Request<axum::body::Body>,
     next: Next,
 ) -> Result<Response, ApiError> {
-    auth::check_auth(State(db), AuthRole::Ingest, &headers)
+    let principal = auth::check_auth(State(db), AuthRole::Ingest, &headers)
         .await
         .map_err(ApiError::from)?;
+    req.extensions_mut().insert(principal);
     Ok(next.run(req).await)
 }
 
 async fn require_query(
     State(db): State<AppState>,
     headers: HeaderMap,
+    mut req: Request<axum::body::Body>,
+    next: Next,
+) -> Result<Response, ApiError> {
+    let principal = auth::check_auth(State(db), AuthRole::Query, &headers)
+        .await
+        .map_err(ApiError::from)?;
+    req.extensions_mut().insert(principal);
+    Ok(next.run(req).await)
+}
+
+/// rustnetec: admin-only middleware (token management endpoints).
+async fn require_admin(
+    State(db): State<AppState>,
+    headers: HeaderMap,
     req: Request<axum::body::Body>,
     next: Next,
 ) -> Result<Response, ApiError> {
-    auth::check_auth(State(db), AuthRole::Query, &headers)
+    auth::check_auth(State(db), AuthRole::Admin, &headers)
         .await
         .map_err(ApiError::from)?;
     Ok(next.run(req).await)

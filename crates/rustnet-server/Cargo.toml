@@ -1,5 +1,7 @@
 [package]
-name = "rustnet-server"
+# rustnetec: package 名与产物/品牌一致（-p rustnetec-server 可用）；
+# [lib] name = "rustnet_server" 与 [[bin]] name 显式指定，不受 package 名影响。
+name = "rustnetec-server"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
@@ -17,13 +19,17 @@ name = "rustnet_server"
 path = "src/lib.rs"
 
 [[bin]]
-name = "rustnet-server"
+# rustnetec: 产物名改为 rustnetec-server（Windows 下为 rustnetec-server.exe）
+name = "rustnetec-server"
 path = "src/main.rs"
 
 [dependencies]
 rustnet-core.workspace = true
 anyhow.workspace = true
 log.workspace = true
+# rustnetec: 日志后端（simplelog 已在 workspace 依赖图，主 crate 同用 0.12）。
+# 仅 main.rs 初始化 logger；lib 侧保持 log facade 无后端可用。
+simplelog = "0.12"
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
 rusqlite = { version = "0.32", features = ["bundled"] }

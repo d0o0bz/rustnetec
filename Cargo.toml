@@ -22,7 +22,7 @@ license = "Apache-2.0"
 rustnet-core = { version = "0.4.0", path = "crates/rustnet-core" }
 rustnet-capture = { version = "0.4.0", path = "crates/rustnet-capture" }
 rustnet-host = { version = "0.4.0", path = "crates/rustnet-host" }
-rustnet-server = { version = "0.4.0", path = "crates/rustnet-server" }
+rustnetec-server = { version = "0.4.0", path = "crates/rustnet-server" }
 anyhow = "1.0"
 log = "0.4"
 
@@ -274,7 +274,7 @@ rustc-hash = "2"
 # rustnetec: HTTP mock server for UploadSink tests (T2.6)
 mockito = "1"
 # rustnetec: workspace member pulled in as dev-dep for cross-crate E2E tests (T2.7)
-rustnet-server.workspace = true
+rustnetec-server.workspace = true
 
 [[bench]]
 name = "packet_parsing"

@@ -2813,7 +2813,7 @@ const INDEX_HTML: &str = include_str!("../../webui/index.html");
 
 // rustnetec: T-F3b — ECharts 图表库静态资产(echarts.min.js v5.5.1, Apache 2.0)。
 // 与 INDEX_HTML 同法用 include_str! 内嵌,离线可用;WebUI 以相对路径
-// `<script src="echarts.js">` 引用,daemon 与 rustnet-server 双端服务同源文件。
+// `<script src="echarts.js">` 引用,daemon 与 rustnetec-server 双端服务同源文件。
 const ECHARTS_JS: &str = include_str!("../../webui/echarts.min.js");
 
 /// rustnetec: Login landing page shown when no session is active (T3.3, R6).

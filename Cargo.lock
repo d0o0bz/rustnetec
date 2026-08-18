@@ -4226,7 +4226,7 @@ dependencies = [
  "rustnet-capture",
  "rustnet-core",
  "rustnet-host",
- "rustnet-server",
+ "rustnetec-server",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -4243,7 +4243,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "rustnet-server"
+name = "rustnetec-server"
 version = "0.4.0"
 dependencies = [
  "anyhow",
@@ -4255,6 +4255,7 @@ dependencies = [
  "rustnet-core",
  "serde",
  "serde_json",
+ "simplelog",
  "tokio",
  "tower",
  "tower-http",
