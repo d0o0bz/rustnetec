@@ -111,35 +111,56 @@ fn download_windows_npcap_sdk() -> Result<()> {
     const NPCAP_SDK_SHA256: &str =
         "52c7b9fb4abee3ad9fe739bb545c3efe77b731c8e127122bdf328eafdae3ed4f";
 
+    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?);
     let npcap_sdk_download_url = format!("https://npcap.com/dist/{NPCAP_SDK}");
-    let cache_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?).join("target");
+    // rustnetec: vendor 路径（一级来源，完全离线）。GitHub Actions Windows runner
+    // 访问 npcap.com 经常连接超时（os error 10060），因此把 SDK zip 提交到仓库，
+    // 构建优先读本地，CI 不再依赖外网下载。
+    let npcap_sdk_vendor_path = manifest_dir
+        .join("resources/packaging/windows")
+        .join(NPCAP_SDK);
+    // target 缓存（二级来源，历史构建产物；与 CI actions/cache 的
+    // target/${{ matrix.target }} 不同，这里在 target/ 根目录）。
+    let cache_dir = manifest_dir.join("target");
     let npcap_sdk_cache_path = cache_dir.join(NPCAP_SDK);
 
-    let npcap_zip = match fs::read(&npcap_sdk_cache_path) {
-        // use cached (verify checksum)
+    // 三级来源：vendor 路径 → target 缓存 → 在线下载（带重试）
+    let npcap_zip = match fs::read(&npcap_sdk_vendor_path) {
+        // use vendored copy (offline; verify checksum)
         Ok(zip_data) => {
-            eprintln!("Found cached npcap SDK");
+            eprintln!(
+                "Using vendored npcap SDK: {}",
+                npcap_sdk_vendor_path.display()
+            );
             verify_npcap_checksum(&zip_data)?;
             zip_data
         }
-        // download SDK
-        Err(_) => {
-            eprintln!("Downloading npcap SDK");
+        Err(_) => match fs::read(&npcap_sdk_cache_path) {
+            // use cached (verify checksum)
+            Ok(zip_data) => {
+                eprintln!("Found cached npcap SDK");
+                verify_npcap_checksum(&zip_data)?;
+                zip_data
+            }
+            // download SDK (fallback with retry)
+            Err(_) => {
+                eprintln!(
+                    "npcap SDK not found in vendor path or target cache; downloading from npcap.com"
+                );
+                let mut zip_data = vec![];
+                download_npcap_with_retry(&npcap_sdk_download_url, &mut zip_data)?;
 
-            // download
-            let mut zip_data = vec![];
-            let _res = http_req::request::get(npcap_sdk_download_url, &mut zip_data)?;
+                // verify checksum before caching
+                verify_npcap_checksum(&zip_data)?;
 
-            // verify checksum before caching
-            verify_npcap_checksum(&zip_data)?;
+                // write cache
+                fs::create_dir_all(&cache_dir)?;
+                let mut cache = fs::File::create(&npcap_sdk_cache_path)?;
+                cache.write_all(&zip_data)?;
 
-            // write cache
-            fs::create_dir_all(cache_dir)?;
-            let mut cache = fs::File::create(npcap_sdk_cache_path)?;
-            cache.write_all(&zip_data)?;
-
-            zip_data
-        }
+                zip_data
+            }
+        },
     };
 
     fn verify_npcap_checksum(data: &[u8]) -> Result<()> {
@@ -207,4 +228,37 @@ fn download_windows_npcap_sdk() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// rustnetec: 带重试的 npcap SDK 在线下载（兜底路径）。
+///
+/// GitHub Actions Windows runner 访问 npcap.com 常超时（os error 10060），
+/// 单次请求失败率高；这里最多重试 3 次、间隔 2s。由于 vendor zip 已入库，
+/// 正常情况下此函数不会被走到。
+#[cfg(target_os = "windows")]
+fn download_npcap_with_retry(url: &str, out: &mut Vec<u8>) -> Result<()> {
+    const MAX_ATTEMPTS: u32 = 3;
+    let mut last_err: Option<String> = None;
+    for attempt in 1..=MAX_ATTEMPTS {
+        out.clear();
+        match http_req::request::get(url, out) {
+            Ok(_) => {
+                eprintln!("npcap SDK downloaded (attempt {attempt}/{MAX_ATTEMPTS})");
+                return Ok(());
+            }
+            Err(e) => {
+                eprintln!(
+                    "npcap SDK download attempt {attempt}/{MAX_ATTEMPTS} failed: {e}"
+                );
+                last_err = Some(format!("{e}"));
+                if attempt < MAX_ATTEMPTS {
+                    std::thread::sleep(std::time::Duration::from_secs(2));
+                }
+            }
+        }
+    }
+    anyhow::bail!(
+        "npcap SDK download failed after {MAX_ATTEMPTS} attempts: {:?}",
+        last_err
+    )
 }
