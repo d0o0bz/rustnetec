@@ -1185,7 +1185,7 @@
       </fieldset>
       <fieldset>
         <legend>上传到服务端 <span class="restart-hint">(重启生效)</span></legend>
-        <label>URL<input type="text" data-cfg="server_url" placeholder="https://…"></label>
+        <label>URL<input type="text" data-cfg="server_url" placeholder="https://host:19810/ingest" title="服务端上传端点，需包含 /ingest（如 https://host:19810/ingest）；填根路径时会自动补全 /ingest"></label>
         <label>Token<input type="text" data-cfg="server_token" placeholder="(空=关闭)"></label>
         <label>批量大小<input type="number" data-cfg="upload_batch_size" min="1" max="5000"></label>
         <label>上传间隔(秒)<input type="number" data-cfg="upload_interval_secs" min="5" max="3600"></label>

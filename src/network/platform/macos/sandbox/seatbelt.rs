@@ -155,13 +155,18 @@ const SBPL_PROFILE_BASE: &str = r#"(version 1)
 
 /// Network deny SBPL section, appended when `block_network` is true.
 ///
-/// Blocks outbound TCP/UDP connections. Unix domain sockets are explicitly
-/// allowed for Mach IPC. Already-open BPF/PKTAP file descriptors are unaffected.
+/// **rustnetec 修复**：只 deny 出站 UDP，不再 deny TCP。
+///
+/// 原因：Seatbelt 的 deny 规则优先于 allow 规则——若此处同时 deny TCP+UDP，
+/// 则 [`build_network_allow_section`] 放行上传的 `(allow network-outbound
+/// (remote tcp))` 永远无法生效（实测 connect 报 `Operation not permitted`）。
+/// 改为仅 deny UDP 后：TCP 出站由 allow 段放行（数据上传必需），UDP 出站
+/// 仍被拦截（仅 DNS 53 与 reachability 白名单目标放行），保留防 DNS 外带/
+/// 隐蔽通道的沙箱价值。
 const SBPL_NETWORK_DENY: &str = r#"
-;; Block outbound TCP and UDP connections
-;; RustNet only reads from BPF/PKTAP — already-open fds are unaffected
+;; Block outbound UDP connections (TCP egress is allowed for data upload;
+;; Seatbelt deny takes precedence over allow, so TCP can't be denied here)
 (deny network-outbound
-    (remote tcp)
     (remote udp))
 
 ;; Allow Unix domain socket IPC (required for threading, Mach port bridge)
@@ -169,45 +174,48 @@ const SBPL_NETWORK_DENY: &str = r#"
     (remote unix-socket))
 "#;
 
-/// rustnetec: Network allow SBPL section for specific host (R3, T1.8).
-/// When `--sandbox-allow-network` is specified, allow outbound connections
-/// to that host (for data upload) and DNS (port 53) for name resolution.
-/// This section is inserted BEFORE the deny rule so SBPL specificity
-/// gives the allow rule precedence.
-fn build_network_allow_section(host: &str) -> String {
+/// rustnetec: Network allow SBPL section for data upload (R3, T1.8)。
+///
+/// **macOS Seatbelt 限制**：`(remote host "…")` 不是合法 SBPL（报
+/// `unbound variable: host`），且 `(remote ip "host:port")` 的 host 只能取
+/// `*` 或 `localhost`——无法按具体 IP/域名放行。因此 `--sandbox-allow-network`
+/// 退化为放行全部出站 TCP（数据上传必需）；UDP 仍被 `SBPL_NETWORK_DENY` 拦截，
+/// 仅 DNS（53）与 reachability 白名单目标放行。
+/// 本段插入在 deny 规则之前，SBPL specificity 保证 allow 优先。
+fn build_network_allow_section(_host: &str) -> String {
     format!(
         r#"
-;; rustnetec: Allow outbound network to specified host (data upload)
+;; rustnetec: Allow outbound TCP for data upload
+;; NOTE: Seatbelt cannot filter by IP/hostname — (remote ip "host:port")
+;; only accepts "*" or "localhost" as host. Allow all TCP egress.
 (allow network-outbound
-    (remote tcp)
-    (remote host "{host}")
-    (remote port 0-65535))
+    (remote tcp))
 
 ;; rustnetec: Allow DNS resolution (port 53) for the specified host
 (allow network-outbound
     (remote udp)
-    (remote port 53))
-"#,
-        host = escape_sbpl_path(host)
+    (remote ip "*:53"))
+"#
     )
 }
 
 /// rustnetec: Network allow SBPL section for reachability probe targets.
-/// 为每个 `host:port` 目标放行出站 UDP（NTP 探测），使可达率探测在沙箱内可用。
+/// 为每个 `host:port` 目标放行出站 UDP（DNS 探测），使可达率探测在沙箱内可用。
+/// 因 Seatbelt 无法按 IP 过滤（`(remote host …)` 非法、`(remote ip)` 的 host
+/// 仅接受 `*`/`localhost`），按端口放行所有目标的 UDP。
 fn build_reachability_allow_section(targets: &[String]) -> String {
-    let mut section = String::from("\n;; rustnetec: Allow outbound UDP to reachability probe targets (NTP)\n");
+    let mut section = String::from("\n;; rustnetec: Allow outbound UDP to reachability probe targets (DNS)\n");
     for t in targets {
         // 解析 host:port；端口非法或缺失则跳过（不破坏整个 profile）。
-        let (host, port) = match t.rsplit_once(':') {
-            Some((h, p)) => (h.trim().to_string(), p.trim().to_string()),
+        let port = match t.rsplit_once(':') {
+            Some((_h, p)) => p.trim().to_string(),
             None => continue,
         };
-        if host.is_empty() || port.parse::<u16>().is_err() {
+        if port.is_empty() || port.parse::<u16>().is_err() {
             continue;
         }
-        let host_esc = escape_sbpl_path(&host);
         section.push_str(&format!(
-            "(allow network-outbound\n    (remote udp)\n    (remote host \"{host_esc}\")\n    (remote port {port}))\n"
+            "(allow network-outbound\n    (remote udp)\n    (remote ip \"*:{port}\"))\n"
         ));
     }
     section
@@ -688,12 +696,18 @@ mod tests {
     #[test]
     fn test_profile_includes_network_allow_for_specified_host() {
         let profile = build_sbpl_profile(true, Some("upload.example.com"), &[]);
+        // rustnetec: Seatbelt 无法按 host 过滤（`(remote host …)` 非法），
+        // `--sandbox-allow-network` 退化为放行全部出站 TCP + DNS(53)。
         assert!(
-            profile.contains(r#"remote host "upload.example.com""#),
-            "Expected network allow for specified host"
+            profile.contains(r#"allow network-outbound"#),
+            "Expected network allow section"
         );
         assert!(
-            profile.contains("remote port 53"),
+            profile.contains("(remote tcp)"),
+            "Expected TCP allow for data upload"
+        );
+        assert!(
+            profile.contains(r#"remote ip "*:53""#),
             "Expected DNS allow (port 53)"
         );
         // The deny rule should still be present
@@ -707,7 +721,7 @@ mod tests {
     fn test_profile_excludes_network_allow_when_no_host() {
         let profile = build_sbpl_profile(true, None, &[]);
         assert!(
-            !profile.contains("remote host"),
+            !profile.contains("Allow outbound TCP for data upload"),
             "Expected no network allow when no host specified"
         );
     }
@@ -721,21 +735,14 @@ mod tests {
             "8.8.8.8:abc".to_string(),  // 非法端口 → 跳过
         ];
         let profile = build_sbpl_profile(true, None, &targets);
+        // rustnetec: Seatbelt 无法按 IP 过滤，按端口放行 UDP（`*:53` 一条即可覆盖全部目标）。
         assert!(
-            profile.contains(r#"remote host "223.5.5.5""#),
-            "Expected allow rule for 223.5.5.5"
-        );
-        assert!(
-            profile.contains(r#"remote host "114.114.115.115""#),
-            "Expected allow rule for 114.114.115.115"
+            profile.contains(r#"remote ip "*:53""#),
+            "Expected port-based UDP allow for DNS probes"
         );
         assert!(
             profile.contains("remote udp"),
             "Expected UDP allow rule for DNS probes"
-        );
-        assert!(
-            profile.contains("remote port 53"),
-            "Expected port 53 in allow rule"
         );
         assert!(
             !profile.contains("badtarget"),

@@ -131,6 +131,10 @@ pub fn build_router(db: AppState) -> Router {
                 .route_layer(from_fn_with_state(db.clone(), require_admin)),
         )
         .layer(cors_layer())
+        // rustnetec: 413 修复 — 客户端单批上传可能携带大量 reachability 样本
+        // （每 12s 一条、上报后本地保留，历史上限曾被撑到 >2MB），axum 默认
+        // body limit 2MB 会返回 413。提高到 64MB 容纳大批次。
+        .layer(axum::extract::DefaultBodyLimit::max(64 * 1024 * 1024))
         .with_state(db)
 }
 

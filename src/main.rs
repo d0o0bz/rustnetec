@@ -275,6 +275,11 @@ fn run() -> Result<()> {
     // `deny file-read*`，此时再 load config.yml 会失败、重新生成新 token，
     // 造成 daemon 内存 token 与落盘 token 不一致。
     let http_token_early: Option<String>;
+    // rustnetec: 沙箱前缓存上传配置 — Seatbelt `deny file-read*` 使沙箱后
+    // `PersistentConfig::load()` 失败（见下方 http_token_early 注释），若 upload
+    // 线程 spawn 时再 load 会拿到空 default → `server_url=None` → 上报被静默跳过。
+    let server_url_early: Option<String>;
+    let server_token_early: Option<String>;
 
     // rustnetec: Initialize host identity (R8+R10, T1.6)
     // Load PersistentConfig, generate missing user_id/machine_id, save back if needed.
@@ -319,6 +324,12 @@ fn run() -> Result<()> {
             needs_save = true;
         }
         http_token_early = pc.http_token.clone();
+
+        // rustnetec: 沙箱前缓存上传配置（同 http_token_early）— 沙箱应用后
+        // `deny file-read*` 会使此处 load 的 config.yml 无法再次读取，upload 线程
+        // spawn 时再 load 会得到空 default → server_url=None → 上报被静默跳过。
+        server_url_early = pc.server_url.clone();
+        server_token_early = pc.server_token.clone();
 
         // Log identity info before potential move
         let mid_prefix = &identity.machine_id[..8.min(identity.machine_id.len())];
@@ -1102,10 +1113,19 @@ fn run() -> Result<()> {
 
             // rustnetec: Start UploadSink in daemon/tray mode (R3, T2.6)
             // 仅当 server_url 已配置时启动上报线程; 否则跳过 (不打告警, 静默)。
-            let pc = rustnet_monitor::config::PersistentConfig::load().unwrap_or_default();
-            let runtime_config = std::sync::Arc::new(std::sync::RwLock::new(
-                rustnet_monitor::config::RuntimeConfig::from_persistent(&pc),
-            ));
+            // rustnetec: 沙箱 `deny file-read*` 会使沙箱后的 load() 失败 → 用沙箱前
+            // 缓存的 server_url/server_token 覆盖（同 http_token_early 模式），
+            // 否则 runtime_config.server_url 恒为 None，上传线程被静默跳过。
+            let mut runtime_config = rustnet_monitor::config::RuntimeConfig::from_persistent(
+                &rustnet_monitor::config::PersistentConfig::load().unwrap_or_default(),
+            );
+            if let Some(url) = server_url_early {
+                runtime_config.server_url = Some(url);
+            }
+            if let Some(tok) = server_token_early {
+                runtime_config.server_token = Some(tok);
+            }
+            let runtime_config = std::sync::Arc::new(std::sync::RwLock::new(runtime_config));
 
             // rustnetec: W-修复 — SqliteSink 已在 start_workers 之前创建并挂到 App
             // (见上方 start_workers 前的 sink 创建块);线程 spawn 时克隆的是

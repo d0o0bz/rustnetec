@@ -45,6 +45,24 @@ const DEGRADED_INTERVAL_1_SECS: u64 = 180;
 /// rustnetec: 第二级降级间隔（6 分钟）。
 const DEGRADED_INTERVAL_2_SECS: u64 = 360;
 
+/// rustnetec: 归一化上传端点 URL — 兼容根路径配置。
+///
+/// 用户在 webUI 里可能填 `http://host:19810/`（根路径）而非完整端点
+/// `http://host:19810/ingest`；服务端 `POST /` 返回 405，只有 `POST /ingest`
+/// 接受上报。此函数幂等地补全 `/ingest`：
+/// - `http://h:p/`        → `http://h:p/ingest`
+/// - `http://h:p`         → `http://h:p/ingest`
+/// - `http://h:p/ingest`  → 原样返回（幂等）
+/// - `http://h:p/foo/`    → `http://h:p/foo/ingest`（保留自定义前缀）
+fn ensure_ingest_endpoint(server_url: &str) -> String {
+    let trimmed = server_url.trim_end_matches('/');
+    if trimmed.ends_with("/ingest") {
+        trimmed.to_string()
+    } else {
+        format!("{trimmed}/ingest")
+    }
+}
+
 /// 客户端→服务端数据上报器。
 ///
 /// 持有本地数据库路径、共享运行时配置与主机身份。上报线程在
@@ -155,6 +173,8 @@ impl UploadSink {
                         // 未配置服务端, 跳过 (不降级, 下次 interval 再看)
                         continue;
                     };
+                    // rustnetec: 兼容根路径配置 — 自动补全 /ingest 上传端点（幂等）。
+                    let url = ensure_ingest_endpoint(&url);
                     if server_token.is_none() {
                         warn!(
                             "Upload thread: server_url set but server_token missing, skipping batch"
@@ -337,7 +357,12 @@ impl UploadSink {
 /// 表结构（由 `reachability.rs::start_reachability_probe` 创建）：
 /// `ts TEXT PRIMARY KEY, reachable INTEGER, latency_ms REAL, targets_ok INTEGER, targets_total INTEGER`
 ///
-/// 读取所有样本（客户端本地保留，上报后不删除，服务端按 (machine_id, ts) 幂等去重）。
+/// 读取最近 `REACHABILITY_BATCH_LIMIT` 条样本（按时间倒序，最新优先）。服务端按
+/// (machine_id, ts) 幂等去重，重复上报无害；本地样本保留供 WebUI 可达率图表查询。
+/// 限制单批数量：本地 12s 一条，日增约 7000 条，若不设上限请求体将无限增长、
+/// 撑爆服务端 body limit（曾触发 413 Payload Too Large）。
+const REACHABILITY_BATCH_LIMIT: i64 = 2000;
+
 fn read_reachability_samples(conn: &Connection) -> Result<Vec<ReachabilitySample>> {
     // 先检查表是否存在（可达率探测可能未启用）
     let table_exists: i64 = conn
@@ -354,13 +379,18 @@ fn read_reachability_samples(conn: &Connection) -> Result<Vec<ReachabilitySample
 
     let mut stmt = conn.prepare(
         "SELECT ts, reachable, latency_ms, targets_ok, targets_total \
-         FROM reachability_probes ORDER BY ts ASC",
+         FROM reachability_probes ORDER BY ts DESC LIMIT ?",
     )?;
-    let rows = stmt.query_map([], |r| {
+    let rows = stmt.query_map([REACHABILITY_BATCH_LIMIT], |r| {
         Ok(ReachabilitySample {
             ts: r.get(0)?,
             reachable: r.get(1)?,
-            latency_ms: r.get(2)?,
+            // rustnetec: `latency_ms REAL` 允许 NULL —— 整轮探测全部失败时写入的是
+            // NULL（`reachability.rs::persist_probe` 传 `Option::None`）。此前用
+            // 非 Option 类型读取遇 NULL 报 `Invalid column type Null`，导致上传
+            // 线程每轮失败、cursor 永不推进。此处按 Option 读取并以 0.0 兜底
+            // （与协议约定"不可达时 latency_ms=0"一致，见 `ReachabilitySample`）。
+            latency_ms: r.get::<_, Option<f64>>(2)?.unwrap_or(0.0),
             targets_ok: r.get(3)?,
             targets_total: r.get(4)?,
         })
