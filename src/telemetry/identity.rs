@@ -15,6 +15,10 @@ pub struct HostIdentity {
     pub user_id: i64,
     /// Username (user-configurable, defaults to system username).
     pub username: String,
+    /// rustnetec: 可选部门字段，跟随首次上报一起上传，有变更也需要上报。
+    /// 未填写时为 `None`，服务端归类到"未分组"。
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub department: Option<String>,
     /// Local IP list (dynamically collected, not persisted).
     #[serde(skip)]
     pub ip_list: Vec<String>,
@@ -377,6 +381,7 @@ impl HostIdentity {
                 machine_id: mid,
                 user_id: uid,
                 username: uname,
+                department: None,
                 ip_list,
             },
             needs_save,

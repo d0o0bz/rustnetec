@@ -751,6 +751,105 @@
   #settings-save:hover { border-color: var(--accent); color: var(--accent); }
   #settings-restart { border-color: var(--yellow); color: var(--yellow); }
   #settings-restart:hover { background: rgba(210,153,34,0.1); }
+
+  /* rustnetec: 用户信息视图样式（server 模式专属） */
+  #users-toolbar {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    margin-bottom: 12px;
+  }
+  #users-refresh {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 6px 14px;
+    color: var(--text);
+    cursor: pointer;
+    font-size: 13px;
+  }
+  #users-refresh:hover { border-color: var(--accent); color: var(--accent); }
+  .users-group {
+    margin-bottom: 18px;
+  }
+  .users-group-header {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--accent);
+    padding: 6px 10px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .users-group-header:hover { border-color: var(--accent); }
+  .users-group-toggle { font-size: 12px; color: var(--muted); }
+  .users-user-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-top: none;
+    background: var(--bg);
+    font-size: 13px;
+  }
+  .users-user-row:first-of-type { border-top: 1px solid var(--border); }
+  .users-user-cell { min-width: 80px; }
+  .users-user-cell.machines { min-width: 40px; text-align: center; }
+  .users-expand-btn {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 2px 8px;
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .users-expand-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .users-detail {
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-top: none;
+    background: var(--panel);
+  }
+  .users-machines-tabs {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 10px;
+    flex-wrap: wrap;
+  }
+  .users-machines-tab {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 4px 10px;
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .users-machines-tab.active {
+    border-color: var(--accent);
+    color: var(--accent);
+    font-weight: 600;
+  }
+  .users-machine-pane { display: none; }
+  .users-machine-pane.active { display: block; }
+  .users-chart { width: 100%; height: 240px; margin-bottom: 12px; }
+  .users-chart-title { font-size: 13px; font-weight: 600; margin: 8px 0 4px 0; }
+  .users-admin-btn {
+    background: var(--panel);
+    border: 1px solid var(--yellow);
+    border-radius: 3px;
+    padding: 3px 10px;
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--yellow);
+  }
+  .users-admin-btn:hover { background: rgba(210,153,34,0.1); }
 </style>
 </head>
 <body>
@@ -770,6 +869,7 @@
   <button data-view="details">连接表</button>
   <button data-view="activity">进程活动</button>
   <button data-view="graph">流量图</button>
+  <button data-view="users" style="display:none;">用户信息</button>
   <button data-view="settings">设置</button>
   <button data-view="help">帮助</button>
 </div>
@@ -1007,6 +1107,7 @@
       <fieldset>
         <legend>主机身份 <span class="restart-hint">(即时生效)</span></legend>
         <label>用户名<input type="text" data-cfg="username" placeholder="(系统用户名)"></label>
+        <label>部门<input type="text" data-cfg="department" placeholder="(可选，未填归未分组)"></label>
         <div class="identity-readonly">user_id：<span id="identity-user-id">—</span></div>
         <div class="identity-readonly">machine_id：<span id="identity-machine-id">—</span></div>
       </fieldset>
@@ -1170,6 +1271,15 @@
     <h2>过滤语法</h2>
     <p>详见 TUI Help — <code>protocol:</code>、<code>port:</code>、<code>process:</code>、<code>sni:</code>、<code>country:</code> 等 vim/fzf 风格语法。</p>
   </section>
+
+  <!-- rustnetec: 用户信息视图（server 模式专属） -->
+  <section id="users-view" class="view">
+    <div id="users-toolbar">
+      <button id="users-refresh" type="button">刷新</button>
+      <span id="users-count" class="muted"></span>
+    </div>
+    <div id="users-groups"></div>
+  </section>
 </div>
 
 <script src="echarts.js"></script>
@@ -1203,14 +1313,16 @@
     // 隐藏流量图标签(依赖 /live 采样累积,server 无 /live)
     var graphBtn = document.querySelector('#tabs button[data-view="graph"]');
     if (graphBtn) graphBtn.style.display = "none";
-    // 默认激活"连接表"标签(替代被隐藏的仪表盘)
-    var detailsBtn = document.querySelector('#tabs button[data-view="details"]');
-    if (detailsBtn) {
-      detailsBtn.classList.add("active");
+    // rustnetec: 显示"用户信息"标签（server 模式专属）
+    var usersBtn = document.querySelector('#tabs button[data-view="users"]');
+    if (usersBtn) usersBtn.style.display = "";
+    // 默认激活"用户信息"标签(替代被隐藏的仪表盘)
+    if (usersBtn) {
+      usersBtn.classList.add("active");
       var ov = document.querySelector('#tabs button[data-view="overview"]');
       if (ov) ov.classList.remove("active");
       document.querySelectorAll(".view").forEach(function (v) {
-        v.classList.toggle("active", v.id === "details-view");
+        v.classList.toggle("active", v.id === "users-view");
       });
     }
     // 隐藏顶栏状态行(实时字段无来源)
@@ -1262,6 +1374,10 @@
     // 按需加载:首次切到设置才加载配置 + 绑定按钮
     if (viewId === "settings") {
       initSettingsView();
+    }
+    // rustnetec: 按需加载:首次切到用户信息才 fetch /hosts
+    if (viewId === "users") {
+      initUsersView();
     }
   }
   tabs.forEach(function (btn) {
@@ -3662,6 +3778,390 @@
         if (data.status !== "ok") alert("无法打开目录: " + (data.error || "未知错误"));
       })
       .catch(function (err) { alert("无法打开目录: " + err.message); });
+  }
+
+  // rustnetec: 用户信息视图（server 模式专属）
+  // 按 department 分组 → user_id 聚合 → 展开 machine_id tab 切换三图表
+  var usersState = { initialized: false, charts: {} };
+
+  function initUsersView() {
+    if (usersState.initialized) return;
+    usersState.initialized = true;
+    fetchUsers();
+    var refreshBtn = document.getElementById("users-refresh");
+    if (refreshBtn) refreshBtn.addEventListener("click", fetchUsers);
+  }
+
+  function fetchUsers() {
+    fetch("/hosts", { credentials: "same-origin" })
+      .then(function (resp) { if (!resp.ok) throw new Error("HTTP " + resp.status); return resp.json(); })
+      .then(function (hosts) { renderUsersGroups(hosts); })
+      .catch(function (err) {
+        var c = document.getElementById("users-groups");
+        if (c) c.textContent = "加载失败: " + err.message;
+      });
+  }
+
+  // 按 department 分组（null/undefined/"" → "未分组"），组内按 user_id 聚合
+  function renderUsersGroups(hosts) {
+    var container = document.getElementById("users-groups");
+    if (!container) return;
+    container.textContent = "";
+    if (!hosts || !hosts.length) {
+      container.textContent = "暂无主机数据";
+      return;
+    }
+    var countEl = document.getElementById("users-count");
+    if (countEl) countEl.textContent = "共 " + hosts.length + " 台主机";
+
+    // 按部门分组
+    var groups = {};
+    for (var i = 0; i < hosts.length; i++) {
+      var h = hosts[i];
+      var dept = h.department || "未分组";
+      if (!groups[dept]) groups[dept] = [];
+      groups[dept].push(h);
+    }
+
+    // 排序：未分组排末尾
+    var deptNames = Object.keys(groups).sort(function (a, b) {
+      if (a === "未分组") return 1;
+      if (b === "未分组") return -1;
+      return a < b ? -1 : a > b ? 1 : 0;
+    });
+
+    for (var gi = 0; gi < deptNames.length; gi++) {
+      var dept = deptNames[gi];
+      var groupHosts = groups[dept];
+      // 按 user_id 聚合
+      var usersMap = {};
+      var userIdOrder = [];
+      for (var k = 0; k < groupHosts.length; k++) {
+        var hh = groupHosts[k];
+        var ukey = String(hh.user_id);
+        if (!usersMap[ukey]) {
+          usersMap[ukey] = { user_id: hh.user_id, username: hh.username, machines: [] };
+          userIdOrder.push(ukey);
+        }
+        usersMap[ukey].machines.push(hh);
+      }
+
+      var groupDiv = document.createElement("div");
+      groupDiv.className = "users-group";
+
+      var header = document.createElement("div");
+      header.className = "users-group-header";
+      header.textContent = dept + " (" + userIdOrder.length + " 用户, " + groupHosts.length + " 台主机)";
+      groupDiv.appendChild(header);
+
+      // 组内按 user_id 排序
+      userIdOrder.sort(function (a, b) { return Number(a) - Number(b); });
+      for (var ui = 0; ui < userIdOrder.length; ui++) {
+        var u = usersMap[userIdOrder[ui]];
+        groupDiv.appendChild(renderUserRow(u, dept));
+      }
+
+      container.appendChild(groupDiv);
+    }
+  }
+
+  function renderUserRow(user, dept) {
+    var row = document.createElement("div");
+    row.className = "users-user-row";
+
+    var userCell = document.createElement("span");
+    userCell.className = "users-user-cell";
+    userCell.textContent = "用户：" + user.username + " (id:" + user.user_id + ")";
+    row.appendChild(userCell);
+
+    var machCell = document.createElement("span");
+    machCell.className = "users-user-cell machines";
+    machCell.textContent = "机器数：" + user.machines.length;
+    row.appendChild(machCell);
+
+    var expandBtn = document.createElement("button");
+    expandBtn.className = "users-expand-btn";
+    expandBtn.textContent = "展开 ›";
+    row.appendChild(expandBtn);
+
+    var detail = document.createElement("div");
+    detail.className = "users-detail";
+    detail.style.display = "none";
+
+    expandBtn.addEventListener("click", function () {
+      var expanded = detail.style.display !== "none";
+      detail.style.display = expanded ? "none" : "block";
+      expandBtn.textContent = expanded ? "展开 ›" : "收起 ‹";
+      if (!expanded) initUserDetail(detail, user, dept);
+    });
+
+    // 包装：行 + 详情区
+    var wrapper = document.createElement("div");
+    wrapper.appendChild(row);
+    wrapper.appendChild(detail);
+    return wrapper;
+  }
+
+  function initUserDetail(detail, user, dept) {
+    detail.textContent = "";
+    // machine tab 切换栏
+    var tabsBar = document.createElement("div");
+    tabsBar.className = "users-machines-tabs";
+    detail.appendChild(tabsBar);
+
+    // 每个 machine_id 一个 pane
+    for (var i = 0; i < user.machines.length; i++) {
+      var m = user.machines[i];
+      var mid = m.machine_id;
+
+      var tabBtn = document.createElement("button");
+      tabBtn.className = "users-machines-tab" + (i === 0 ? " active" : "");
+      // 显示 machine_id 前 8 位
+      tabBtn.textContent = mid.substring(0, 8) + "…";
+      tabBtn.title = mid;
+      tabBtn.addEventListener("click", function (btn, paneId) {
+        return function () {
+          // 切换 tab
+          var allTabs = tabsBar.querySelectorAll(".users-machines-tab");
+          for (var j = 0; j < allTabs.length; j++) allTabs[j].classList.remove("active");
+          btn.classList.add("active");
+          // 切换 pane
+          var allPanes = detail.querySelectorAll(".users-machine-pane");
+          for (var k = 0; k < allPanes.length; k++) allPanes[k].classList.remove("active");
+          var targetPane = detail.querySelector("#" + paneId);
+          if (targetPane) targetPane.classList.add("active");
+        };
+      }(tabBtn, "pane-" + i));
+      tabsBar.appendChild(tabBtn);
+
+      var pane = document.createElement("div");
+      pane.className = "users-machine-pane" + (i === 0 ? " active" : "");
+      pane.id = "pane-" + i;
+      detail.appendChild(pane);
+
+      // 机器信息子表
+      var infoDiv = document.createElement("div");
+      infoDiv.style.fontSize = "12px";
+      infoDiv.style.color = "var(--muted)";
+      infoDiv.style.marginBottom = "8px";
+      infoDiv.textContent = "machine_id: " + mid + " | IP: " + (m.ip_list || []).join(", ") +
+        " | 最近上报: " + m.last_seen + " | 事件数: " + m.event_count;
+      pane.appendChild(infoDiv);
+
+      // 管理员编辑按钮
+      var adminBtn = document.createElement("button");
+      adminBtn.className = "users-admin-btn";
+      adminBtn.textContent = "编辑部门/用户名";
+      adminBtn.addEventListener("click", function (machineId, currentDept, currentUsername) {
+        return function () { showAdminEditDialog(machineId, currentDept, currentUsername); };
+      }(mid, dept, user.username));
+      pane.appendChild(adminBtn);
+
+      // 三图表容器
+      // 1. 实时速率
+      var rtTitle = document.createElement("div");
+      rtTitle.className = "users-chart-title";
+      rtTitle.textContent = "实时速率（最近 5 分钟）";
+      pane.appendChild(rtTitle);
+      var rtChart = document.createElement("div");
+      rtChart.className = "users-chart";
+      rtChart.id = "users-rt-" + i;
+      pane.appendChild(rtChart);
+
+      // 2. 外网可达率
+      var reachTitle = document.createElement("div");
+      reachTitle.className = "users-chart-title";
+      reachTitle.textContent = "外网可达率（最近 12 小时）";
+      pane.appendChild(reachTitle);
+      var reachChart = document.createElement("div");
+      reachChart.className = "users-chart";
+      reachChart.id = "users-reach-" + i;
+      pane.appendChild(reachChart);
+
+      // 3. 月度每日流量
+      var monthlyTitle = document.createElement("div");
+      monthlyTitle.className = "users-chart-title";
+      monthlyTitle.textContent = "月度每日流量（当月）";
+      pane.appendChild(monthlyTitle);
+      var monthlyChart = document.createElement("div");
+      monthlyChart.className = "users-chart";
+      monthlyChart.id = "users-monthly-" + i;
+      pane.appendChild(monthlyChart);
+
+      // 初始化图表
+      initUsersRealtimeChart(rtChart, mid);
+      initUsersReachabilityChart(reachChart, mid);
+      initUsersMonthlyChart(monthlyChart, mid);
+    }
+  }
+
+  // 三图表实现（参考客户端对应实现）
+  function initUsersRealtimeChart(el, machineId) {
+    var chart = echarts.init(el, null, { renderer: "canvas" });
+    chart.setOption({
+      tooltip: { trigger: "axis", valueFormatter: function (v) { return formatRate(v); } },
+      legend: { data: ["入站 ↓", "出站 ↑"], textStyle: { color: "#888" } },
+      grid: { left: 64, right: 16, top: 32, bottom: 40 },
+      xAxis: { type: "time", axisLabel: { fontSize: 10 } },
+      yAxis: { type: "value", name: "速率", axisLabel: { fontSize: 10, formatter: function (v) { return formatRate(v); } } },
+      series: [
+        { name: "入站 ↓", type: "line", showSymbol: false, smooth: true, lineStyle: { width: 1.5 }, data: [] },
+        { name: "出站 ↑", type: "line", showSymbol: false, smooth: true, lineStyle: { width: 1.5 }, data: [] },
+      ],
+    });
+
+    function refresh() {
+      var url = "/stats/realtime?machine_id=" + encodeURIComponent(machineId) +
+        "&start=" + encodeURIComponent(toLocalIso(new Date(Date.now() - 300000)));
+      fetch(url, { credentials: "same-origin" })
+        .then(function (resp) { if (!resp.ok) throw new Error("HTTP " + resp.status); return resp.json(); })
+        .then(function (data) {
+          var buckets = data.buckets || [];
+          var inData = [], outData = [];
+          for (var i = 0; i < buckets.length; i++) {
+            var b = buckets[i];
+            var ts = Date.parse(b.ts + (b.ts.endsWith("Z") ? "" : "Z")) || b.ts;
+            // 分钟桶 → Bps：假设每桶 60s
+            inData.push([ts, (b.bytes_rx || 0) / 60]);
+            outData.push([ts, (b.bytes_tx || 0) / 60]);
+          }
+          chart.setOption({ series: [{ data: inData }, { data: outData }] });
+        })
+        .catch(function () { /* 静默置空 */ });
+    }
+
+    refresh();
+    // 5s 轮询
+    var timer = setInterval(function () { if (isPageVisible) refresh(); }, 5000);
+    // 存储以便清理
+    usersState.charts[el.id] = { chart: chart, timer: timer };
+  }
+
+  function initUsersReachabilityChart(el, machineId) {
+    var chart = echarts.init(el, null, { renderer: "canvas" });
+    chart.setOption({
+      tooltip: { trigger: "axis", formatter: function (params) {
+        if (!params || !params.length) return "";
+        var lines = [params[0].axisValueLabel];
+        for (var i = 0; i < params.length; i++) {
+          var p = params[i];
+          var v = Array.isArray(p.value) ? p.value[1] : p.value;
+          var val = p.seriesName === "可达率" ? (v * 100).toFixed(0) + "%" : v.toFixed(0) + " ms";
+          lines.push(p.marker + p.seriesName + "：" + val);
+        }
+        return lines.join("<br/>");
+      }},
+      legend: { data: ["可达率", "延时"], textStyle: { color: "#888" } },
+      grid: { left: 56, right: 56, top: 32, bottom: 40 },
+      xAxis: { type: "time", axisLabel: { fontSize: 10 } },
+      yAxis: [
+        { type: "value", name: "可达率", min: 0, max: 1, axisLabel: { fontSize: 10, formatter: function (v) { return Math.round(v * 100) + "%"; } } },
+        { type: "value", name: "延迟(ms)", axisLabel: { fontSize: 10, formatter: "{value} ms" }, splitLine: { show: false } },
+      ],
+      visualMap: {
+        show: false, dimension: 1, seriesIndex: 0,
+        pieces: [
+          { lte: 0.5, color: "#d73a49" },
+          { gt: 0.5, lt: 1, color: "#dbab09" },
+          { gte: 1, color: "#3fb950" },
+        ],
+        outOfRange: { color: "#3fb950" },
+      },
+      series: [
+        { name: "可达率", type: "line", yAxisIndex: 0, showSymbol: false, smooth: true, lineStyle: { width: 1.5 }, areaStyle: { opacity: 0.1 }, data: [] },
+        { name: "延时", type: "line", yAxisIndex: 1, showSymbol: false, smooth: true, lineStyle: { width: 1.5 }, data: [] },
+      ],
+    });
+
+    function refresh() {
+      var url = "/stats/reachability?machine_id=" + encodeURIComponent(machineId) +
+        "&start=" + encodeURIComponent(toLocalIso(new Date(Date.now() - 43200000))) +
+        "&end=" + encodeURIComponent(toLocalIso(new Date())) + "&bucket=1min";
+      fetch(url, { credentials: "same-origin" })
+        .then(function (resp) { if (!resp.ok) throw new Error("HTTP " + resp.status); return resp.json(); })
+        .then(function (data) {
+          var buckets = data.buckets || [];
+          var ratio = [], rtt = [];
+          for (var i = 0; i < buckets.length; i++) {
+            var b = buckets[i];
+            var ts = Date.parse(b.ts + (b.ts.endsWith("Z") ? "" : "Z")) || b.ts;
+            ratio.push([ts, Number(b.reachable_ratio) || 0]);
+            if (b.samples > 0 && Number(b.min_latency_ms) > 0) rtt.push([ts, Number(b.min_latency_ms)]);
+          }
+          chart.setOption({ series: [{ data: ratio }, { data: rtt }] });
+        })
+        .catch(function () { /* 静默置空 */ });
+    }
+
+    refresh();
+    var timer = setInterval(function () { if (isPageVisible) refresh(); }, 30000);
+    usersState.charts[el.id] = { chart: chart, timer: timer };
+  }
+
+  function initUsersMonthlyChart(el, machineId) {
+    var chart = echarts.init(el, null, { renderer: "canvas" });
+    var month = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+
+    chart.setOption({
+      tooltip: { trigger: "axis", axisPointer: { type: "shadow" } },
+      grid: { left: 56, right: 16, top: 32, bottom: 40 },
+      xAxis: { type: "category", axisLabel: { fontSize: 10 } },
+      yAxis: { type: "value", name: "流量", axisLabel: { fontSize: 10, formatter: function (v) { return formatBytes(v); } } },
+      series: [{ type: "bar", data: [] }],
+    });
+
+    function refresh() {
+      var range = monthRange(month);
+      var url = "/stats/range?machine_id=" + encodeURIComponent(machineId) +
+        "&bucket=1day&start=" + encodeURIComponent(range.start) + "&end=" + encodeURIComponent(range.end);
+      fetch(url, { credentials: "same-origin" })
+        .then(function (resp) { if (!resp.ok) throw new Error("HTTP " + resp.status); return resp.json(); })
+        .then(function (data) {
+          var buckets = data.buckets || [];
+          var xs = [], ys = [];
+          for (var i = 0; i < buckets.length; i++) {
+            xs.push(buckets[i].ts.substring(5, 10));
+            ys.push(Number(buckets[i].bytes_rx) + Number(buckets[i].bytes_tx) || 0);
+          }
+          chart.setOption({ xAxis: { data: xs }, series: [{ data: ys }] });
+        })
+        .catch(function () { /* 静默置空 */ });
+    }
+
+    refresh();
+    usersState.charts[el.id] = { chart: chart, timer: null };
+  }
+
+  function showAdminEditDialog(machineId, currentDept, currentUsername) {
+    var dept = prompt("编辑部门（留空归未分组）:", currentDept === "未分组" ? "" : currentDept);
+    if (dept === null) return; // 用户取消
+    var uname = prompt("编辑用户名（留空不变）:", currentUsername);
+    if (uname === null) return;
+
+    var body = {};
+    if (dept !== currentDept) body.department = dept || null;
+    if (uname !== currentUsername) body.username = uname || null;
+
+    if (Object.keys(body).length === 0) {
+      alert("无变更");
+      return;
+    }
+
+    fetch("/admin/hosts/" + encodeURIComponent(machineId), {
+      method: "PATCH",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    })
+      .then(function (resp) {
+        if (!resp.ok) return resp.json().catch(function () { return {}; }).then(function (b) { throw new Error((b && b.error) || ("HTTP " + resp.status)); });
+        return resp.json();
+      })
+      .then(function () {
+        alert("保存成功");
+        fetchUsers(); // 刷新列表
+      })
+      .catch(function (err) { alert("保存失败: " + err.message); });
   }
 
   // rustnetec: R-DB — 格式化字节为可读大小

@@ -96,6 +96,21 @@ pub fn build_router(db: AppState) -> Router {
             "/processes",
             get(processes).route_layer(from_fn_with_state(db.clone(), require_query)),
         )
+        // rustnetec: /hosts — 用户/主机信息表（按部门分组→user_id 聚合）。
+        .route(
+            "/hosts",
+            get(list_hosts_handler).route_layer(from_fn_with_state(db.clone(), require_query)),
+        )
+        // rustnetec: /stats/reachability — 外网可达率（决策 A：客户端上报）。
+        .route(
+            "/stats/reachability",
+            get(stats_reachability_handler).route_layer(from_fn_with_state(db.clone(), require_query)),
+        )
+        // rustnetec: /stats/realtime — 实时速率（决策 2-B：server_aggregates 分钟桶）。
+        .route(
+            "/stats/realtime",
+            get(stats_realtime_handler).route_layer(from_fn_with_state(db.clone(), require_query)),
+        )
         // rustnetec: admin token management (scope_machine_id-bound tokens).
         .route(
             "/admin/tokens",
@@ -106,6 +121,13 @@ pub fn build_router(db: AppState) -> Router {
         .route(
             "/admin/tokens/{id}",
             axum::routing::delete(revoke_token_handler)
+                .route_layer(from_fn_with_state(db.clone(), require_admin)),
+        )
+        // rustnetec: PATCH /admin/hosts/{machine_id} — 管理员编辑主机部门/用户名。
+        // 不受 30 分钟约束（管理员随时可编辑）。
+        .route(
+            "/admin/hosts/{machine_id}",
+            axum::routing::patch(patch_host_handler)
                 .route_layer(from_fn_with_state(db.clone(), require_admin)),
         )
         .layer(cors_layer())
@@ -163,10 +185,10 @@ async fn ingest(
             .map_err(ApiError::from)?;
     }
     // 纵深防御：已绑定 scope 时校验一致；admin/宽松 ingest（None）跳过。
-    if let Some(ref scope_mid) = principal.scope_machine_id {
-        if &req.machine_id != scope_mid {
-            return Err(ApiError::Forbidden);
-        }
+    if let Some(ref scope_mid) = principal.scope_machine_id
+        && &req.machine_id != scope_mid
+    {
+        return Err(ApiError::Forbidden);
     }
     let resp = db.ingest(&req).map_err(ApiError::from)?;
     Ok(Json(resp))
@@ -229,12 +251,18 @@ async fn stats_range(
         .get("process")
         .map(|p| p.split(',').filter(|s| !s.is_empty()).map(String::from).collect())
         .unwrap_or_default();
+    // rustnetec: 可选 machine_id 过滤（逗号分隔多机器，admin 模式下生效）。
+    let machine_ids: Vec<String> = params
+        .get("machine_id")
+        .map(|m| m.split(',').filter(|s| !s.is_empty()).map(String::from).collect())
+        .unwrap_or_default();
 
     let rp = crate::db::query::RangeParams {
         start,
         end,
         bucket,
         processes,
+        machine_ids,
     };
     let scope = read_scope(&principal)?;
     let resp = db.stats_range(&rp, &scope).map_err(ApiError::from)?;
@@ -363,6 +391,231 @@ async fn revoke_token_handler(
         "id": id,
         "revoked": revoked,
     })))
+}
+
+// ---------------------------------------------------------------------------
+// rustnetec: 用户信息表 + 可达率 + 实时速率 + 主机编辑 handler
+// ---------------------------------------------------------------------------
+
+/// rustnetec: `GET /hosts` — 用户/主机信息表数据源。
+///
+/// 按 `department ASC NULLS LAST, user_id ASC, machine_id ASC` 排序。
+/// 前端据此按部门分组 → user_id 聚合 → 展开 machine_id。
+async fn list_hosts_handler(
+    State(db): State<AppState>,
+    Extension(principal): Extension<auth::TokenPrincipal>,
+) -> Result<Json<Vec<crate::db::query::HostInfoRow>>, ApiError> {
+    let scope = read_scope(&principal)?;
+    let mut conn = db.lock_writer();
+    let rows = crate::db::query::list_hosts(&mut conn, &scope).map_err(ApiError::from)?;
+    Ok(Json(rows))
+}
+
+/// rustnetec: `GET /stats/reachability` — 外网可达率（决策 A：客户端上报）。
+///
+/// 查询参数：`machine_id`（必填，逗号分隔多机器）、`start`、`end`、`bucket`。
+/// 返回 `{ buckets: [{ts, reachable_ratio, samples, min_latency_ms}], count, bucket }`。
+async fn stats_reachability_handler(
+    State(db): State<AppState>,
+    Extension(principal): Extension<auth::TokenPrincipal>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let scope = read_scope(&principal)?;
+
+    // 解析 machine_id（逗号分隔）
+    let mut machine_ids: Vec<String> = params
+        .get("machine_id")
+        .map(|m| m.split(',').filter(|s| !s.is_empty()).map(String::from).collect())
+        .unwrap_or_default();
+
+    // scope 安全：scoped token 只能查自身机器
+    if let crate::db::query::Scope::Machine(ref mid) = scope {
+        machine_ids.retain(|m| m == mid);
+        if machine_ids.is_empty() {
+            machine_ids.push(mid.clone());
+        }
+    }
+
+    let end = parse_time_param(params.get("end").map(String::as_str), chrono::Duration::zero());
+    let start = parse_time_param(
+        params.get("start").map(String::as_str),
+        chrono::Duration::hours(12),
+    );
+    let bucket = params
+        .get("bucket")
+        .map(String::as_str)
+        .unwrap_or("1min")
+        .to_string();
+
+    let mut conn = db.lock_writer();
+    let resp = crate::db::query::reachability(&mut conn, &machine_ids, &start, &end, &bucket)
+        .map_err(ApiError::from)?;
+    Ok(Json(resp))
+}
+
+/// rustnetec: `GET /stats/realtime` — 实时速率（决策 2-B：server_aggregates 分钟桶）。
+///
+/// 查询参数：`machine_id`（必填，逗号分隔多机器）、`start`（RFC3339 或 `now-<n><s>`）。
+/// 返回 `{ buckets: [{ts, bytes_rx, bytes_tx, conn_count}], count }`。
+async fn stats_realtime_handler(
+    State(db): State<AppState>,
+    Extension(principal): Extension<auth::TokenPrincipal>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let scope = read_scope(&principal)?;
+
+    let mut machine_ids: Vec<String> = params
+        .get("machine_id")
+        .map(|m| m.split(',').filter(|s| !s.is_empty()).map(String::from).collect())
+        .unwrap_or_default();
+
+    if let crate::db::query::Scope::Machine(ref mid) = scope {
+        machine_ids.retain(|m| m == mid);
+        if machine_ids.is_empty() {
+            machine_ids.push(mid.clone());
+        }
+    }
+
+    // 默认查最近 5 分钟
+    let start = parse_time_param(
+        params.get("start").map(String::as_str),
+        chrono::Duration::minutes(5),
+    );
+
+    let mut conn = db.lock_writer();
+    let resp = crate::db::query::realtime(&mut conn, &machine_ids, &start)
+        .map_err(ApiError::from)?;
+    Ok(Json(resp))
+}
+
+/// rustnetec: `PATCH /admin/hosts/{machine_id}` — 管理员编辑主机部门/用户名。
+///
+/// 请求体（JSON，任一字段可选）：
+/// ```json
+/// { "department": "新部门" | null, "username": "新用户名" | null }
+/// ```
+///
+/// **不受 30 分钟约束**（管理员随时可编辑）。
+/// - `department=Some(x)` → `department_source='admin'`（锁定，客户端无法覆盖）
+/// - `department=null` → `department_source='client'`（放手，客户端可覆盖）
+/// - `username=Some(x)` → `username_locked=1`（锁定）
+/// - `username=null` → `username_locked=0`（放手）
+///
+/// 返回更新后的 `HostInfoRow`。
+async fn patch_host_handler(
+    State(db): State<AppState>,
+    axum::extract::Path(machine_id): axum::extract::Path<String>,
+    Json(body): Json<PatchHostBody>,
+) -> Result<Json<crate::db::query::HostInfoRow>, ApiError> {
+    let conn = db.lock_writer();
+    let now = chrono::Local::now().to_rfc3339();
+
+    // 构造动态 UPDATE（仅更新请求体中出现的字段）
+    let mut sets: Vec<&str> = Vec::new();
+    let mut binds: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+    let mut bind_idx = 1;
+
+    if let Some(ref dept) = body.department {
+        sets.push("department = ?");
+        binds.push(Box::new(dept.clone()));
+        bind_idx += 1;
+        // Some(x) → admin 锁定；null → client 放手
+        sets.push("department_source = ?");
+        binds.push(Box::new("admin".to_string()));
+        bind_idx += 1;
+        sets.push("department_updated_at = ?");
+        binds.push(Box::new(now.clone()));
+        bind_idx += 1;
+    }
+
+    if let Some(ref uname) = body.username {
+        sets.push("username = ?");
+        binds.push(Box::new(uname.clone()));
+        bind_idx += 1;
+        sets.push("username_locked = ?");
+        binds.push(Box::new(1i64));
+        bind_idx += 1;
+        sets.push("username_updated_at = ?");
+        binds.push(Box::new(now.clone()));
+        bind_idx += 1;
+    }
+
+    if sets.is_empty() {
+        return Err(ApiError::BadRequest(
+            "at least one of 'department' or 'username' must be provided".into(),
+        ));
+    }
+
+    let sql = format!(
+        "UPDATE server_hosts SET {} WHERE machine_id = ?{}",
+        sets.join(", "),
+        bind_idx
+    );
+    binds.push(Box::new(machine_id.clone()));
+
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| ApiError::from(anyhow::Error::from(e)))?;
+    let bind_refs: Vec<&dyn rusqlite::ToSql> = binds.iter().map(|b| b.as_ref()).collect();
+    let updated = stmt
+        .execute(bind_refs.as_slice())
+        .map_err(|e| ApiError::from(anyhow::Error::from(e)))?;
+    drop(stmt);
+
+    if updated == 0 {
+        return Err(ApiError::BadRequest(format!(
+            "machine_id '{}' not found in server_hosts",
+            machine_id
+        )));
+    }
+
+    // 返回更新后的行
+    let row = conn
+        .query_row(
+            "SELECT machine_id, user_id, username, department, ip_list, \
+                    first_seen, last_seen, event_count \
+             FROM server_hosts WHERE machine_id = ?1",
+            rusqlite::params![&machine_id],
+            |r| {
+                let ip_json: String = r.get(4)?;
+                let ip_list: Vec<String> = serde_json::from_str(&ip_json).unwrap_or_default();
+                Ok(crate::db::query::HostInfoRow {
+                    machine_id: r.get(0)?,
+                    user_id: r.get(1)?,
+                    username: r.get(2)?,
+                    department: r.get(3)?,
+                    ip_list,
+                    first_seen: r.get(5)?,
+                    last_seen: r.get(6)?,
+                    event_count: r.get(7)?,
+                })
+            },
+        )
+        .map_err(|e| ApiError::from(anyhow::Error::from(e)))?;
+
+    Ok(Json(row))
+}
+
+/// rustnetec: `PATCH /admin/hosts/{machine_id}` 请求体。
+///
+/// `department`/`username` 均可选（`None` = 不更新该字段）。
+/// - `Some(value)` → 更新为该值
+/// - `Some(null)` → 清空该字段（serde 层无法区分 `Some(None)` 与 `None`，
+///   故用 `Option<Option<String>>`：外层 `None`=未传，内层 `None`=显式 null）
+#[derive(Debug, serde::Deserialize)]
+struct PatchHostBody {
+    #[serde(default, deserialize_with = "deserialize_nullable")]
+    department: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_nullable")]
+    username: Option<Option<String>>,
+}
+
+/// 反序列化器：区分"字段未传"（外层 None）与"字段显式为 null"（内层 None）。
+fn deserialize_nullable<'de, D>(de: D) -> Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Some(serde::Deserialize::deserialize(de)?))
 }
 
 // ---------------------------------------------------------------------------

@@ -59,6 +59,8 @@ fn sample_request(events: Vec<ClientEvent>) -> IngestRequest {
         username: "alice".to_string(),
         ip_list: vec!["192.168.1.10".to_string()],
         events,
+        department: None,
+        reachability: Vec::new(),
     }
 }
 

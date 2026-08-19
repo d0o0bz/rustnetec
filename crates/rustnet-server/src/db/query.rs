@@ -435,6 +435,9 @@ pub struct RangeParams {
     pub bucket: String,
     /// 进程名列表（IN 语义，空 = 全部进程）。
     pub processes: Vec<String>,
+    /// rustnetec: 可选 machine_id 过滤（admin 模式下按指定机器筛选）。
+    /// 空切片 = 不按 machine_id 过滤。
+    pub machine_ids: Vec<String>,
 }
 
 /// rustnetec: T-E5 — 查询时间桶聚合，返回与 daemon /stats/range 同形的 JSON。
@@ -469,6 +472,23 @@ pub fn stats_range(
         where_clauses.push(format!("machine_id = ?{bind_idx}"));
         bind_values.push(Box::new(mid.clone()));
         bind_idx += 1;
+    }
+
+    // rustnetec: 可选 machine_id 过滤（admin 模式下按指定机器筛选）。
+    // scope 已是 All 时才允许 params.machine_ids 生效；scope=Machine 时
+    // params.machine_ids 必须为空或仅含 scope 本身（由调用层校验）。
+    if !params.machine_ids.is_empty() {
+        let placeholders: Vec<String> = params
+            .machine_ids
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("?{}", bind_idx + i))
+            .collect();
+        where_clauses.push(format!("machine_id IN ({})", placeholders.join(", ")));
+        for mid in &params.machine_ids {
+            bind_values.push(Box::new(mid.clone()));
+        }
+        bind_idx += params.machine_ids.len();
     }
 
     if !params.processes.is_empty() {
@@ -572,7 +592,7 @@ pub fn stats_range(
 
     // 收集进程名（按首次出现顺序）。
     let mut proc_order: Vec<String> = Vec::new();
-    for (_ts, proc_map) in &by_process {
+    for proc_map in by_process.values() {
         for pname in proc_map.keys() {
             if !proc_order.contains(pname) {
                 proc_order.push(pname.clone());
@@ -602,3 +622,280 @@ pub fn stats_range(
         "scope": "all",
     }))
 }
+
+// ---------------------------------------------------------------------------
+// rustnetec: /hosts — 用户/主机信息表数据源（按部门分组 → user_id 聚合）
+// ---------------------------------------------------------------------------
+
+/// rustnetec: 一行 `server_hosts`，供 WebUI 用户信息表展示。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct HostInfoRow {
+    pub machine_id: String,
+    pub user_id: i64,
+    pub username: String,
+    /// 部门（NULL = 未分组）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub department: Option<String>,
+    /// JSON 字符串解析后的 IP 列表。
+    pub ip_list: Vec<String>,
+    pub first_seen: String,
+    pub last_seen: String,
+    pub event_count: i64,
+}
+
+/// rustnetec: `GET /hosts` — 列出所有主机，按 department/user_id/machine_id 排序。
+///
+/// `scope` 强制 per-machine 可见性：scoped token 只看自身机器。
+/// 未填写部门（NULL）的主机在 `ORDER BY ... NULLS LAST` 下自然排末尾，
+/// 前端再归类到"未分组"分组。
+pub fn list_hosts(conn: &mut Connection, scope: &Scope) -> Result<Vec<HostInfoRow>> {
+    // SQLite 默认 NULLS FIRST；显式 NULLS LAST 把未分组排到末尾。
+    let (where_clause, scope_bind): (&str, Option<String>) = match scope {
+        Scope::Machine(mid) => ("WHERE machine_id = ?1", Some(mid.clone())),
+        Scope::All => ("", None),
+    };
+
+    let sql = format!(
+        "SELECT machine_id, user_id, username, department, ip_list, \
+                first_seen, last_seen, event_count \
+         FROM server_hosts {where_clause} \
+         ORDER BY department IS NULL, department ASC, user_id ASC, machine_id ASC"
+    );
+
+    let mut stmt = conn.prepare(&sql).context("list_hosts prepare")?;
+    let mut rows = if let Some(mid) = scope_bind {
+        stmt.query_map(params_from_iter([mid]), row_to_host_info)?
+    } else {
+        stmt.query_map([], row_to_host_info)?
+    };
+
+    let mut out = Vec::new();
+    for row in rows.by_ref() {
+        out.push(row?);
+    }
+    Ok(out)
+}
+
+/// 把一行 `server_hosts` 映射为 [`HostInfoRow`]，解析 `ip_list` JSON。
+fn row_to_host_info(row: &rusqlite::Row<'_>) -> rusqlite::Result<HostInfoRow> {
+    let ip_json: String = row.get(4)?;
+    let ip_list: Vec<String> = serde_json::from_str(&ip_json).unwrap_or_default();
+    Ok(HostInfoRow {
+        machine_id: row.get(0)?,
+        user_id: row.get(1)?,
+        username: row.get(2)?,
+        department: row.get(3)?,
+        ip_list,
+        first_seen: row.get(5)?,
+        last_seen: row.get(6)?,
+        event_count: row.get(7)?,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// rustnetec: /stats/reachability — 外网可达率（决策 A：客户端上报）
+// ---------------------------------------------------------------------------
+
+/// rustnetec: `GET /stats/reachability` — 可达率时间序列。
+///
+/// 数据源：`server_reachability` 表（客户端可达率探测线程采集并上报）。
+/// 按桶聚合 `reachable_ratio = sum(reachable)/count(*)`，
+/// `min_latency_ms = min(latency_ms) where reachable=1`。
+///
+/// 返回与客户端 `/stats/reachability` 同形 JSON：
+/// `{ buckets: [{ts, reachable_ratio, samples, min_latency_ms}] }`
+pub fn reachability(
+    conn: &mut Connection,
+    machine_ids: &[String],
+    start: &str,
+    end: &str,
+    bucket: &str,
+) -> Result<serde_json::Value> {
+    use std::collections::BTreeMap;
+
+    if machine_ids.is_empty() {
+        return Ok(serde_json::json!({
+            "buckets": Vec::<serde_json::Value>::new(),
+            "count": 0,
+            "bucket": bucket,
+        }));
+    }
+
+    // 构造 machine_id IN (...) 子句
+    let placeholders: Vec<String> = machine_ids
+        .iter()
+        .enumerate()
+        .map(|(i, _)| format!("?{}", i + 1))
+        .collect();
+    let in_clause = placeholders.join(", ");
+    let start_idx = machine_ids.len() + 1;
+
+    let sql = format!(
+        "SELECT ts, reachable, latency_ms \
+         FROM server_reachability \
+         WHERE machine_id IN ({in_clause}) AND ts >= ?{start_idx} AND ts <= ?{} \
+         ORDER BY ts ASC",
+        start_idx + 1
+    );
+
+    let mut stmt = conn.prepare(&sql).context("reachability prepare")?;
+    let mut bind_values: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+    for mid in machine_ids {
+        bind_values.push(Box::new(mid.clone()));
+    }
+    bind_values.push(Box::new(start.to_string()));
+    bind_values.push(Box::new(end.to_string()));
+    let bind_refs: Vec<&dyn rusqlite::ToSql> = bind_values.iter().map(|b| b.as_ref()).collect();
+
+    let rows = stmt.query_map(bind_refs.as_slice(), |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, i64>(1)?,
+            r.get::<_, f64>(2)?,
+        ))
+    })?;
+
+    // 桶宽 → chrono truncate
+    let truncate = |dt: chrono::DateTime<chrono::FixedOffset>| -> String {
+        let utc = dt.with_timezone(&chrono::Utc);
+        match bucket {
+            "5s" => {
+                let secs = utc.timestamp();
+                let truncated = secs - (secs % 5);
+                chrono::DateTime::from_timestamp(truncated, 0)
+                    .unwrap()
+                    .format("%Y-%m-%dT%H:%M:%S")
+                    .to_string()
+            }
+            "1min" => utc.format("%Y-%m-%dT%H:%M").to_string(),
+            "1hour" => utc.format("%Y-%m-%dT%H").to_string(),
+            "1day" => utc.format("%Y-%m-%d").to_string(),
+            _ => utc.format("%Y-%m-%dT%H:%M").to_string(),
+        }
+    };
+
+    #[derive(Default)]
+    struct ReachAcc {
+        reachable_sum: i64,
+        samples: i64,
+        min_latency: Option<f64>,
+    }
+
+    let mut buckets: BTreeMap<String, ReachAcc> = BTreeMap::new();
+    for row in rows {
+        let (ts, reachable, latency) = match row {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        let dt = match chrono::DateTime::parse_from_rfc3339(&ts) {
+            Ok(dt) => dt,
+            Err(_) => continue,
+        };
+        let key = truncate(dt);
+        let acc = buckets.entry(key).or_default();
+        acc.samples += 1;
+        if reachable == 1 {
+            acc.reachable_sum += 1;
+            acc.min_latency = Some(match acc.min_latency {
+                Some(m) => m.min(latency),
+                None => latency,
+            });
+        }
+    }
+
+    let out: Vec<serde_json::Value> = buckets
+        .iter()
+        .map(|(ts, acc)| {
+            let ratio = if acc.samples > 0 {
+                acc.reachable_sum as f64 / acc.samples as f64
+            } else {
+                0.0
+            };
+            serde_json::json!({
+                "ts": ts,
+                "reachable_ratio": ratio,
+                "samples": acc.samples,
+                "min_latency_ms": acc.min_latency.unwrap_or(0.0),
+            })
+        })
+        .collect();
+
+    Ok(serde_json::json!({
+        "buckets": out,
+        "count": out.len(),
+        "bucket": bucket,
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// rustnetec: /stats/realtime — 实时速率（决策 2-B：server_aggregates 分钟桶）
+// ---------------------------------------------------------------------------
+
+/// rustnetec: `GET /stats/realtime` — 实时速率。
+///
+/// 数据源：`server_aggregates` 分钟桶（由 `write_minute_aggregates` 维护）。
+/// 支持逗号分隔多 `machine_id`（用户展开多机器场景）。
+///
+/// 返回：`{ buckets: [{ts, bytes_rx, bytes_tx, conn_count}] }`
+pub fn realtime(
+    conn: &mut Connection,
+    machine_ids: &[String],
+    start: &str,
+) -> Result<serde_json::Value> {
+    if machine_ids.is_empty() {
+        return Ok(serde_json::json!({
+            "buckets": Vec::<serde_json::Value>::new(),
+            "count": 0,
+        }));
+    }
+
+    let placeholders: Vec<String> = machine_ids
+        .iter()
+        .enumerate()
+        .map(|(i, _)| format!("?{}", i + 1))
+        .collect();
+    let in_clause = placeholders.join(", ");
+    let start_idx = machine_ids.len() + 1;
+
+    let sql = format!(
+        "SELECT bucket_ts, bytes_rx, bytes_tx, conn_count \
+         FROM server_aggregates \
+         WHERE bucket_width = 'minute' AND machine_id IN ({in_clause}) \
+         AND bucket_ts >= ?{start_idx} \
+         ORDER BY bucket_ts ASC"
+    );
+
+    let mut stmt = conn.prepare(&sql).context("realtime prepare")?;
+    let mut bind_values: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+    for mid in machine_ids {
+        bind_values.push(Box::new(mid.clone()));
+    }
+    bind_values.push(Box::new(start.to_string()));
+    let bind_refs: Vec<&dyn rusqlite::ToSql> = bind_values.iter().map(|b| b.as_ref()).collect();
+
+    let rows = stmt.query_map(bind_refs.as_slice(), |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, i64>(1)?,
+            r.get::<_, i64>(2)?,
+            r.get::<_, i64>(3)?,
+        ))
+    })?;
+
+    let mut out = Vec::new();
+    for row in rows {
+        let (ts, rx, tx, count) = row?;
+        out.push(serde_json::json!({
+            "ts": ts,
+            "bytes_rx": rx,
+            "bytes_tx": tx,
+            "conn_count": count,
+        }));
+    }
+
+    Ok(serde_json::json!({
+        "buckets": out,
+        "count": out.len(),
+    }))
+}
+

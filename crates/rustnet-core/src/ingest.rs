@@ -75,6 +75,32 @@ pub struct IngestRequest {
     pub username: String,
     pub ip_list: Vec<String>,
     pub events: Vec<ClientEvent>,
+    /// rustnetec: 可选部门字段，跟随首次上报一起上传，有变更也需要上报。
+    /// 未填写时为 `None`，服务端归类到"未分组"。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub department: Option<String>,
+    /// rustnetec: 外网可达率探测样本（决策 A），由客户端可达率探测线程采集后随上报批次一起发送。
+    /// 空切片表示本批次无可达率样本。
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub reachability: Vec<ReachabilitySample>,
+}
+
+/// rustnetec: 外网可达率探测样本（决策 A —— 客户端上报可达率）。
+///
+/// 客户端可达率探测线程每轮写入本地 `reachability_probes` 表，
+/// 上报线程读取未上报的样本随 `IngestRequest` 一起发送。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReachabilitySample {
+    /// 探测时间戳（RFC 3339）。
+    pub ts: String,
+    /// 本轮是否探测到至少一个可达目标（0/1）。
+    pub reachable: i64,
+    /// 本轮最快延迟（毫秒）；不可达时为 0。
+    pub latency_ms: f64,
+    /// 本轮可达目标数。
+    pub targets_ok: i64,
+    /// 本轮探测目标总数。
+    pub targets_total: i64,
 }
 
 /// One normalized connection event as uploaded by the client.
@@ -122,6 +148,24 @@ pub struct IngestResponse {
     /// 本批次成功处理的最大 `local_event_id`（方案 1 双 ID 空间，cursor 推进
     /// 锚定客户端本地自增 id）。客户端收到后据此推进 `upload_cursor`。
     pub cursor: i64,
+    /// rustnetec: 服务端当前 department 值，下发客户端同步本地 config。
+    ///
+    /// - 管理员已锁定（`department_source='admin'`）：下发服务端值，客户端落盘后下次上报携带该值
+    /// - 管理员已清空（`department_source='client'`，`department=NULL`）：下发 `None`，客户端不更新
+    /// - 客户端覆盖（`department_source='client'`，`department=Some(x)`）：下发 `Some(x)` 确认当前值
+    ///
+    /// `None` 表示"无变更需下发"（向后兼容旧客户端）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub department_override: Option<String>,
+    /// rustnetec: 服务端当前 username 值，下发客户端同步本地 config。
+    ///
+    /// 语义同 [`IngestResponse::department_override`]：
+    /// - `username_locked=1`（admin 锁定）：下发服务端值
+    /// - `username_locked=0`（client 可覆盖）：下发当前值确认
+    ///
+    /// `None` 表示"无变更需下发"。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub username_override: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

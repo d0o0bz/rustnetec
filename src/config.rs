@@ -129,6 +129,10 @@ pub struct PersistentConfig {
     pub user_id: Option<i64>,
     #[serde(default)]
     pub machine_id: Option<String>,
+    /// rustnetec: 可选部门字段，跟随首次上报一起上传，有变更也需要上报。
+    /// 未填写时为 `None`，服务端归类到"未分组"。
+    #[serde(default)]
+    pub department: Option<String>,
 
     // --- Upload ---
     #[serde(default)]
@@ -276,6 +280,7 @@ impl Default for PersistentConfig {
             username: None,
             user_id: None,
             machine_id: None,
+            department: None,
 
             server_url: None,
             server_token: None,

@@ -65,6 +65,8 @@ fn sample_request(events: Vec<ClientEvent>) -> IngestRequest {
         username: "alice".into(),
         ip_list: vec!["10.0.0.5".into()],
         events,
+        department: None,
+        reachability: Vec::new(),
     }
 }
 
@@ -523,6 +525,8 @@ async fn setup_scope_isolation() -> (axum::Router, String, String, String) {
         username: "alice".into(),
         ip_list: vec!["10.0.0.5".into()],
         events: vec![ev(1, 1_700_000_000_000, "curl")],
+        department: None,
+        reachability: Vec::new(),
     };
     let req_b = IngestRequest {
         machine_id: "machine-b".into(),
@@ -530,6 +534,8 @@ async fn setup_scope_isolation() -> (axum::Router, String, String, String) {
         username: "bob".into(),
         ip_list: vec!["10.0.0.6".into()],
         events: vec![ev(2, 1_700_000_001_000, "wget")],
+        department: None,
+        reachability: Vec::new(),
     };
 
     let router = build_router(Arc::new(db));
@@ -655,6 +661,8 @@ async fn scoped_ingest_rejects_foreign_machine_id() {
         username: "bob".into(),
         ip_list: vec!["10.0.0.6".into()],
         events: vec![sample_event(1, 1_700_000_000_000)],
+        department: None,
+        reachability: Vec::new(),
     };
     let resp = r
         .oneshot(authed_request(

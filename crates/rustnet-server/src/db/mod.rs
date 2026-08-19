@@ -144,6 +144,7 @@ pub fn init(db_path: &Path, cfg: &ServerDbConfig) -> Result<ServerDb> {
     apply_pragmas(&mut conn, cfg)?;
     run_schema_v2(&mut conn)?;
     run_schema_v3(&mut conn)?;
+    run_schema_v4(&mut conn)?;
 
     // Unix: lock the db file to 0600 (server runs as a dedicated user, no chown).
     #[cfg(unix)]
@@ -459,6 +460,97 @@ fn run_schema_v3(conn: &mut Connection) -> Result<()> {
             );
         }
     }
+
+    Ok(())
+}
+
+/// rustnetec: Schema v4 — 部门字段 + username 锁定 + 可达率上报表 + aggregates 唯一约束。
+///
+/// 新增列：
+/// - `server_hosts.department`           — 部门（NULL = 未分组）
+/// - `server_hosts.department_source`    — `'client'` 允许覆盖；`'admin'` 锁定
+/// - `server_hosts.department_updated_at`— department 最后变更时间（30min 计时锚点）
+/// - `server_hosts.username_locked`      — 0=客户端可覆盖；1=admin 锁定
+/// - `server_hosts.username_updated_at`  — username 最后变更时间
+///
+/// 新增表：
+/// - `server_reachability` — 客户端上报的可达率探测样本
+///
+/// 新增约束：
+/// - `server_aggregates UNIQUE(bucket_ts, bucket_width, machine_id)` — 支持 ON CONFLICT DO UPDATE
+///
+/// 幂等：先查 `PRAGMA table_info` 判断列是否存在；表/索引用 `IF NOT EXISTS`。
+fn run_schema_v4(conn: &mut Connection) -> Result<()> {
+    // ---- server_hosts 新增列 ----
+    let host_cols: Vec<String> = {
+        let mut stmt = conn
+            .prepare("PRAGMA table_info(server_hosts)")
+            .context("PRAGMA table_info(server_hosts) failed")?;
+        stmt.query_map([], |r| r.get::<_, String>(1))
+            .context("query table_info names")?
+            .filter_map(|r| r.ok())
+            .collect()
+    };
+
+    let alter_host = |col: &str, decl: &str| -> Result<()> {
+        if !host_cols.iter().any(|c| c == col) {
+            conn.execute(
+                &format!("ALTER TABLE server_hosts ADD COLUMN {col} {decl}"),
+                [],
+            )
+            .with_context(|| format!("ALTER TABLE server_hosts ADD {col} failed"))?;
+        }
+        Ok(())
+    };
+
+    alter_host("department", "TEXT")?;
+    alter_host("department_source", "TEXT NOT NULL DEFAULT 'client'")?;
+    alter_host("department_updated_at", "TEXT")?;
+    alter_host("username_locked", "INTEGER NOT NULL DEFAULT 0")?;
+    alter_host("username_updated_at", "TEXT")?;
+
+    // ---- server_reachability 新建表 ----
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS server_reachability (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            machine_id      TEXT    NOT NULL,
+            ts              TEXT    NOT NULL,    -- 探测时间 (RFC 3339)
+            reachable       INTEGER NOT NULL,    -- 0/1
+            latency_ms      REAL    NOT NULL,    -- 最快延迟; 不可达时 0
+            targets_ok      INTEGER NOT NULL,
+            targets_total   INTEGER NOT NULL,
+            UNIQUE (machine_id, ts)
+        );
+        CREATE INDEX IF NOT EXISTS idx_svr_reach_machine_ts
+            ON server_reachability (machine_id, ts);
+        "#,
+    )
+    .context("CREATE server_reachability failed")?;
+
+    // ---- server_aggregates 新增唯一索引（支持 ON CONFLICT DO UPDATE） ----
+    // 幂等：CREATE UNIQUE INDEX IF NOT EXISTS
+    conn.execute_batch(
+        r#"
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_svr_aggs_unique
+            ON server_aggregates (bucket_ts, bucket_width, machine_id);
+        "#,
+    )
+    .context("CREATE server_aggregates unique index failed")?;
+
+    // ---- 记录迁移 ----
+    let now = chrono::Local::now().to_rfc3339();
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_version (version, applied_at, description) \
+         VALUES (?, ?, ?)",
+        rusqlite::params![
+            4,
+            now,
+            "add department/username lock fields to server_hosts; \
+             create server_reachability; add unique index on server_aggregates"
+        ],
+    )
+    .context("INSERT schema_version v4 failed")?;
 
     Ok(())
 }
