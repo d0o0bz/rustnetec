@@ -26,6 +26,33 @@ fn resolve_db_path(matches: &clap::ArgMatches) -> PathBuf {
     telemetry::paths::db_path().unwrap_or_else(|_| PathBuf::from("data.db"))
 }
 
+/// rustnetec: 从 `server_url` 提取主机名（host），供 Seatbelt 出站网络白名单使用。
+///
+/// 无 `url` crate 依赖：手写最小解析，覆盖 `http://host[:port]/path` 形式。
+/// - 剥离 scheme（`://` 之前）；
+/// - 取 `host[:port]` 段（到第一个 `/`、`?`、`#` 为止）；
+/// - 去掉端口；IPv6 字面量 `[::1]` 取方括号内内容。
+fn extract_server_host(server_url: &str) -> Option<String> {
+    let after_scheme = server_url
+        .split_once("://")
+        .map(|(_, r)| r)
+        .unwrap_or(server_url);
+    let host_port = after_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or("");
+    let host = if let Some(rest) = host_port.strip_prefix('[') {
+        rest.split(']').next().unwrap_or("")
+    } else {
+        host_port.split(':').next().unwrap_or("")
+    };
+    if host.is_empty() {
+        None
+    } else {
+        Some(host.to_string())
+    }
+}
+
 /// 在打开 SqliteSink 前调用：若最终库路径不同于默认库路径、目标不存在且默认库存在，
 /// 则将默认库（data.db 及其 -wal/-shm）复制到目标路径，保留原文件（best-effort）。
 fn migrate_db_if_needed(final_db_path: &PathBuf) {
@@ -819,8 +846,17 @@ fn run() -> Result<()> {
             paths
         };
 
-        // rustnetec: Read --sandbox-allow-network for data upload host (R3, T1.8)
-        let allowed_network_host = matches.get_one::<String>("sandbox-allow-network").cloned();
+        // rustnetec: 上传目标 host 白名单（R3, T1.8）— CLI 显式指定优先，
+        // 否则回退从配置 server_url 提取（webUI 配置后无需重启时手动传参，
+        // 与 reachability_targets 同源读取，见 `extract_server_host`）。
+        let allowed_network_host = matches
+            .get_one::<String>("sandbox-allow-network")
+            .cloned()
+            .or_else(|| {
+                rustnet_monitor::config::PersistentConfig::load()
+                    .ok()
+                    .and_then(|cfg| cfg.server_url.as_deref().and_then(extract_server_host))
+            });
 
         // rustnetec: W-修复 — SQLite 数据目录需 sandbox 读写放行。
         // Seatbelt 默认 deny /Users 子路径读写,而 SqliteSink(/query、/processes)
