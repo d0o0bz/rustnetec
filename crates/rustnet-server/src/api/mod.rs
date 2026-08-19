@@ -5,7 +5,7 @@
 //! | Method | Path       | Auth role      | Description                       |
 //! |--------|------------|----------------|-----------------------------------|
 //! | GET    | `/health`  | none           | Liveness probe                    |
-//! | POST   | `/ingest`  | `Ingest`/`Admin`| Accept a client event batch       |
+//! | POST   | `/ingest`  | `Ingest`/`Client`| Accept a client event batch (Admin rejected)|
 //! | GET    | `/query`   | `Query`/`Admin`| Read-only historical query        |
 //! | GET    | `/stats`   | `Query`/`Admin`| Aggregate statistics              |
 //! | GET    | `/stats/range` | `Query`/`Admin`| Per-bucket time series (T-E5) |
@@ -638,6 +638,11 @@ where
 /// Role re-export so handler signatures stay readable.
 pub use auth::AuthRole;
 
+/// rustnetec: 拒绝 Admin token 用于上传。
+///
+/// Admin 是管理凭证（可查全量数据、管理 token），不应出现在客户端配置里；
+/// 客户端上传只接受 `Ingest`/`Client` 角色。误填 admin token 时返回 403，
+/// 避免把管理员权限暴露到客户端（见 `AuthRole::authorizes`）。
 async fn require_ingest(
     State(db): State<AppState>,
     headers: HeaderMap,
@@ -647,6 +652,9 @@ async fn require_ingest(
     let principal = auth::check_auth(State(db), AuthRole::Ingest, &headers)
         .await
         .map_err(ApiError::from)?;
+    if principal.role == auth::AuthRole::Admin {
+        return Err(ApiError::Forbidden);
+    }
     req.extensions_mut().insert(principal);
     Ok(next.run(req).await)
 }

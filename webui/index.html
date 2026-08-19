@@ -3745,12 +3745,15 @@
         lines.push(key + ": " + v);
       } else if (Array.isArray(v)) {
         // rustnetec: 数组 → YAML flow 序列 [a, b](serde_yaml 可解析为 Vec)
+        // 注意:必须先转义反斜杠再转义双引号,否则 YAML 双引号标量会把 `\U`/`\u`/`\x`
+        // 当作十六进制转义解析(如 Windows 路径 `C:\Users\...` 会报
+        // "did not find expected hexadecimal number")。
         lines.push(key + ": [" + v.map(function (s) {
-          return '"' + String(s).replace(/"/g, '\\"') + '"';
+          return '"' + String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
         }).join(", ") + "]");
       } else {
-        // 字符串:含空格或特殊字符加引号(简化:统一加双引号)
-        lines.push(key + ': "' + String(v).replace(/"/g, '\\"') + '"');
+        // 字符串:含空格或特殊字符加引号(简化:统一加双引号);反斜杠先转义
+        lines.push(key + ': "' + String(v).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"');
       }
     }
     return lines.join("\n") + "\n";

@@ -210,6 +210,22 @@ async fn query_token_cannot_ingest_403() {
 }
 
 #[tokio::test]
+async fn admin_token_cannot_ingest_403() {
+    let (router, _, _, admin_tok) = setup();
+    let body = Body::from(serde_json::to_vec(&sample_request(vec![])).unwrap());
+    let resp = router
+        .oneshot(authed_request(
+            Method::POST,
+            "/ingest",
+            Some(body),
+            Some(&admin_tok),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
 async fn ingest_token_cannot_query_403() {
     let (router, ingest_tok, _, _) = setup();
     let resp = router
@@ -229,8 +245,8 @@ async fn ingest_token_cannot_query_403() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn admin_full_chain_ingest_query_stats() {
-    let (router, _, _, admin_tok) = setup();
+async fn full_chain_ingest_query_stats() {
+    let (router, ingest_tok, _, admin_tok) = setup();
 
     // 1. Ingest two events.
     let ev1 = sample_event(1, 1_700_000_000_000);
@@ -242,7 +258,7 @@ async fn admin_full_chain_ingest_query_stats() {
             Method::POST,
             "/ingest",
             Some(req_body),
-            Some(&admin_tok),
+            Some(&ingest_tok),
         ))
         .await
         .unwrap();
@@ -296,7 +312,7 @@ async fn admin_full_chain_ingest_query_stats() {
 
 #[tokio::test]
 async fn duplicate_ingest_is_idempotent() {
-    let (router, _, _, admin_tok) = setup();
+    let (router, ingest_tok, _, _) = setup();
 
     let ev = sample_event(42, 1_700_000_000_000);
     let req = sample_request(vec![ev]);
@@ -308,7 +324,7 @@ async fn duplicate_ingest_is_idempotent() {
             Method::POST,
             "/ingest",
             Some(Body::from(serde_json::to_vec(&req).unwrap())),
-            Some(&admin_tok),
+            Some(&ingest_tok),
         ))
         .await
         .unwrap();
@@ -322,7 +338,7 @@ async fn duplicate_ingest_is_idempotent() {
             Method::POST,
             "/ingest",
             Some(Body::from(serde_json::to_vec(&req).unwrap())),
-            Some(&admin_tok),
+            Some(&ingest_tok),
         ))
         .await
         .unwrap();
@@ -366,7 +382,7 @@ async fn revoked_admin_token_is_401() {
 
 #[tokio::test]
 async fn query_from_to_filter() {
-    let (router, _, _, admin_tok) = setup();
+    let (router, ingest_tok, _, admin_tok) = setup();
 
     // Ingest 3 events at distinct timestamps.
     let events = vec![
@@ -382,7 +398,7 @@ async fn query_from_to_filter() {
             Some(Body::from(
                 serde_json::to_vec(&sample_request(events)).unwrap(),
             )),
-            Some(&admin_tok),
+            Some(&ingest_tok),
         ))
         .await
         .unwrap();
@@ -410,7 +426,7 @@ async fn query_from_to_filter() {
 
 #[tokio::test]
 async fn query_params_parsed_from_qs() {
-    let (router, _, _, admin_tok) = setup();
+    let (router, ingest_tok, _, admin_tok) = setup();
 
     // Ingest one event so /query has something to return; we're really
     // verifying that the `from`/`to`/`limit` query string deserializes
@@ -424,7 +440,7 @@ async fn query_params_parsed_from_qs() {
             Some(Body::from(
                 serde_json::to_vec(&sample_request(vec![ev])).unwrap(),
             )),
-            Some(&admin_tok),
+            Some(&ingest_tok),
         ))
         .await
         .unwrap();
@@ -517,8 +533,20 @@ async fn setup_scope_isolation() -> (axum::Router, String, String, String) {
         .unwrap()
         .plaintext
     };
+    // rustnetec: admin 不能再用于上传，播种改用共享 ingest token（scope None）。
+    let shared_ingest = {
+        let mut conn = db.lock_writer();
+        rustnet_server::api::token::create_token(
+            &mut conn,
+            AuthRole::Ingest,
+            Some("shared-seed"),
+            None,
+        )
+        .unwrap()
+        .plaintext
+    };
 
-    // Ingest data for machine-a and machine-b via admin token.
+    // Ingest data for machine-a and machine-b via shared ingest token.
     let req_a = IngestRequest {
         machine_id: "machine-a".into(),
         user_id: "1".into(),
@@ -540,7 +568,7 @@ async fn setup_scope_isolation() -> (axum::Router, String, String, String) {
 
     let router = build_router(Arc::new(db));
 
-    // Ingest both via admin token (unscoped).
+    // Ingest both via shared ingest token (unscoped).
     for req in [&req_a, &req_b] {
         let resp = router
             .clone()
@@ -548,7 +576,7 @@ async fn setup_scope_isolation() -> (axum::Router, String, String, String) {
                 Method::POST,
                 "/ingest",
                 Some(Body::from(serde_json::to_vec(req).unwrap())),
-                Some(&admin_tok),
+                Some(&shared_ingest),
             ))
             .await
             .unwrap();
@@ -625,8 +653,6 @@ async fn scoped_stats_only_count_own_machine() {
 
 #[tokio::test]
 async fn scoped_ingest_rejects_foreign_machine_id() {
-    let (router, _a, _b, admin_tok) = setup_scope_isolation().await;
-
     // Provision a scoped ingest token bound to machine-a.
     let path = tmp_db("scope-ingest");
     let db = init(&path, &ServerDbConfig::default()).unwrap();
@@ -665,6 +691,7 @@ async fn scoped_ingest_rejects_foreign_machine_id() {
         reachability: Vec::new(),
     };
     let resp = r
+        .clone()
         .oneshot(authed_request(
             Method::POST,
             "/ingest",
@@ -680,14 +707,16 @@ async fn scoped_ingest_rejects_foreign_machine_id() {
         machine_id: "machine-a".into(),
         ..req
     };
-    let _ = router
+    let resp_ok = r
         .oneshot(authed_request(
             Method::POST,
             "/ingest",
             Some(Body::from(serde_json::to_vec(&req_ok).unwrap())),
-            Some(&admin_tok),
+            Some(&a_ingest),
         ))
-        .await;
+        .await
+        .unwrap();
+    assert_eq!(resp_ok.status(), StatusCode::OK);
 }
 
 #[tokio::test]

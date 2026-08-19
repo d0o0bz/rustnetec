@@ -6,7 +6,8 @@
 //! Authorization is role-scoped:
 //! - [`AuthRole::Ingest`] — `POST /ingest` only
 //! - [`AuthRole::Query`]  — `GET /query`, `GET /stats`
-//! - [`AuthRole::Admin`]  — everything except `/health`
+//! - [`AuthRole::Admin`]  — everything except `/health` and `/ingest`
+//!   (rustnetec: `/ingest` 拒绝 admin token，见 `crate::api::require_ingest`)
 //!
 //! The middleware does ONE DB lookup per request (hash → role). The
 //! `last_used_at` bump is best-effort: a failure there must not fail the

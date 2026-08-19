@@ -8,7 +8,8 @@
 //!
 //! - [`AuthRole::Ingest`] — `POST /ingest` only
 //! - [`AuthRole::Query`]  — `GET /query`, `GET /stats`
-//! - [`AuthRole::Admin`]  — everything except `/health`
+//! - [`AuthRole::Admin`]  — everything except `/health` and `/ingest`
+//!   (rustnetec: `/ingest` 拒绝 admin token，见 `crate::api::require_ingest`)
 //!
 //! ## Usage
 //!
