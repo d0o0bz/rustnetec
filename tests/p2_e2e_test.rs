@@ -82,6 +82,7 @@ fn host_identity() -> HostIdentity {
         machine_id: "machine-e2e".to_string(),
         user_id: 99999,
         username: "e2e".to_string(),
+        department: None,
         ip_list: vec![],
     }
 }
@@ -147,18 +148,21 @@ fn full_chain_client_upload_to_server_query_stats() {
 
     // 验证服务端数据: query_events 全量
     let query_resp: QueryResponse = server_db
-        .query_events(&QueryParams {
-            from: None,
-            to: None,
-            filter: None,
-            sql: None,
-            limit: Some(100),
-        })
+        .query_events(
+            &QueryParams {
+                from: None,
+                to: None,
+                filter: None,
+                sql: None,
+                limit: Some(100),
+            },
+            &db::query::Scope::All,
+        )
         .unwrap();
     assert_eq!(query_resp.rows.len(), 2, "server should hold 2 events");
 
     // 验证服务端 stats
-    let stats: StatsResponse = server_db.stats().unwrap();
+    let stats: StatsResponse = server_db.stats(&db::query::Scope::All).unwrap();
     assert!(
         stats.total_events >= 2,
         "stats total_events should include uploaded"
@@ -289,13 +293,16 @@ fn network_outage_then_recovery_replays_all() {
         "cursor should advance after recovery"
     );
     let query_resp: QueryResponse = server_db
-        .query_events(&QueryParams {
-            from: None,
-            to: None,
-            filter: None,
-            sql: None,
-            limit: Some(100),
-        })
+        .query_events(
+            &QueryParams {
+                from: None,
+                to: None,
+                filter: None,
+                sql: None,
+                limit: Some(100),
+            },
+            &db::query::Scope::All,
+        )
         .unwrap();
     assert_eq!(
         query_resp.rows.len(),
@@ -343,13 +350,16 @@ fn server_purge_expired_removes_old_events() {
 
     // query 确认陈旧已删, 新鲜保留
     let query_resp: QueryResponse = server_db
-        .query_events(&QueryParams {
-            from: None,
-            to: None,
-            filter: None,
-            sql: None,
-            limit: Some(100),
-        })
+        .query_events(
+            &QueryParams {
+                from: None,
+                to: None,
+                filter: None,
+                sql: None,
+                limit: Some(100),
+            },
+            &db::query::Scope::All,
+        )
         .unwrap();
     assert_eq!(
         query_resp.rows.len(),

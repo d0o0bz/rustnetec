@@ -82,6 +82,7 @@ fn host_identity() -> HostIdentity {
         machine_id: "machine-test".to_string(),
         user_id: 12345,
         username: "tester".to_string(),
+        department: None,
         ip_list: vec![],
     }
 }
@@ -119,6 +120,8 @@ fn failure_then_success_advances_cursor() {
                 accepted: 2,
                 duplicates: 0,
                 cursor: 2,
+                department_override: None,
+                username_override: None,
             })
             .unwrap(),
         )
@@ -164,6 +167,8 @@ fn idempotent_upload_advances_cursor() {
                 accepted: 0,
                 duplicates: 2,
                 cursor: 2,
+                department_override: None,
+                username_override: None,
             })
             .unwrap(),
         )
