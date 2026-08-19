@@ -352,6 +352,18 @@ async fn create_token_handler(
     let role = auth::AuthRole::from_str(&body.role)
         .map_err(|_| ApiError::BadRequest(format!("unknown role: {}", body.role)))?;
 
+    // rustnetec: admin token 数量上限预检（超限返回 400 而非 500）。
+    if role == auth::AuthRole::Admin {
+        let conn = db.lock_writer();
+        let active = token::active_admin_count(&conn).map_err(ApiError::from)?;
+        if active >= token::MAX_ADMIN_TOKENS {
+            return Err(ApiError::BadRequest(format!(
+                "admin token 数量已达上限({})，请先吊销一个后再创建",
+                token::MAX_ADMIN_TOKENS
+            )));
+        }
+    }
+
     let mut conn = db.lock_writer();
     let created = token::create_token(
         &mut conn,

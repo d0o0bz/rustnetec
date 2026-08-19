@@ -1103,6 +1103,48 @@
 
   <section id="settings-view" class="view">
     <div id="settings-status" class="muted"></div>
+    <!-- rustnetec: token 管理面板（server 模式专属，daemon 模式隐藏） -->
+    <div id="token-panel" style="display:none;">
+      <div id="token-status" class="muted"></div>
+      <fieldset>
+        <legend>管理员 Token <span id="token-admin-count" class="restart-hint"></span></legend>
+        <div class="db-row">
+          <label class="db-label" for="token-admin-input">Token（用于 /admin/tokens 鉴权）</label>
+          <input type="password" id="token-admin-input" placeholder="粘贴 admin token" autocomplete="off" style="flex:1; min-width:220px;">
+          <button type="button" id="token-admin-save" class="db-btn">保存</button>
+        </div>
+        <div class="muted" style="font-size:12px;">Token 明文仅创建时展示一次；服务端只存 BLAKE3 哈希，无法找回。刷新页面需重新输入。</div>
+      </fieldset>
+      <fieldset>
+        <legend>Token 列表</legend>
+        <table id="token-table" style="width:100%; border-collapse:collapse; font-size:12px;">
+          <thead>
+            <tr style="text-align:left;">
+              <th>ID</th><th>角色</th><th>描述</th><th>作用域</th>
+              <th>创建时间</th><th>最近使用</th><th>状态</th><th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="token-tbody"></tbody>
+        </table>
+        <div id="token-list-empty" class="muted" style="font-size:12px; margin-top:6px;">加载中…</div>
+      </fieldset>
+      <fieldset>
+        <legend>创建 Token</legend>
+        <div class="db-row" style="align-items:flex-end;">
+          <label>角色
+            <select id="token-create-role">
+              <option value="admin">管理员（全量访问）</option>
+              <option value="ingest">共享上传（任意 machine_id）</option>
+            </select>
+          </label>
+          <label style="flex:1; min-width:200px;">描述
+            <input type="text" id="token-create-desc" placeholder="如 ops-2026" style="width:100%;">
+          </label>
+          <button type="button" id="token-create-btn" class="db-btn">创建</button>
+        </div>
+        <div id="token-create-result" class="muted" style="font-size:12px; margin-top:6px;"></div>
+      </fieldset>
+    </div>
     <form id="settings-form">
       <fieldset>
         <legend>主机身份 <span class="restart-hint">(即时生效)</span></legend>
@@ -1307,9 +1349,7 @@
     // 隐藏仪表盘标签(无 /live,实时轮询无意义)
     var overviewBtn = document.querySelector('#tabs button[data-view="overview"]');
     if (overviewBtn) overviewBtn.style.display = "none";
-    // 隐藏设置页标签(无 /config、/config/restart-capture)
-    var settingsBtn = document.querySelector('#tabs button[data-view="settings"]');
-    if (settingsBtn) settingsBtn.style.display = "none";
+    // rustnetec: server 模式保留"设置"标签 → 渲染 token 管理面板(/config 是 daemon 专属)。
     // 隐藏流量图标签(依赖 /live 采样累积,server 无 /live)
     var graphBtn = document.querySelector('#tabs button[data-view="graph"]');
     if (graphBtn) graphBtn.style.display = "none";
@@ -3720,6 +3760,11 @@
   function initSettingsView() {
     if (settingsState.initialized) return;
     settingsState.initialized = true;
+    // rustnetec: server 模式 → token 管理面板（无 /config 端点）；daemon 模式 → 配置表单
+    if (IS_SERVER_MODE) {
+      initTokenPanel();
+      return;
+    }
     loadSettings();
     // 绑定保存按钮(表单 submit)
     document.getElementById("settings-form").addEventListener("submit", function (e) {
@@ -3762,6 +3807,188 @@
         openDir(path);
       });
     }
+  }
+
+  // rustnetec: token 管理面板（server 模式专属）— /admin/tokens 列表/创建/吊销。
+  // 鉴权:admin token 存 sessionStorage,面板内 fetch 自动附加 Authorization: Bearer。
+  var tokenState = { initialized: false, adminToken: null, activeAdmins: 0 };
+
+  function initTokenPanel() {
+    if (tokenState.initialized) return;
+    tokenState.initialized = true;
+    // 从 sessionStorage 恢复 admin token(刷新不丢失)
+    tokenState.adminToken = sessionStorage.getItem("rustnetec_admin_token") || null;
+    var input = document.getElementById("token-admin-input");
+    if (input && tokenState.adminToken) input.value = tokenState.adminToken;
+    document.getElementById("token-panel").style.display = "";
+    document.getElementById("settings-form").style.display = "none";
+    document.getElementById("token-admin-save").addEventListener("click", saveAdminToken);
+    document.getElementById("token-create-btn").addEventListener("click", createToken);
+    document.getElementById("token-create-role").addEventListener("change", updateCreateButtonState);
+    fetchTokens();
+  }
+
+  function saveAdminToken() {
+    var input = document.getElementById("token-admin-input");
+    var tok = (input.value || "").trim();
+    tokenState.adminToken = tok || null;
+    if (tok) {
+      sessionStorage.setItem("rustnetec_admin_token", tok);
+    } else {
+      sessionStorage.removeItem("rustnetec_admin_token");
+    }
+    var st = document.getElementById("token-status");
+    st.textContent = tok ? "已保存" : "已清除";
+    fetchTokens();
+  }
+
+  // 面板内 fetch 统一附加 Bearer 头
+  function tokenFetch(url, options) {
+    options = options || {};
+    options.credentials = "same-origin";
+    if (tokenState.adminToken) {
+      options.headers = options.headers || {};
+      options.headers["Authorization"] = "Bearer " + tokenState.adminToken;
+    }
+    return fetch(url, options);
+  }
+
+  function fetchTokens() {
+    var st = document.getElementById("token-status");
+    st.textContent = "加载中…";
+    tokenFetch("/admin/tokens")
+      .then(function (resp) {
+        if (resp.status === 401 || resp.status === 403) {
+          throw new Error("请先在上方输入有效的 admin token");
+        }
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        return resp.json();
+      })
+      .then(function (rows) {
+        st.textContent = "";
+        renderTokenList(rows);
+      })
+      .catch(function (err) {
+        st.textContent = "加载失败: " + err.message;
+        var empty = document.getElementById("token-list-empty");
+        if (empty) empty.textContent = err.message;
+      });
+  }
+
+  function renderTokenList(rows) {
+    var tbody = document.getElementById("token-tbody");
+    var empty = document.getElementById("token-list-empty");
+    tbody.innerHTML = "";
+    if (!rows || rows.length === 0) {
+      empty.textContent = "暂无 token";
+      return;
+    }
+    empty.textContent = "";
+    tokenState.activeAdmins = 0;
+    rows.forEach(function (t) {
+      if (t.role === "admin" && t.is_active) tokenState.activeAdmins++;
+      var tr = document.createElement("tr");
+      tr.style.borderTop = "1px solid var(--border, #30363d)";
+      var cells = [
+        String(t.id),
+        t.role,
+        t.description || "—",
+        t.scope_machine_id ? "machine: " + t.scope_machine_id : (t.role === "admin" ? "全量" : "共享(任意机器)"),
+        t.created_at || "—",
+        t.last_used_at || "—",
+        t.is_active ? "活跃" : "已吊销"
+      ];
+      cells.forEach(function (c) {
+        var td = document.createElement("td");
+        td.textContent = c;
+        td.style.padding = "4px 8px";
+        tr.appendChild(td);
+      });
+      var tdOp = document.createElement("td");
+      tdOp.style.padding = "4px 8px";
+      if (t.is_active) {
+        var btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "db-btn danger";
+        btn.textContent = "吊销";
+        btn.addEventListener("click", function () { revokeToken(t.id, t.description); });
+        tdOp.appendChild(btn);
+      }
+      tr.appendChild(tdOp);
+      tbody.appendChild(tr);
+    });
+    // admin 上限提示 (n/5)
+    var countEl = document.getElementById("token-admin-count");
+    if (countEl) countEl.textContent = "(" + tokenState.activeAdmins + "/5 活跃)";
+    updateCreateButtonState();
+  }
+
+  function updateCreateButtonState() {
+    var createBtn = document.getElementById("token-create-btn");
+    var roleSel = document.getElementById("token-create-role");
+    if (!createBtn || !roleSel) return;
+    var creatingAdmin = roleSel.value === "admin";
+    createBtn.disabled = creatingAdmin && tokenState.activeAdmins >= 5;
+  }
+
+  function createToken() {
+    var role = document.getElementById("token-create-role").value;
+    var desc = document.getElementById("token-create-desc").value.trim();
+    var resultEl = document.getElementById("token-create-result");
+    resultEl.textContent = "创建中…";
+    tokenFetch("/admin/tokens", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ role: role, description: desc || null, scope_machine_id: null })
+    })
+      .then(function (resp) {
+        if (!resp.ok) {
+          return resp.json().catch(function () { return {}; }).then(function (b) {
+            throw new Error((b && b.error) || ("HTTP " + resp.status));
+          });
+        }
+        return resp.json();
+      })
+      .then(function (data) {
+        // 明文仅展示一次
+        resultEl.innerHTML = "";
+        var strong = document.createElement("strong");
+        strong.textContent = "创建成功!Token 明文仅显示一次,请妥善保存:";
+        resultEl.appendChild(strong);
+        var code = document.createElement("code");
+        code.textContent = data.plaintext;
+        code.style.wordBreak = "break-all";
+        code.style.userSelect = "all";
+        var copyBtn = document.createElement("button");
+        copyBtn.type = "button";
+        copyBtn.className = "db-btn";
+        copyBtn.textContent = "复制";
+        copyBtn.style.marginLeft = "8px";
+        copyBtn.addEventListener("click", function () {
+          navigator.clipboard.writeText(data.plaintext).then(function () {
+            copyBtn.textContent = "已复制";
+          }).catch(function () { copyBtn.textContent = "复制失败"; });
+        });
+        resultEl.appendChild(document.createElement("br"));
+        resultEl.appendChild(code);
+        resultEl.appendChild(copyBtn);
+        document.getElementById("token-create-desc").value = "";
+        fetchTokens();
+      })
+      .catch(function (err) {
+        resultEl.textContent = "创建失败: " + err.message;
+      });
+  }
+
+  function revokeToken(id, desc) {
+    if (!window.confirm("确认吊销 token #" + id + (desc ? " (" + desc + ")" : "") + "?吊销后立即失效。")) return;
+    tokenFetch("/admin/tokens/" + id, { method: "DELETE" })
+      .then(function (resp) {
+        if (!resp.ok) return resp.json().catch(function () { return {}; }).then(function (b) { throw new Error((b && b.error) || ("HTTP " + resp.status)); });
+        return resp.json();
+      })
+      .then(function () { fetchTokens(); })
+      .catch(function (err) { alert("吊销失败: " + err.message); });
   }
 
   // rustnetec: WebUI — POST /open-dir 用系统文件管理器打开路径所在目录

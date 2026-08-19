@@ -29,6 +29,9 @@ use super::auth::MIN_TOKEN_LEN;
 /// Number of random bytes generated per token (32 = 256 bits).
 const TOKEN_BYTES: usize = 32;
 
+/// rustnetec: 最多可同时存在的活跃 admin token 数量（吊销后名额释放）。
+pub const MAX_ADMIN_TOKENS: i64 = 5;
+
 /// Record returned by [`list_tokens`]. Hashes are **not** exposed.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct TokenRow {
@@ -106,6 +109,13 @@ pub fn create_token(
 ) -> Result<CreatedToken> {
     validate_scope(role, scope_machine_id)?;
 
+    // rustnetec: admin token 数量上限（只统计活跃 token；吊销后名额释放）。
+    if role == AuthRole::Admin && active_admin_count(conn)? >= MAX_ADMIN_TOKENS {
+        return Err(anyhow::anyhow!(
+            "admin token limit reached: at most {MAX_ADMIN_TOKENS} active admin tokens"
+        ));
+    }
+
     let plaintext = generate_plaintext();
     let hash = blake3::hash(plaintext.as_bytes());
     let hex = hash.to_hex().to_string();
@@ -121,6 +131,18 @@ pub fn create_token(
 
     let id = conn.last_insert_rowid();
     Ok(CreatedToken { id, plaintext })
+}
+
+/// rustnetec: 当前活跃 admin token 数量（`role='admin' AND is_active=1`）。
+///
+/// 用于 admin 数量上限校验（见 [`MAX_ADMIN_TOKENS`]）；吊销后不计入名额。
+pub fn active_admin_count(conn: &Connection) -> Result<i64> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM server_tokens WHERE role = 'admin' AND is_active = 1",
+        [],
+        |r| r.get(0),
+    )
+    .context("COUNT active admin tokens failed")
 }
 
 /// Soft-revoke a token by id (sets `is_active = 0`).
@@ -445,6 +467,40 @@ mod tests {
         // Shared upload token: (Ingest, None) must be accepted.
         let created = create_token(&mut conn, AuthRole::Ingest, Some("shared-upload"), None).unwrap();
         assert!(created.id > 0);
+    }
+
+    #[test]
+    fn admin_token_limit_is_five() {
+        let path = tmp_db("admin-limit");
+        let db = init(&path, &ServerDbConfig::default()).unwrap();
+        let mut conn = db.lock_writer();
+
+        // 前 5 个 admin token 可创建（MAX_ADMIN_TOKENS = 5）。
+        for i in 0..MAX_ADMIN_TOKENS {
+            let created =
+                create_token(&mut conn, AuthRole::Admin, Some(&format!("admin-{i}")), None)
+                    .unwrap();
+            assert!(created.id > 0);
+        }
+        assert_eq!(active_admin_count(&conn).unwrap(), MAX_ADMIN_TOKENS);
+
+        // 第 6 个必须被拒绝。
+        let sixth = create_token(&mut conn, AuthRole::Admin, Some("admin-6"), None);
+        assert!(sixth.is_err(), "sixth admin token must be rejected");
+
+        // 非 admin token 不受上限约束。
+        let ingest =
+            create_token(&mut conn, AuthRole::Ingest, Some("shared"), None).unwrap();
+        assert!(ingest.id > 0);
+
+        // 吊销一个后名额释放，可再建 admin。
+        let revoked = revoke_token(&mut conn, 1).unwrap();
+        assert!(revoked);
+        assert_eq!(active_admin_count(&conn).unwrap(), MAX_ADMIN_TOKENS - 1);
+        let again =
+            create_token(&mut conn, AuthRole::Admin, Some("admin-again"), None).unwrap();
+        assert!(again.id > 0);
+        assert_eq!(active_admin_count(&conn).unwrap(), MAX_ADMIN_TOKENS);
     }
 
     #[test]

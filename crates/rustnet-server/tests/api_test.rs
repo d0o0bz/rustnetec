@@ -852,3 +852,157 @@ async fn unscoped_ingest_uploads_any_machine() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// rustnetec: /admin/tokens HTTP 级用例 — admin 数量上限(5) + 共享 ingest 创建
+// ---------------------------------------------------------------------------
+
+/// 通过 HTTP 创建 token 并返回响应 JSON。
+async fn http_create_token(
+    router: &axum::Router,
+    admin_tok: &str,
+    role: &str,
+    description: &str,
+    scope_machine_id: Option<&str>,
+) -> (StatusCode, serde_json::Value) {
+    let body = serde_json::json!({
+        "role": role,
+        "description": description,
+        "scope_machine_id": scope_machine_id,
+    });
+    let resp = router
+        .clone()
+        .oneshot(authed_request(
+            Method::POST,
+            "/admin/tokens",
+            Some(Body::from(serde_json::to_vec(&body).unwrap())),
+            Some(admin_tok),
+        ))
+        .await
+        .unwrap();
+    let status = resp.status();
+    let json: serde_json::Value =
+        serde_json::from_str(&body_to_string(resp.into_body()).await).unwrap_or_default();
+    (status, json)
+}
+
+#[tokio::test]
+async fn admin_token_http_limit_is_five() {
+    let (router, _ingest, _query, admin_tok) = setup();
+
+    // setup() 已直插 1 个活跃 admin（setup 内 create_token），再建 4 个 → 5 个上限。
+    let mut first_admin_id: Option<i64> = None;
+    for i in 1..=4 {
+        let (status, json) = http_create_token(
+            &router,
+            &admin_tok,
+            "admin",
+            &format!("ops-{i}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "admin #{i} must be created: {json}");
+        if i == 1 {
+            first_admin_id = json["id"].as_i64();
+        }
+    }
+    let first_admin_id = first_admin_id.expect("first admin id");
+
+    // 第 6 个 admin → 400（而非 500）。
+    let (status, json) =
+        http_create_token(&router, &admin_tok, "admin", "ops-6", None).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "sixth admin must be rejected with 400: {json}"
+    );
+
+    // 非 admin token 不受上限约束（共享 ingest 可继续建）。
+    let (status, json) = http_create_token(
+        &router,
+        &admin_tok,
+        "ingest",
+        "shared-1",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "shared ingest must still work: {json}");
+
+    // 吊销一个 admin 后名额释放，可再建。
+    let resp = router
+        .clone()
+        .oneshot(authed_request(
+            Method::DELETE,
+            &format!("/admin/tokens/{first_admin_id}"),
+            None,
+            Some(&admin_tok),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let (status, _) = http_create_token(&router, &admin_tok, "admin", "ops-again", None).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "revoked admin must free a slot for a new admin"
+    );
+}
+
+#[tokio::test]
+async fn shared_ingest_token_via_http_serves_many_machines() {
+    let (router, _ingest, _query, admin_tok) = setup();
+
+    // 经 /admin/tokens 创建共享 ingest token（scope_machine_id = null）。
+    let (status, json) =
+        http_create_token(&router, &admin_tok, "ingest", "shared-http", None).await;
+    assert_eq!(status, StatusCode::OK, "shared ingest creation: {json}");
+    let shared_tok = json["plaintext"]
+        .as_str()
+        .expect("shared ingest plaintext")
+        .to_string();
+    assert_eq!(json["scope_machine_id"], serde_json::Value::Null);
+
+    // 用该 token 上报两台不同机器，均成功。
+    for (i, mid) in ["machine-a", "machine-b"].iter().enumerate() {
+        let mut req = sample_request(vec![sample_event(i as i64 + 1, 1_700_000_000_000)]);
+        req.machine_id = mid.to_string();
+        let resp = router
+            .clone()
+            .oneshot(authed_request(
+                Method::POST,
+                "/ingest",
+                Some(Body::from(serde_json::to_vec(&req).unwrap())),
+                Some(&shared_tok),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "shared ingest must accept machine {mid}"
+        );
+    }
+
+    // GET /admin/tokens 列表含该共享 ingest（scope 为 null）。
+    let resp = router
+        .clone()
+        .oneshot(authed_request(
+            Method::GET,
+            "/admin/tokens",
+            None,
+            Some(&admin_tok),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let rows: serde_json::Value =
+        serde_json::from_str(&body_to_string(resp.into_body()).await).unwrap();
+    let shared: Vec<&serde_json::Value> = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|t| t["role"] == "ingest" && t["description"] == "shared-http")
+        .collect();
+    assert_eq!(shared.len(), 1, "shared ingest token listed exactly once");
+    assert_eq!(shared[0]["scope_machine_id"], serde_json::Value::Null);
+}
