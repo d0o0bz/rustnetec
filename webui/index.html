@@ -1674,7 +1674,7 @@
   // 拉取 /query 并渲染
   function fetchDetails() {
     var url = buildDetailsUrl();
-    fetch(url, { credentials: "same-origin" })
+    serverFetch(url)
       .then(function (resp) {
         if (!resp.ok) throw new Error("HTTP " + resp.status);
         return resp.json();
@@ -3077,7 +3077,7 @@
   };
 
   function fetchProcesses() {
-    fetch("/processes", { credentials: "same-origin" })
+    serverFetch("/processes")
       .then(function (resp) {
         if (!resp.ok) throw new Error("HTTP " + resp.status);
         return resp.json();
@@ -3297,7 +3297,7 @@
     var start = "now-" + secs + "s";
     var procList = activityCompareSelected.map(encodeURIComponent).join(",");
     var url = "/stats/range?start=" + encodeURIComponent(start) + "&bucket=" + bucket + "&process=" + procList;
-    fetch(url, { credentials: "same-origin" })
+    serverFetch(url)
       .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
       .then(function (data) {
         var caption = document.getElementById("process-compare-caption");
@@ -3421,7 +3421,7 @@
     var procList = activityCompareSelected.map(encodeURIComponent).join(",");
     var url = "/stats/availability?start=" + encodeURIComponent(start) + "&bucket=" + bucket + "&scope=external";
     if (procList) url += "&process=" + procList;
-    fetch(url, { credentials: "same-origin" })
+    serverFetch(url)
       .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
       .then(function (data) {
         var buckets = data.buckets || [];
@@ -3845,15 +3845,26 @@
     fetchTokens();
   }
 
-  // 面板内 fetch 统一附加 Bearer 头
-  function tokenFetch(url, options) {
+  // rustnetec: server 模式数据请求统一封装 — 附加 Bearer token。
+  // 必须直接读 sessionStorage：用户信息是默认激活视图，initTokenPanel() 可能
+  // 尚未执行，依赖 tokenState.adminToken 会拿不到已保存的 token。
+  // daemon 模式（本机 19811，端点免鉴权）不附加任何头，行为与裸 fetch 一致。
+  function serverFetch(url, options) {
     options = options || {};
     options.credentials = "same-origin";
-    if (tokenState.adminToken) {
-      options.headers = options.headers || {};
-      options.headers["Authorization"] = "Bearer " + tokenState.adminToken;
+    if (IS_SERVER_MODE) {
+      var tok = sessionStorage.getItem("rustnetec_admin_token");
+      if (tok) {
+        options.headers = options.headers || {};
+        options.headers["Authorization"] = "Bearer " + tok;
+      }
     }
     return fetch(url, options);
+  }
+
+  // 面板内 fetch 统一附加 Bearer 头（token 面板仅 server 模式存在，等价 serverFetch）
+  function tokenFetch(url, options) {
+    return serverFetch(url, options);
   }
 
   function fetchTokens() {
@@ -4023,7 +4034,7 @@
   }
 
   function fetchUsers() {
-    fetch("/hosts", { credentials: "same-origin" })
+    serverFetch("/hosts")
       .then(function (resp) { if (!resp.ok) throw new Error("HTTP " + resp.status); return resp.json(); })
       .then(function (hosts) { renderUsersGroups(hosts); })
       .catch(function (err) {
@@ -4243,7 +4254,7 @@
     function refresh() {
       var url = "/stats/realtime?machine_id=" + encodeURIComponent(machineId) +
         "&start=" + encodeURIComponent(toLocalIso(new Date(Date.now() - 300000)));
-      fetch(url, { credentials: "same-origin" })
+      serverFetch(url)
         .then(function (resp) { if (!resp.ok) throw new Error("HTTP " + resp.status); return resp.json(); })
         .then(function (data) {
           var buckets = data.buckets || [];
@@ -4307,7 +4318,7 @@
       var url = "/stats/reachability?machine_id=" + encodeURIComponent(machineId) +
         "&start=" + encodeURIComponent(toLocalIso(new Date(Date.now() - 43200000))) +
         "&end=" + encodeURIComponent(toLocalIso(new Date())) + "&bucket=1min";
-      fetch(url, { credentials: "same-origin" })
+      serverFetch(url)
         .then(function (resp) { if (!resp.ok) throw new Error("HTTP " + resp.status); return resp.json(); })
         .then(function (data) {
           var buckets = data.buckets || [];
@@ -4344,7 +4355,7 @@
       var range = monthRange(month);
       var url = "/stats/range?machine_id=" + encodeURIComponent(machineId) +
         "&bucket=1day&start=" + encodeURIComponent(range.start) + "&end=" + encodeURIComponent(range.end);
-      fetch(url, { credentials: "same-origin" })
+      serverFetch(url)
         .then(function (resp) { if (!resp.ok) throw new Error("HTTP " + resp.status); return resp.json(); })
         .then(function (data) {
           var buckets = data.buckets || [];
@@ -4377,9 +4388,8 @@
       return;
     }
 
-    fetch("/admin/hosts/" + encodeURIComponent(machineId), {
+    serverFetch("/admin/hosts/" + encodeURIComponent(machineId), {
       method: "PATCH",
-      credentials: "same-origin",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     })
