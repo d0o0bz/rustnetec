@@ -32,6 +32,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use anyhow::{Context, Result};
+use log::{debug, info};
 use rusqlite::Connection;
 
 /// Tunables for [`init`].
@@ -137,11 +138,13 @@ impl ServerDb {
 /// - Creates the database file if absent.
 /// - On Unix, sets the file mode to `0600` (owner-only read/write).
 pub fn init(db_path: &Path, cfg: &ServerDbConfig) -> Result<ServerDb> {
+    info!("init: 打开 server 数据库: {}", db_path.display());
     // Open with default flags (includes CREATE_IF_NECESSARY via rusqlite).
     let mut conn = Connection::open(db_path)
         .with_context(|| format!("failed to open server db at {}", db_path.display()))?;
 
     apply_pragmas(&mut conn, cfg)?;
+    debug!("init: PRAGMA 应用完成 (cache_size={}, mmap_size={}, busy_timeout={})", cfg.cache_size, cfg.mmap_size, cfg.busy_timeout);
     run_schema_v2(&mut conn)?;
     run_schema_v3(&mut conn)?;
     run_schema_v4(&mut conn)?;
@@ -154,6 +157,7 @@ pub fn init(db_path: &Path, cfg: &ServerDbConfig) -> Result<ServerDb> {
             .with_context(|| format!("failed to chmod 0600 {}", db_path.display()))?;
     }
 
+    info!("init: server 数据库就绪: {}", db_path.display());
     Ok(ServerDb {
         writer: Mutex::new(conn),
         db_path: db_path.to_path_buf(),
@@ -391,6 +395,7 @@ fn run_schema_v2(conn: &mut Connection) -> Result<()> {
     .context("INSERT schema_version failed")?;
 
     tx.commit().context("commit schema v2 tx failed")?;
+    debug!("init: schema v2 迁移完成 (server_events/aggregates/hosts/tokens)");
     Ok(())
 }
 
@@ -459,6 +464,8 @@ fn run_schema_v3(conn: &mut Connection) -> Result<()> {
                 revoked
             );
         }
+    } else {
+        debug!("init: schema v3 迁移已完成 (scope_machine_id 列已存在), 跳过");
     }
 
     Ok(())
@@ -552,5 +559,6 @@ fn run_schema_v4(conn: &mut Connection) -> Result<()> {
     )
     .context("INSERT schema_version v4 failed")?;
 
+    debug!("init: schema v4 迁移完成 (department/username lock + server_reachability)");
     Ok(())
 }

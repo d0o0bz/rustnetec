@@ -16,18 +16,44 @@ use rustnet_server::api::token::ensure_bootstrap_admin_token;
 use rustnet_server::cleanup::{DEFAULT_PERIOD, DEFAULT_RETENTION_DAYS, spawn_cleanup_task};
 use rustnet_server::db::{ServerDbConfig, init as init_db};
 
-/// rustnetec: 初始化日志后端（simplelog TermLogger，Info 级别）。
+/// rustnetec: 解析日志级别（来自 `RUSTNET_SERVER_LOG` 环境变量）。
 ///
-/// 失败时回退 `SimpleLogger`（无 TTY 环境），再失败则静默（不阻塞启动）。
+/// 支持 `error`/`warn`/`info`/`debug`/`trace`（大小写不敏感），缺省 `Info`
+/// 与历史行为一致；非法值回退 `Info` 并打印 warn。
+fn resolve_log_level() -> simplelog::LevelFilter {
+    use simplelog::LevelFilter;
+    match std::env::var("RUSTNET_SERVER_LOG")
+        .map(|s| s.trim().to_ascii_lowercase())
+        .as_deref()
+    {
+        Ok("error") => LevelFilter::Error,
+        Ok("warn") => LevelFilter::Warn,
+        Ok("info") => LevelFilter::Info,
+        Ok("debug") => LevelFilter::Debug,
+        Ok("trace") => LevelFilter::Trace,
+        Ok(other) => {
+            // 回退到 Info，避免无日志可排查；logger 已初始化，可正常 warn。
+            log::warn!("RUSTNET_SERVER_LOG={other:?} 非法, 回退 Info");
+            LevelFilter::Info
+        }
+        Err(_) => LevelFilter::Info,
+    }
+}
+
+/// rustnetec: 初始化日志后端（simplelog TermLogger）。
+///
+/// 级别由 [`resolve_log_level`] 决定（环境变量或默认 Info）。失败时回退
+/// `SimpleLogger`（无 TTY 环境），再失败则静默（不阻塞启动）。
 fn init_logger() {
     use simplelog::{
-        ColorChoice, Config, LevelFilter, SimpleLogger, TermLogger, TerminalMode,
+        ColorChoice, Config, SimpleLogger, TermLogger, TerminalMode,
     };
 
+    let level = resolve_log_level();
     let cfg = Config::default();
-    let ok = TermLogger::init(LevelFilter::Info, cfg, TerminalMode::Mixed, ColorChoice::Auto).is_ok();
+    let ok = TermLogger::init(level, cfg, TerminalMode::Mixed, ColorChoice::Auto).is_ok();
     if !ok {
-        let _ = SimpleLogger::init(LevelFilter::Info, Config::default());
+        let _ = SimpleLogger::init(level, Config::default());
     }
 }
 

@@ -20,6 +20,7 @@
 //! ```
 
 use anyhow::{Context, Result};
+use log::{debug, info};
 use rusqlite::{Connection, params};
 
 use super::auth::AuthRole;
@@ -131,6 +132,12 @@ pub fn create_token(
     .context("INSERT server_tokens failed")?;
 
     let id = conn.last_insert_rowid();
+    info!(
+        "create_token: 已签发 (id={id}, role={}, scope={:?}, desc={:?})",
+        role.as_db_str(),
+        scope_machine_id,
+        description
+    );
     Ok(CreatedToken { id, plaintext })
 }
 
@@ -156,6 +163,11 @@ pub fn revoke_token(conn: &mut Connection, id: i64) -> Result<bool> {
             params![id],
         )
         .context("UPDATE server_tokens failed")?;
+    if changed > 0 {
+        info!("revoke_token: 已吊销 (id={id})");
+    } else {
+        debug!("revoke_token: 未命中 (id={id}, 可能已吊销)");
+    }
     Ok(changed > 0)
 }
 
@@ -172,6 +184,11 @@ pub fn bind_token_to_machine(conn: &mut Connection, token_id: i64, machine_id: &
             params![machine_id, token_id],
         )
         .context("UPDATE server_tokens bind failed")?;
+    if changed > 0 {
+        info!("bind_token_to_machine: 已绑定 (id={token_id}, machine={machine_id})");
+    } else {
+        debug!("bind_token_to_machine: 未绑定 (id={token_id}, 已绑定或不存在)");
+    }
     Ok(changed > 0)
 }
 
@@ -214,9 +231,11 @@ pub fn ensure_bootstrap_admin_token(conn: &mut Connection) -> Result<Option<Crea
         |r| r.get(0),
     )?;
     if active_admin > 0 {
+        debug!("ensure_bootstrap_admin_token: 已存在 active admin，跳过引导");
         return Ok(None);
     }
     let created = create_token(conn, AuthRole::Admin, Some("bootstrap"), None)?;
+    info!("ensure_bootstrap_admin_token: 已生成 bootstrap admin token (id={})", created.id);
     Ok(Some(created))
 }
 

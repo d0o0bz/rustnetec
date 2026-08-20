@@ -18,6 +18,7 @@ use std::str::FromStr;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use log::{debug, error, warn};
 use rusqlite::params;
 
 use crate::db::ServerDb;
@@ -146,6 +147,8 @@ impl IntoResponse for AuthError {
 fn verify_token(db: &ServerDb, plaintext: &str) -> Result<TokenPrincipal, AuthError> {
     let hash = blake3::hash(plaintext.as_bytes());
     let hex = hash.to_hex().to_string();
+    // 仅打印 hash 前缀，绝不打印明文 token。
+    debug!("verify_token: hash={}..", &hex[..hex.len().min(8)]);
 
     let conn = db.lock_writer();
     let (token_id, role_str, scope_machine_id): (i64, String, Option<String>) = conn
@@ -156,8 +159,14 @@ fn verify_token(db: &ServerDb, plaintext: &str) -> Result<TokenPrincipal, AuthEr
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .map_err(|e| match e {
-            rusqlite::Error::QueryReturnedNoRows => AuthError::InvalidToken,
-            other => AuthError::Backend(other.into()),
+            rusqlite::Error::QueryReturnedNoRows => {
+                warn!("verify_token: 无效/已吊销 token (hash={}..)", &hex[..hex.len().min(8)]);
+                AuthError::InvalidToken
+            }
+            other => {
+                error!("verify_token: DB 查询失败: {other}");
+                AuthError::Backend(other.into())
+            }
         })?;
 
     // Best-effort last_used_at bump.
@@ -191,16 +200,24 @@ pub async fn check_auth(
     let plaintext = extract_bearer(headers)?;
     let principal = verify_token(&db, &plaintext)?;
     if principal.role.authorizes(required) {
+        debug!("check_auth: 通过 (token_id={}, role={:?})", principal.token_id, principal.role);
         Ok(principal)
     } else {
+        warn!(
+            "check_auth: 角色不足 (principal role={:?}, required={:?})",
+            principal.role, required
+        );
         Err(AuthError::Forbidden(principal.role))
     }
 }
 
 /// Pull `<token>` out of `Authorization: Bearer <token>`.
 fn extract_bearer(headers: &axum::http::HeaderMap) -> Result<String, AuthError> {
-    let header = headers
-        .get(axum::http::header::AUTHORIZATION)
+    let auth = headers.get(axum::http::header::AUTHORIZATION);
+    if auth.is_none() {
+        warn!("extract_bearer: 缺少 Authorization 头");
+    }
+    let header = auth
         .ok_or(AuthError::MissingToken)?
         .to_str()
         .map_err(|_| AuthError::MissingToken)?;

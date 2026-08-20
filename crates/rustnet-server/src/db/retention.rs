@@ -10,6 +10,7 @@
 //! table is always cleaned with a `DELETE ... WHERE bucket_ts < ?`.
 
 use anyhow::{Context, Result};
+use log::{debug, info};
 use rusqlite::Connection;
 
 /// Outcome of a single [`purge_expired`] run.
@@ -50,6 +51,10 @@ pub fn purge_expired(
     };
 
     let aggregates_deleted = purge_aggregates_rows(conn, &cutoff)?;
+    info!(
+        "purge_expired: 完成 (retention_days={}, cutoff={}, partitioned={}, events_deleted={}, aggregates_deleted={}, partitions_dropped={})",
+        retention_days, cutoff, partitioned, events_deleted, aggregates_deleted, partitions_dropped
+    );
 
     Ok(PurgeReport {
         events_deleted,
@@ -120,6 +125,7 @@ fn purge_events_partitioned(conn: &mut Connection, cutoff: &str) -> Result<(u64,
             .unwrap_or(0);
         conn.execute(&format!("DROP TABLE IF EXISTS {table_name}"), [])
             .with_context(|| format!("DROP {table_name} failed"))?;
+        debug!("purge_events_partitioned: 删除过期分区 (month={}, table={}, est_rows={})", month, table_name, count);
         dropped += 1;
         rows_estimate += count as u64;
     }

@@ -17,8 +17,10 @@
 //! reuse the compiled statements.
 
 use anyhow::{Context, Result};
+use log::{debug, warn};
 use rusqlite::{Connection, Transaction, params};
 use rustnet_core::ingest::{ClientEvent, IngestRequest, IngestResponse, ReachabilitySample};
+use std::time::Instant;
 
 use super::Error;
 
@@ -37,6 +39,10 @@ const FIELD_OVERRIDE_COOLDOWN_SECS: i64 = 1800;
 /// - [`Error::InvalidMachineId`] when `req.machine_id` is empty.
 /// - Underlying rusqlite errors are propagated via `anyhow`.
 pub fn ingest_write(conn: &mut Connection, req: &IngestRequest) -> Result<IngestResponse> {
+    debug!(
+        "ingest_write: 入参 (machine_id={}, user_id={}, events={}, reachability={})",
+        req.machine_id, req.user_id, req.events.len(), req.reachability.len()
+    );
     // ---- Validate identity fields ----
     let uid: i64 = req
         .user_id
@@ -49,6 +55,7 @@ pub fn ingest_write(conn: &mut Connection, req: &IngestRequest) -> Result<Ingest
     let now = chrono::Local::now().to_rfc3339();
     let ip_list_json = serde_json::to_string(&req.ip_list).unwrap_or_else(|_| "[]".to_string());
 
+    let started = Instant::now();
     let tx = conn.transaction()?;
 
     let mut accepted: u64 = 0;
@@ -97,9 +104,21 @@ pub fn ingest_write(conn: &mut Connection, req: &IngestRequest) -> Result<Ingest
     }
 
     tx.commit()?;
+    debug!("ingest_write: 事务提交耗时 {}ms", started.elapsed().as_millis());
 
     let total = req.events.len() as u64;
     let duplicates = total.saturating_sub(accepted);
+
+    debug!(
+        "ingest_write: 完成 (machine_id={}, events={}, accepted={}, duplicates={}, reachability={})",
+        req.machine_id, total, accepted, duplicates, req.reachability.len()
+    );
+    if duplicates > 0 && total > 0 && duplicates == total {
+        warn!(
+            "ingest_write: 整批去重 (machine_id={}, total={} 全部重复), 可能客户端重复上报",
+            req.machine_id, total
+        );
+    }
 
     Ok(IngestResponse {
         accepted,

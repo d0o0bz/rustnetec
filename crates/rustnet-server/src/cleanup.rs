@@ -10,7 +10,7 @@
 //! async runtime is never blocked on I/O.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use log::{info, warn};
 use tokio::time::interval;
@@ -34,6 +34,11 @@ pub fn spawn_cleanup_task(
     retention_days: u32,
     period: Duration,
 ) -> tokio::task::JoinHandle<()> {
+    info!(
+        "spawn_cleanup_task: 启动周期清理 (retention_days={}, period={}s)",
+        retention_days,
+        period.as_secs()
+    );
     tokio::spawn(async move {
         let mut ticker = interval(period);
         loop {
@@ -43,6 +48,7 @@ pub fn spawn_cleanup_task(
             // Run the synchronous SQLite purge on a blocking thread so we
             // don't stall the async runtime.
             let db_clone = Arc::clone(&db);
+            let started = Instant::now();
             let result = tokio::task::spawn_blocking(move || {
                 let mut conn = db_clone.lock_writer();
                 purge_expired(&mut conn, retention_days, &now_for_closure)
@@ -50,7 +56,13 @@ pub fn spawn_cleanup_task(
             .await;
 
             match result {
-                Ok(Ok(report)) => log_purge(report, &now),
+                Ok(Ok(report)) => {
+                    let elapsed = started.elapsed().as_millis();
+                    if elapsed > 1000 {
+                        warn!("cleanup run 耗时较长: {elapsed}ms");
+                    }
+                    log_purge(report, &now);
+                }
                 Ok(Err(e)) => warn!("cleanup run failed, will retry next tick: {e:#}"),
                 Err(join_err) => warn!("cleanup task panicked: {join_err}"),
             }

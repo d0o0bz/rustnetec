@@ -17,6 +17,7 @@
 //! plain table and [`retention::purge_expired`] uses row-level `DELETE`.
 
 use anyhow::{Context, Result};
+use log::debug;
 use rusqlite::Connection;
 
 /// File-size threshold (bytes) above which monthly partitioning kicks in.
@@ -61,6 +62,10 @@ pub fn partitioning_active(conn: &Connection) -> bool {
     };
     let path = std::path::Path::new(&path_str);
     let size = path.metadata().map(|m| m.len()).unwrap_or(0);
+    debug!(
+        "partitioning_active: db_size={} bytes, threshold={}, active={}",
+        size, PARTITION_THRESHOLD_BYTES, size >= PARTITION_THRESHOLD_BYTES
+    );
     size >= PARTITION_THRESHOLD_BYTES
 }
 
@@ -131,6 +136,7 @@ pub fn ensure_partition(conn: &mut Connection, month: i32) -> Result<()> {
     );
     conn.execute_batch(&ddl)
         .with_context(|| format!("ensure_partition({table}) failed"))?;
+    debug!("ensure_partition: 已确保分区表存在 (month={}, table={})", month, table);
     Ok(())
 }
 

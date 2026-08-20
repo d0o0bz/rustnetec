@@ -11,7 +11,9 @@
 //! for power users, but the server side never executes arbitrary SQL.
 
 use anyhow::{Context, Result};
+use log::{debug, warn};
 use rusqlite::{Connection, Row, params_from_iter};
+use std::time::Instant;
 use rustnet_core::ingest::{
     AggregateRow, ClientEvent, HostStats, K8sFields, QueryParams, QueryResponse, QueryRow,
     StatsResponse,
@@ -72,6 +74,7 @@ pub fn query_events(
     scope: &Scope,
 ) -> Result<QueryResponse> {
     let limit = params.limit.unwrap_or(200).min(1000);
+    let started = Instant::now();
 
     let mut sql = String::from(
         r#"
@@ -145,6 +148,10 @@ pub fn query_events(
         .filter_map(|r| r.ok())
         .collect();
 
+    debug!(
+        "query_events: 完成 (scope={:?}, conditions={}, 返回={} 行, 耗时 {}ms)",
+        scope, conditions.len(), rows.len(), started.elapsed().as_millis()
+    );
     Ok(QueryResponse { rows })
 }
 
@@ -289,7 +296,10 @@ fn compile_filter(filter: &str, binds: &mut Vec<Box<dyn rusqlite::ToSql>>) -> Re
             binds.push(Box::new(port));
             Ok("dest_port = ?".to_string())
         }
-        other => Err(Error::Other(anyhow::anyhow!("filter: unknown key `{other}`")).into()),
+        other => {
+            warn!("compile_filter: 未知 filter key `{other}`");
+            Err(Error::Other(anyhow::anyhow!("filter: unknown key `{other}`")).into())
+        }
     }
 }
 
@@ -306,6 +316,7 @@ fn compile_filter(filter: &str, binds: &mut Vec<Box<dyn rusqlite::ToSql>>) -> Re
 /// see their own machine's totals; admin (`Scope::All`) sees everything.
 pub fn stats(conn: &mut Connection, scope: &Scope) -> Result<StatsResponse> {
     // rustnetec: build WHERE clause from scope.
+    let started = Instant::now();
     let scope_clause = match scope {
         Scope::Machine(mid) => format!("WHERE machine_id = '{}'", mid.replace('\'', "''")),
         Scope::All => String::new(),
@@ -340,6 +351,10 @@ pub fn stats(conn: &mut Connection, scope: &Scope) -> Result<StatsResponse> {
         .filter_map(|r| r.ok())
         .collect();
 
+    debug!(
+        "stats: 完成 (scope={:?}, total_events={}, hosts={}, 耗时 {}ms)",
+        scope, totals.0, hosts.len(), started.elapsed().as_millis()
+    );
     Ok(StatsResponse {
         total_events: totals.0 as u64,
         total_bytes: totals.1 as u64,

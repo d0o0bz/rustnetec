@@ -31,6 +31,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use log::{debug, error, info, warn};
 use rustnet_core::ingest::{
     HealthResponse, IngestRequest, IngestResponse, QueryParams, QueryResponse, StatsResponse,
 };
@@ -178,6 +179,10 @@ async fn ingest(
     Extension(principal): Extension<auth::TokenPrincipal>,
     Json(req): Json<IngestRequest>,
 ) -> Result<Json<IngestResponse>, ApiError> {
+    debug!(
+        "ingest: 入参 (machine_id={}, events={}, role={:?}, token_id={})",
+        req.machine_id, req.events.len(), principal.role, principal.token_id
+    );
     // rustnetec: client 未绑定 → 首次上报自动绑定（绑定前拒绝空 machine_id，
     // 避免把空串写入 scope 导致 token 永久"毒化"）。
     if principal.role == auth::AuthRole::Client && principal.scope_machine_id.is_none() {
@@ -195,6 +200,10 @@ async fn ingest(
         return Err(ApiError::Forbidden);
     }
     let resp = db.ingest(&req).map_err(ApiError::from)?;
+    debug!(
+        "ingest: 完成 (machine_id={}, accepted={} duplicates={} cursor={})",
+        req.machine_id, resp.accepted, resp.duplicates, resp.cursor
+    );
     Ok(Json(resp))
 }
 
@@ -217,7 +226,9 @@ async fn query(
     Query(params): Query<QueryParams>,
 ) -> Result<Json<QueryResponse>, ApiError> {
     let scope = read_scope(&principal)?;
+    debug!("query: 入参 (scope={:?}, from={:?}, to={:?}, filter={:?}, limit={:?})", scope, params.from, params.to, params.filter, params.limit);
     let resp = db.query_events(&params, &scope).map_err(ApiError::from)?;
+    debug!("query: 完成 (返回行数={})", resp.rows.len());
     Ok(Json(resp))
 }
 
@@ -228,6 +239,7 @@ async fn stats(
 ) -> Result<Json<StatsResponse>, ApiError> {
     let scope = read_scope(&principal)?;
     let resp = db.stats(&scope).map_err(ApiError::from)?;
+    debug!("stats: 完成 (scope={:?}, total_events={}, hosts={})", scope, resp.total_events, resp.hosts.len());
     Ok(Json(resp))
 }
 
@@ -270,6 +282,7 @@ async fn stats_range(
     };
     let scope = read_scope(&principal)?;
     let resp = db.stats_range(&rp, &scope).map_err(ApiError::from)?;
+    debug!("stats_range: 完成 (scope={:?}, buckets={})", scope, resp.get("buckets").map(|_| "<json>").unwrap_or("none"));
     Ok(Json(resp))
 }
 
@@ -376,6 +389,10 @@ async fn create_token_handler(
         body.scope_machine_id.as_deref(),
     )
     .map_err(ApiError::from)?;
+    info!(
+        "create_token_handler: 已签发 (id={}, role={}, scope={:?})",
+        created.id, body.role, body.scope_machine_id
+    );
 
     Ok(Json(serde_json::json!({
         "id": created.id,
@@ -393,6 +410,7 @@ async fn list_tokens_handler(
 ) -> Result<Json<Vec<token::TokenRow>>, ApiError> {
     let mut conn = db.lock_writer();
     let rows = token::list_tokens(&mut conn).map_err(ApiError::from)?;
+    debug!("list_tokens_handler: 返回 {} 条", rows.len());
     Ok(Json(rows))
 }
 
@@ -403,6 +421,7 @@ async fn revoke_token_handler(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let mut conn = db.lock_writer();
     let revoked = token::revoke_token(&mut conn, id).map_err(ApiError::from)?;
+    info!("revoke_token_handler: 已处理吊销 (id={}, revoked={})", id, revoked);
     Ok(Json(serde_json::json!({
         "id": id,
         "revoked": revoked,
@@ -657,6 +676,10 @@ async fn require_ingest(
         .await
         .map_err(ApiError::from)?;
     if principal.role == auth::AuthRole::Admin {
+        warn!(
+            "require_ingest: 拒绝 admin token 用于上传 (token_id={})",
+            principal.token_id
+        );
         return Err(ApiError::Forbidden);
     }
     req.extensions_mut().insert(principal);
@@ -759,6 +782,13 @@ impl IntoResponse for ApiError {
             ApiError::Forbidden => (StatusCode::FORBIDDEN, "forbidden".into()),
             ApiError::Internal(m) => (StatusCode::INTERNAL_SERVER_ERROR, m),
         };
+        // 集中记录响应错误：4xx（客户端/鉴权问题）记 warn，5xx（服务端异常）记 error，
+        // 便于排查而无需在每个 handler 重复 try 分支。
+        if status.is_server_error() {
+            error!("API 响应错误 {}: {}", status.as_u16(), msg);
+        } else if status.is_client_error() {
+            warn!("API 响应错误 {}: {}", status.as_u16(), msg);
+        }
         (status, msg).into_response()
     }
 }
